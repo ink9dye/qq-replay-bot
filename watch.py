@@ -567,6 +567,25 @@ def with_light_dark_field(title: str, card_ids: Iterable[int]) -> str:
 _REFERENCE_DECKS: Optional[list[dict]] = None
 _SIMILARITY_THRESHOLD = 0.60
 
+LIVE_LINKS: dict[str, bool] = {}
+
+
+def reconnect_delay(attempt: int) -> int:
+    """2/4/8/16/30 秒退避；attempt 从 1 开始。"""
+    return min(30, 2 ** max(1, int(attempt)))
+
+
+def reconnect_limit(saved: bool) -> int:
+    """保存过录像允许 3 次断开重连；还没保存首份录像允许 5 次，之后转 unstable。"""
+    return 3 if saved else 5
+
+
+def room_unavailable(received_any: bool, saved: bool) -> bool:
+    """连上后没收到任何对局数据就被关闭：房间已结束/不可观战，不能无限重进。"""
+    return not received_any and not saved
+
+
+
 
 def reference_decks() -> list[dict]:
     """天梯前100参考卡组（含标注卡组名）。文件缺失时返回空列表，走字段法兜底。"""
@@ -737,6 +756,13 @@ def room_list_denied(payload) -> bool:
     if not isinstance(rooms, list) or len(rooms) != 1 or not isinstance(rooms[0], dict):
         return False
     return str(rooms[0].get("roomname") or "") == "密码错误"
+
+
+def joinable_rooms(rooms, preexisting, direct_keys, allow_preexisting=False):
+    """只跟随后续新开局；启动时已在列表里的旧房间默认不加入（手动直连房间例外）。"""
+    if allow_preexisting:
+        return list(rooms)
+    return [room for room in rooms if room.key not in preexisting or room.key in direct_keys]
 
 
 def rooms_from_json(payload, started: Optional[bool] = None) -> list[RoomInfo]:
@@ -1100,11 +1126,12 @@ class RoomBoard:
                 room = room_from_mapping(data, started)
                 if room:
                     bucket[room.key] = room
+                    if event == "create" and room.started:
+                        self._preexisting.discard(room.key)
                     if (
                         event == "create"
                         and room.started
                         and room.key not in self._started_at
-                        and room.key not in self._preexisting
                     ):
                         self._started_at[room.key] = time.time()
             elif event == "delete":
@@ -1245,6 +1272,23 @@ def refresh_secret(config: dict) -> None:
     if config.get("mycard_secret") not in (None, "", 0):
         return
     raise RuntimeError("请在 data/watch-config.json 填写萌卡 account 和 password")
+
+
+_SECRET_LOCK: Optional[asyncio.Lock] = None
+_SECRET_REFRESHED_AT = 0.0
+_SECRET_REFRESH_INTERVAL = 60.0
+
+
+async def refresh_secret_shared(config: dict) -> None:
+    """并发观战共用一次 u16Secret 刷新，避免多任务同时轮换互相失效。"""
+    global _SECRET_LOCK, _SECRET_REFRESHED_AT
+    if _SECRET_LOCK is None:
+        _SECRET_LOCK = asyncio.Lock()
+    async with _SECRET_LOCK:
+        if time.time() - _SECRET_REFRESHED_AT < _SECRET_REFRESH_INTERVAL and config.get("mycard_secret"):
+            return
+        await asyncio.to_thread(refresh_secret, config)
+        _SECRET_REFRESHED_AT = time.time()
 
 
 def build_join_password(config: dict, room: RoomInfo) -> str:
@@ -1604,7 +1648,6 @@ class Spectator:
         try:
             self.writer.write(player_info_packet(nickname))
             self.writer.write(join_packet(self.version, password))
-            self.writer.write(frame(CTOS_HS_TOOBSERVER))
             await self.writer.drain()
         except (asyncio.TimeoutError, OSError) as exc:
             log(f"连接中断：{exc}")
@@ -1670,7 +1713,7 @@ class Spectator:
         drop_failures = 0
         while True:
             try:
-                await asyncio.to_thread(refresh_secret, self.config)
+                await refresh_secret_shared(self.config)
                 # 登录/续期可能校正账号名；入房名称必须与本次凭证使用同一身份。
                 nickname = str(self.config.get("nickname") or "Spectator")
                 password = build_join_password(self.config, self.room)
@@ -1683,21 +1726,29 @@ class Spectator:
                 if connect_failures >= 3:
                     outcome = "saved" if self.replays_saved else "retry"
                     break
-                log("正在重新连接")
-                await asyncio.sleep(2)
+                delay = reconnect_delay(connect_failures)
+                log(f"正在重新连接（第{connect_failures}次，{delay}秒后）")
+                await asyncio.sleep(delay)
                 continue
             connect_failures = 0
+            LIVE_LINKS[self.room.key] = True
             outcome, dropped = await self._watch()
+            LIVE_LINKS[self.room.key] = False
             if not dropped:
                 break
-            if self.replays_saved:
-                drop_failures += 1
-                if drop_failures >= 3:
-                    log(f"网络中断：{self._drop_reason}。这场先停下，稍后重试")
-                    outcome = "saved"
-                    break
-            log(f"{self._drop_reason}，正在重新进入这场观战")
-            await asyncio.sleep(2)
+            if room_unavailable(self.received_any, bool(self.replays_saved)):
+                log(f"连接后未收到任何对局数据即被关闭（{self._drop_reason}），判定该房间已结束或不可观战，停止重试")
+                outcome = "gone"
+                break
+            drop_failures += 1
+            limit = reconnect_limit(self.replays_saved)
+            if drop_failures >= limit:
+                log(f"连续断开 {drop_failures} 次（{self._drop_reason}），本局停止重连，120秒后再评估")
+                outcome = "unstable"
+                break
+            delay = reconnect_delay(drop_failures)
+            log(f"{self._drop_reason}，{delay}秒后重试（第{drop_failures}/{limit}次）")
+            await asyncio.sleep(delay)
         if self.replays_saved:
             log(f"本次观战结束，保存了 {self.replays_saved} 个录像")
         elif outcome == "noreplay":
@@ -2044,6 +2095,45 @@ def apply_watch_rules(writer: ReplayWriter, config: dict, names: list[str], rank
     writer.mode = str(config.get("name_match") or "exact")
 
 
+class AdaptiveConcurrency:
+    """默认 12；60 秒内集中失败达到阈值降到 8；稳定 30 分钟后回到 12。"""
+    def __init__(self, config: dict):
+        self.high = max(1, int(config.get('max_concurrent') or 12))
+        self.low = max(1, min(self.high, int(config.get('fallback_concurrent') or 8)))
+        self.window = float(config.get('adaptive_error_window_seconds') or 60)
+        self.threshold = max(1, int(config.get('adaptive_error_threshold') or 6))
+        self.restore = float(config.get('adaptive_restore_seconds') or 1800)
+        self.current = self.high
+        self.errors: list[float] = []
+        self.reduced_at: Optional[float] = None
+
+    def failed(self, now: float) -> Optional[str]:
+        self.errors = [t for t in self.errors if now - t <= self.window]
+        self.errors.append(now)
+        if self.current > self.low and len(self.errors) >= self.threshold:
+            self.current = self.low
+            self.reduced_at = now
+            self.errors.clear()
+            return f'并发自适应：{self.high}→{self.low}（{self.threshold} 次/ {int(self.window)} 秒）'
+        return None
+
+    def tick(self, now: float) -> Optional[str]:
+        if self.current < self.high and self.reduced_at is not None and now - self.reduced_at >= self.restore:
+            recent = [t for t in self.errors if now - t <= self.window]
+            if not recent:
+                self.current = self.high
+                self.reduced_at = None
+                return f'并发自适应：{self.low}→{self.high}（{int(self.restore / 60)} 分钟无集中失败）'
+        return None
+
+    def value(self) -> int:
+        return self.current
+
+    def state(self) -> dict:
+        return dict(current_concurrency=self.current, base_concurrency=self.high,
+                    fallback_concurrency=self.low, errors_in_window=len(self.errors))
+
+
 class CaptureMonitor:
     """有界排队、最早发现优先；计数只描述当前进程实际看到的房间。"""
     def __init__(self, limit=200):
@@ -2084,10 +2174,13 @@ class CaptureMonitor:
 
     def finished(self, outcome):
         if outcome == 'saved':self.counts['completed_observations'] += 1
-        elif outcome in ('retry', 'config'):self.counts['failed_observations'] += 1
+        elif outcome in ('retry', 'config', 'unstable'):self.counts['failed_observations'] += 1
+        elif outcome == 'gone':self.counts['unavailable_rooms'] = self.counts.get('unavailable_rooms', 0) + 1
 
     def snapshot(self, active, writer):
-        return dict(self.counts, active_observations=active, waiting_rooms=self.waiting,
+        connected = sum(1 for value in LIVE_LINKS.values() if value)
+        return dict(self.counts, active_observations=active, connected_observations=connected,
+                    reconnecting_observations=max(0, active - connected), waiting_rooms=self.waiting,
                     queue_limit=self.limit, queue_overflow=self.overflow, cooldown_rooms=self.cooling,
                     saved_games=writer._metrics['saved_games'], updated_at=time.time())
 
@@ -2149,12 +2242,14 @@ async def serve(
         tasks.append(asyncio.create_task(websocket_loop(url, board, stop)))
     active: dict[str, asyncio.Task] = {}
     monitor = CaptureMonitor(config.get('max_queued_rooms') or 200)
+    adaptive = AdaptiveConcurrency(config)
     rank_window=None
     if config.get('automatic_rank_limit',100)>100:
         from bot.watch_rank_window import RankWindow
         rank_window=RankWindow(int(config['automatic_rank_limit']))
     previous_rank_error=None
     cooldown_until: dict[str, float] = {}
+    dead_rooms: set[str] = set()
     parts = []
     if names:
         parts.append("只要在场就观战：" + "、".join(names))
@@ -2165,8 +2260,10 @@ async def serve(
     noted: set[str] = set()
     join_at: dict[str, float] = {}
     announced_wait: set[str] = set()
-    min_delay = float(config.get("join_after_min_seconds") or 120)
-    max_delay = float(config.get("join_after_max_seconds") or 240)
+    preexisting_min = float(config.get("preexisting_join_min_seconds") if config.get("preexisting_join_min_seconds") is not None else 1)
+    preexisting_max = float(config.get("preexisting_join_max_seconds") if config.get("preexisting_join_max_seconds") is not None else 10)
+    min_delay = float(config.get("join_after_min_seconds") if config.get("join_after_min_seconds") is not None else 120)
+    max_delay = float(config.get("join_after_max_seconds") if config.get("join_after_max_seconds") is not None else 240)
     log(
         f"进入时间：看到开局的对局，在开局后 {min_delay / 60:g}–{max_delay / 60:g} 分钟内随机进入。"
         "连接前已经开始的对局，只要符合条件就立刻进入。"
@@ -2219,6 +2316,9 @@ async def serve(
             noted.update(fresh_notes)
             starts, preexisting = await board.timing()
             direct_keys = {room.key for room in direct_rooms(config)}
+            allow_preexisting = bool(config.get("join_preexisting", True))
+            if not allow_preexisting:
+                matched = joinable_rooms(matched, preexisting, direct_keys, False)
             for room in matched:
                 if room.key in direct_keys and room.key not in starts and room.key not in preexisting:
                     starts[room.key] = await board.note_fresh_start(room.key)
@@ -2241,17 +2341,30 @@ async def serve(
                 except Exception as exc:
                     log(f"观战任务异常：{exc}")
                     outcome = "retry"
-                pause = {"saved": 12, "noreplay": 20, "leave": 30, "retry": 3, "config": 120}.get(outcome, 5)
+                pause = {"saved": 12, "noreplay": 20, "leave": 30, "retry": 3, "unstable": 120, "gone": 300, "config": 120}.get(outcome, 5)
                 monitor.finished(outcome)
+                if outcome == "gone":
+                    dead_rooms.add(key)
+                if outcome in ('retry', 'unstable'):
+                    message = adaptive.failed(time.monotonic())
+                    if message: log(message)
                 cooldown_until[key] = now + pause
-            limit = int(config.get("max_concurrent") or 2)
+            limit = adaptive.value()
+            current_keys = {room.key for room in rooms}
+            dead_rooms.intersection_update(current_keys)
             matched = monitor.candidates(rooms, matched, active, cooldown_until, time.monotonic())
+            matched = [room for room in matched if room.key not in dead_rooms]
             now = time.time()
             for room in matched:
                 if room.key in active or cooldown_until.get(room.key, 0) > time.monotonic():
                     continue
                 if len(active) >= limit:
                     break
+                if room.key in preexisting and room.key not in direct_keys:
+                    if room.key not in join_at:
+                        join_at[room.key] = now + preexisting_min + (preexisting_max - preexisting_min) * random.random()
+                    if join_at[room.key] > now:
+                        continue
                 known_start = starts.get(room.key)
                 action, when = plan_join(
                     now,
@@ -2280,8 +2393,10 @@ async def serve(
                 session = Spectator(config, room, writer.for_room(room.players), known_start)
                 active[room.key] = asyncio.create_task(session.run())
                 monitor.joined(room.key)
+            message = adaptive.tick(time.monotonic())
+            if message: log(message)
             if on_status:
-                try:on_status(dict(monitor.snapshot(len(active), writer), concurrent_limit=limit, **(rank_window.status() if rank_window else {})))
+                try:on_status(dict(monitor.snapshot(len(active), writer), concurrent_limit=limit, **(adaptive.state()), **(rank_window.status() if rank_window else {})))
                 except Exception:log('采集状态暂未写入，观战继续')
             await asyncio.sleep(float(config.get("poll_seconds") or 5))
     finally:

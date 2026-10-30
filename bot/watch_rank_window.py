@@ -15,6 +15,7 @@ class RankWindow:
         self.limit=limit;self.fetch=fetch or fetch_profile;self.clock=clock or time.time
         self.executor=executor or ThreadPoolExecutor(max_workers=4,thread_name_prefix='official-room-rank')
         self.pending={};self.cache={};self.retry_at={};self.errors=0;self.last_error=None;self.closed=False
+        self.pause_until=0.0;self.failure_threshold=8;self.cooldown=120.0;self.failure_retry=300.0
 
     def update(self,players,known,updated_at,stale):
         now=self.clock();players=set(players)
@@ -32,7 +33,8 @@ class RankWindow:
                 self.cache[name]=(profile['rank'],started)
                 self.errors=0;self.last_error=None;self.retry_at[name]=now+120
             except Exception as error:
-                self.cache.pop(name,None);self.retry_at[name]=now+60
+                self.cache.pop(name,None);self.retry_at[name]=now+self.failure_retry
+                if self.errors>=self.failure_threshold:self.pause_until=now+self.cooldown
                 self.errors+=1;self.last_error=error_category(error)
         self.cache={name:value for name,value in self.cache.items() if name in players and 0<=now-value[1]<120}
         self.retry_at={name:value for name,value in self.retry_at.items() if name in players}
@@ -40,15 +42,17 @@ class RankWindow:
         if not fresh or self.closed:return {}
         # At most 16 pending requests and four workers. Retries rotate fairly;
         # no request blocks the observation/recording event loop.
+        if now<self.pause_until:return {name:value for name,value in self.cache.items() if name not in known and 0<value[0]<=self.limit}
         candidates=sorted((n for n in players if n not in known and n not in self.pending and now>=self.retry_at.get(n,0)),key=lambda n:(self.retry_at.get(n,0),n))
-        for name in candidates[:max(0,16-len(self.pending))]:
+        budget=8 if self.errors>=4 else 16
+        for name in candidates[:max(0,budget-len(self.pending))]:
             self.pending[name]=(self.executor.submit(self.fetch,name),now)
             self.retry_at[name]=now+120
         return {name:value for name,value in self.cache.items() if name not in known and 0<value[0]<=self.limit}
 
     def status(self):
         return dict(automatic_rank_limit=self.limit,automatic_rank_mode='visible_players_official_rank',
-                    complete_top200_roster=False,rank_queries_pending=len(self.pending),
+                    complete_top200_roster=False,rank_queries_pending=len(self.pending),rank_pause_seconds=max(0,int(self.pause_until-self.clock())),
                     rank_checks_cached=len(self.cache),rank_consecutive_failures=self.errors,rank_last_error=self.last_error)
 
     def close(self):

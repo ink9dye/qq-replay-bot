@@ -30,7 +30,10 @@ def route(app,path,parts):
         source=source.replace('<div class="profile">','<p class="note">分享链接有效至 '+format_time(link['expires_at'])+'；重新查询不会延长此链接。</p><div class="profile">')
         source=source.replace('该玩家全部有效小局','本链接全部有效小局')
         source=source.replace('<script src="/statistics/assets/statistics_nav.js"></script>','')
-        return reply(source.replace('/statistics/assets/',base+'/assets/'),'text/html; charset=utf-8')
+        source=source.replace('/statistics/assets/',base+'/assets/')
+        source=source.replace('<option value="player">该玩家全部有效小局</option>',
+                              '<option value="player" selected>该玩家全部有效小局</option>')
+        return reply(source,'text/html; charset=utf-8')
     if len(tail)==2 and tail[0]=='assets':
         name=tail[1]
         if name not in ('statistics_ui.css','statistics_nav.css','statistics_build.js','statistics_pt.js','statistics_samples.js'):return app._text(404,'找不到资源。')

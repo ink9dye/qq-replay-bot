@@ -8,6 +8,27 @@ from .statistics_build_detail import query
 from .statistics_recording_names import safe_filename
 
 
+def _rank_label(rank):
+    if isinstance(rank, int) and rank > 0:
+        return f"当前#{rank}"
+    if rank == 0:
+        return "当前榜外"
+    return "排名暂缺"
+
+
+def _side(rank, name, deck):
+    return f"{_rank_label(rank)} {safe_filename(name or '对手未知')} · {safe_filename(deck or '卡组未识别')}"
+
+
+def match_folder(game):
+    date = game.get('observed_date') or ''
+    number = game.get('observed_match_no')
+    head = f"{date} 第{number}场" if number is not None else date
+    left = _side(game.get('current_rank'), game.get('player'), game.get('deck_type'))
+    right = _side(game.get('opponent_current_rank'), game.get('opponent'), game.get('opponent_deck_type'))
+    return f"{head} {left} vs {right}/"
+
+
 def archive(db,root,now,player,digest=None,scope='build',match=None,clock=time.time,allowed_digests=None,history_digests=None):
     result=query(db,root,now,player,digest,scope,allowed_digests=allowed_digests,history_digests=history_digests)
     if result is None:raise ValueError('no_eligible_build')
@@ -36,7 +57,7 @@ def archive(db,root,now,player,digest=None,scope='build',match=None,clock=time.t
             name=game['download_filename']
             if name in names:name=safe_filename(game['recording_title']+' '+identity[:12])
             names.add(name)
-            folder=game['observed_date']+f" 第{game['observed_match_no']}场/"if match is None else''
+            folder=match_folder(game)
             package.writestr(folder+name,blob)
     if any(g['expires_at']<=max(now,float(clock()))for g in games):raise ValueError('source_expired_during_archive')
     label=player+' '+('整场已收录录像'if match else'该构筑全部已收录录像')

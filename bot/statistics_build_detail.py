@@ -53,9 +53,18 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
             if card['partition']=='main':counts[mapping.get(card['code'],(card['code'],))[0]]+=card['copies']
         return tuple(sorted(counts.items()))
     selected_meta=metadata.get(selected['digest'])
-    first_candidates=[r for r in rows if selected_meta and selected_meta[0] and r['_pair']==selected['_pair']
-                      and metadata.get(r['digest'])==(selected_meta[0],1,True)]
-    main_anchor=first_candidates[0]if selected_meta and selected_meta[1]>1 and len(first_candidates)==1 else selected
+    anchored_to_first=False
+    missing_first_game=False
+    if selected_meta and selected_meta[0] and selected_meta[1]>1:
+        first_candidates=[r for r in rows if r['_pair']==selected['_pair']
+                          and metadata.get(r['digest'])==(selected_meta[0],1,True)]
+        if len(first_candidates)==1:
+            selected=first_candidates[0]
+            selected_meta=metadata.get(selected['digest'])
+            anchored_to_first=True
+        else:
+            missing_first_game=True
+    main_anchor=selected
     selected_main=main_key(main_anchor)
     same_main={r['digest']for r in rows if main_key(r)==selected_main}
     relevant={group_key(r) for r in rows if r['digest']in same_main}
@@ -127,6 +136,7 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
         card['swap_contexts']=contexts.get(canonical,[])
     stats_rows=rows if history_digests is None else [r for r in rows if r['digest'] in history_digests]
     return dict(generated_at=now, person=dict(person, deck_type=selected['deck_type']),
+                build_first_game_anchor=anchored_to_first, build_missing_first_game=missing_first_game,
                 roster={k: v for k, v in basis['roster'].items() if k != 'members'},
                 selected=dict(digest=selected['digest'], build=selected['build'], recorded_at=selected['recorded_at'],
                               expires_at=selected['expires_at'], observation_kind=person['observation_kind'] if selected['digest'] == latest[player]['digest'] else 'historical_observation'),
