@@ -1,0 +1,262 @@
+"""百鸽查卡：保留搜索歧义，按用户隔离候选，纯标准库。"""
+from __future__ import annotations
+
+import json
+import re
+import threading
+import time
+import unicodedata
+from collections import OrderedDict
+from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen, build_opener, ProxyHandler
+from html import unescape
+from datetime import date
+
+
+def release_lines(page):
+    """Read the region/pack/date pairs actually displayed by the source."""
+    result = []
+    pattern = r'<i\b[^>]*>\s*(OCG|TCG)\s*</i>\s*<span\b[^>]*class=[\"\x27]pack[\"\x27][^>]*>(.*?)</span>'
+    for region, body in re.findall(pattern, page, re.S | re.I):
+        text = unescape(re.sub(r'<[^>]*>', '', body))
+        match = re.fullmatch(r'\s*([A-Z0-9][A-Z0-9-]{1,40})\s*\((\d{4}-\d{2}-\d{2})\)\s*', text)
+        if not match:
+            continue
+        code, stamp = match.groups()
+        try:
+            date.fromisoformat(stamp)
+        except ValueError:
+            continue
+        line = f'{region.upper()} {code} ({stamp})'
+        if line not in result:
+            result.append(line)
+    return result
+
+
+class CardReply(str):
+    def __new__(cls, text, image_url):
+        result = super().__new__(cls, text)
+        result.image_url = image_url
+        return result
+
+
+def normalize(value):
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value))).casefold()
+
+
+def card_name(card):
+    text = card.get("text") or {}
+    return card.get("cn_name") or text.get("name") or card.get("sc_name") or str(card.get("id", "未知"))
+
+
+class CardSearch:
+    def __init__(self, data_dir: Path, fetch=None, clock=None, release_fetch=None, wall_clock=None):
+        self.alias_path = Path(data_dir) / "card_aliases.json"
+        self.fetch = fetch or self._fetch
+        self.clock = clock or time.monotonic
+        self.sessions = OrderedDict()
+        self.cache = OrderedDict()
+        self.lock = threading.RLock()
+        self.release_fetch = release_fetch or (self._fetch_release if fetch is None else lambda _: '')
+        self.release_cache = OrderedDict()
+        self.wall_clock = wall_clock or time.time
+        self.release_path = Path(data_dir) / 'cache/card-releases.json'
+        self.release_known = OrderedDict()
+        try:
+            if self.release_path.stat().st_size > 512*1024:
+                raise ValueError('release cache too large')
+            document = json.loads(self.release_path.read_text(encoding='utf8'))
+            if document.get('version') != 1 or not isinstance(document.get('cards'), dict):
+                raise ValueError('invalid release cache')
+            for key, record in list(document['cards'].items())[-128:]:
+                lines, checked = record.get('lines'), record.get('checked_at')
+                if not str(key).isdigit() or not 0 < int(key) <= 0xffffffff:
+                    continue
+                if not isinstance(lines, list) or not lines or len(lines)>64:
+                    continue
+                if type(checked) not in (int,float) or not 0 <= checked <= 1e12:
+                    continue
+                valid = True
+                for line in lines:
+                    match = re.fullmatch(r'(?:OCG|TCG) [A-Z0-9][A-Z0-9-]{1,40} \((\d{4}-\d{2}-\d{2})\)', line) if isinstance(line,str) else None
+                    if not match:
+                        valid = False; break
+                    try: date.fromisoformat(match.group(1))
+                    except ValueError: valid = False; break
+                if valid:self.release_known[int(key)] = dict(lines=lines,checked_at=checked)
+        except (OSError,ValueError,AttributeError,TypeError):
+            self.release_known.clear()
+
+    def _save_release_known(self):
+        # Public card metadata only; this is not player/game fact storage.
+        try:
+            self.release_path.parent.mkdir(parents=True,exist_ok=True)
+            payload=dict(version=1,cards={str(k):v for k,v in self.release_known.items()})
+            temporary=self.release_path.with_suffix('.json.tmp')
+            temporary.write_text(json.dumps(payload,ensure_ascii=False),encoding='utf8')
+            temporary.replace(self.release_path)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _fetch_release(card_id):
+        request = Request(f'https://ygocdb.com/card/{int(card_id)}',
+                          headers={'User-Agent':'qq-replay-bot/card-search'})
+        with build_opener(ProxyHandler({})).open(request, timeout=3) as response:
+            body = response.read(2*1024*1024+1)
+        if len(body)>2*1024*1024:
+            raise ValueError('release page too large')
+        return body.decode('utf8')
+
+    def _reply_detail(self, card):
+        # 随机一卡等入口不经过 handle()，这里自己加锁保护 release_cache。
+        with self.lock:
+            card_id = int(card['id'])
+            cached = self.release_cache.get(card_id)
+            note = ''
+            known = self.release_known.get(card_id)
+            if cached and self.clock() < cached[0]:
+                lines, note = cached[1], cached[2]
+            elif known and not cached and 0 <= self.wall_clock()-known['checked_at'] < 86400:
+                lines = known['lines']
+                remaining = 86400-(self.wall_clock()-known['checked_at'])
+                self.release_cache[card_id] = (self.clock()+remaining,lines,note)
+            else:
+                try:
+                    lines = release_lines(self.release_fetch(card_id))
+                    if not lines:raise ValueError('release data not parsed')
+                    self.release_known[card_id] = dict(lines=lines,checked_at=self.wall_clock())
+                    self.release_known.move_to_end(card_id)
+                    while len(self.release_known)>128:self.release_known.popitem(last=False)
+                    self._save_release_known()
+                    ttl = 86400
+                except (OSError, ValueError, TypeError):
+                    lines = known['lines'] if known else []
+                    note = '卡包及发售日期：使用已缓存记录（本次刷新失败）' if lines else '卡包及发售日期：本次读取失败，请稍后重试'
+                    ttl = 30
+                self.release_cache[card_id] = (self.clock()+ttl, lines, note)
+            self.release_cache.move_to_end(card_id)
+            while len(self.release_cache)>128:self.release_cache.popitem(last=False)
+            reply = self._detail(card)
+            extra = '\n'.join(lines)
+            if note:extra += ('\n' if extra else '')+note
+            return CardReply(str(reply)+'\n\n'+extra, reply.image_url)
+
+    @staticmethod
+    def _fetch(path):
+        request = Request("https://ygocdb.com/api/v0/" + path,
+                          headers={"User-Agent": "qq-replay-bot/card-search"})
+        with urlopen(request, timeout=8) as response:
+            body = response.read(4 * 1024 * 1024 + 1)
+        if len(body) > 4 * 1024 * 1024:
+            raise ValueError("response too large")
+        result = json.loads(body.decode("utf-8"))
+        if not isinstance(result, dict):
+            raise ValueError("invalid response")
+        return result
+
+    def _request(self, path):
+        cached = self.cache.get(path)
+        if cached and self.clock() - cached[0] < 3600:
+            return cached[1]
+        result = self.fetch(path)
+        self.cache[path] = (self.clock(), result)
+        self.cache.move_to_end(path)
+        while len(self.cache) > 128:
+            self.cache.popitem(last=False)
+        return result
+
+    def _alias(self, query):
+        aliases = {"灰": "灰流丽", "泡影": "无限泡影", "g": "增殖的G"}
+        if self.alias_path.exists():
+            custom = json.loads(self.alias_path.read_text(encoding="utf-8-sig"))
+            if not isinstance(custom, dict) or any(not isinstance(v, (str, int)) or isinstance(v, bool) for v in custom.values()):
+                raise ValueError("invalid aliases")
+            aliases.update({normalize(k): str(v) for k, v in custom.items()})
+        return aliases.get(normalize(query), query)
+
+    @staticmethod
+    def _detail(card):
+        card_id = int(card["id"])
+        text = card.get("text") or {}
+        lines = [card_name(card), f"卡片密码：{card_id:08d}"]
+        for name in (card.get("sc_name") or text.get("sc_name"), card.get("md_name") or text.get("md_name")):
+            if name and name not in lines:
+                lines.append(name)
+        for field in ("types", "pdesc", "desc"):
+            if text.get(field):
+                lines.append(str(text[field])[:7000])
+        lines.append(f"百鸽：https://ygocdb.com/card/{card_id}")
+        return CardReply("\n\n".join(lines), f"https://cdn.233.momobako.com/ygopro/pics/{card_id}.jpg")
+
+    def handle(self, user, action, value=""):
+        # handle_text 在线程中执行；保护候选和缓存，避免同一用户并发串页。
+        with self.lock:
+            try:
+                return self._handle(str(user), action, value)
+            except (OSError, ValueError, KeyError, TypeError):
+                return "查卡暂时失败：请稍后重试。若编辑过 data/card_aliases.json，请检查它是合法的外号到卡名或密码的 JSON 对象。"
+
+    def _handle(self, user, action, value):
+        now = self.clock()
+        for key in list(self.sessions):
+            if now - self.sessions[key]["time"] >= 300:
+                del self.sessions[key]
+        if action == "select":
+            session = self.sessions.get(user)
+            if not session:
+                return "查卡候选已过期或不存在，请先发送“查卡 关键词”。"
+            index = int(value) - 1
+            if index < 0 or index >= len(session["rows"]):
+                return "序号不在当前候选范围内，请使用列表中的序号。"
+            return self._reply_detail(session["rows"][index])
+        if action == "next":
+            session = self.sessions.get(user)
+            if not session:
+                return "查卡候选已过期或不存在，请先发送“查卡 关键词”。"
+            if session["offset"] < len(session["rows"]):
+                session["offset"] += 5
+                if session["offset"] < len(session["rows"]):
+                    return self._list(session)
+            if not session["next"]:
+                session["offset"] = max(0, ((len(session["rows"]) - 1) // 5) * 5)
+                return "已经是最后一页。\n" + self._list(session)
+            query, start = session["query"], session["next"]
+        else:
+            if not value.strip() or len(value) > 100:
+                return "格式：查卡 关键词（最多100字），例如：查卡 闪刀。"
+            query, start = self._alias(value.strip()), 0
+        result = self._request("?" + urlencode({"search": query, "start": start}))
+        rows = result.get("result")
+        if not isinstance(rows, list):
+            raise ValueError("missing results")
+        rows = [r for r in rows if isinstance(r, dict) and str(r.get("id", "")).isdigit()]
+        if not rows:
+            return "没有找到卡片，请换卡名片段、多关键词或卡片密码；外号可在 data/card_aliases.json 中补充。"
+        if action != "next":
+            matches = [r for r in rows if normalize(query) in {
+                normalize(r.get(k, "")) for k in ("id", "cid", "cn_name", "sc_name", "md_name", "nwbbs_n", "cnocg_n", "jp_name", "en_name")
+            }]
+            if len(matches) == 1:
+                self.sessions.pop(user, None)
+                return self._reply_detail(matches[0])
+            if len(rows) == 1 and not result.get("next"):
+                self.sessions.pop(user, None)
+                return self._reply_detail(rows[0])
+        session = {"query": query, "rows": rows[:100], "offset": 0,
+                   "next": int(result.get("next") or 0), "time": now}
+        self.sessions[user] = session
+        self.sessions.move_to_end(user)
+        while len(self.sessions) > 1000:
+            self.sessions.popitem(last=False)
+        return self._list(session)
+
+    @staticmethod
+    def _list(session):
+        offset = session["offset"]
+        lines = [f"“{session['query']}”的候选："]
+        lines += [f"{i + 1}. {card_name(card)}（{int(card['id']):08d}）"
+                  for i, card in enumerate(session["rows"]) if offset <= i < offset + 5]
+        lines.append("5分钟内发送“选卡1”或“选卡 1”查看；发送“查卡下一页”翻页。序号对应你在当前会话中的列表；群内这些指令无需@。")
+        return "\n".join(lines)

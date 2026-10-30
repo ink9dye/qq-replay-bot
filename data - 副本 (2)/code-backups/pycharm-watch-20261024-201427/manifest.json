@@ -1,0 +1,38 @@
+[
+  {
+    "path": "watch.py",
+    "sha256": "087ef65075fa4503d5f38222c3f031d71e3d33e69af70db84752aa6362fee888"
+  },
+  {
+    "path": "bot/main.py",
+    "sha256": "5ad49c7fc893b0190fb3a4c862a96c092e62cf31a26fa336e604895e856fd1c4"
+  },
+  {
+    "path": "bot/service.py",
+    "sha256": "9becfd1faac7adadf275399163be55bed01ee5538ee116858831eb0a4e2f20fe"
+  },
+  {
+    "path": "bot/share.py",
+    "sha256": "98f99669ed71751d3a93aaa8bde49659d1ba5186d49d7270c237418fa00b720c"
+  },
+  {
+    "path": "bot/pycharm_link.py",
+    "sha256": "a8d73a8278a9a3cb9b1b2023a3babe4b3b3bd103a811d32c4c7bd5d391414847"
+  },
+  {
+    "path": "bot/watch_targets.py",
+    "sha256": "1910563ad0df39ac5d090b2744dbbd54c3d9410d6a0fd08b4d683dde7b09c363"
+  },
+  {
+    "path": "start.bat",
+    "sha256": "e70b21f78df6780fdc92b9b75ec6c6735b7d406e17539b384106544bf95efeb8"
+  },
+  {
+    "path": ".idea/runConfigurations/watch_all.xml",
+    "sha256": "d098b1b757f2f234e68090c8a14f72187f89b5d2618ebb1e45b215fd46a6a701"
+  },
+  {
+    "path": "tests/test_pycharm_link.py",
+    "sha256": "5b160e9d4416901d35e9454e9e7e0497a3191e9a6b39d1a7a17aeccfe20da531"
+  }
+]

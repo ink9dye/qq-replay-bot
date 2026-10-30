@@ -1,0 +1,2 @@
+# 只使用 Python 3.9 及以上的标准库，不需要 pip install。
+# 运行：python -m bot.main

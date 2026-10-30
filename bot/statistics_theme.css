@@ -1,0 +1,40 @@
+:root{
+  --p10-bg:#f4f5f1;--p10-surface:#ffffff;--p10-ink:#22322b;--p10-muted:#5e6f65;
+  --p10-line:#dbe2d8;--p10-accent:#3f6b52;--p10-accent-soft:#edf2e9;--p10-focus:#2f5d45;
+  --p10-c0:#c9c4b6;--p10-c1:#8fa7b6;--p10-c2:#c3ae86;--p10-c3:#b08b88;--p10-unknown:#a49ab0;
+}
+body{background:var(--p10-bg);color:var(--p10-ink)}
+h1{font-size:26px;line-height:1.35;margin:16px 0 10px;letter-spacing:.2px}
+h2{font-size:19px;line-height:1.5;margin:0 0 10px}
+h3{font-size:16px;line-height:1.5;margin:0 0 8px}
+.note,.counts{color:var(--p10-muted);font-size:13px;line-height:1.75}
+.panel{background:var(--p10-surface);border:1px solid var(--p10-line);border-radius:12px;padding:20px 22px;margin-bottom:18px}
+button{background:var(--p10-accent);color:#fff;border:1px solid transparent;border-radius:8px;padding:10px 16px}
+button.secondary{background:var(--p10-accent-soft);color:#2f4a3a;border-color:#cfdacb}
+button[aria-pressed=true]{background:#33513f;color:#fff;border-color:#33513f;box-shadow:inset 0 -3px 0 #cfe0c0;font-weight:700}
+button:disabled,button[aria-disabled=true],input:disabled,select:disabled{opacity:.55;cursor:not-allowed;border-style:dashed}
+input,select{border:1px solid #cbd6c9;border-radius:8px;padding:9px 10px;background:#fff;color:#22322b}
+:focus-visible{outline:3px solid var(--p10-focus);outline-offset:2px;border-radius:4px}
+a:focus-visible{outline:3px solid var(--p10-focus);outline-offset:3px}
+a[aria-current=page]{text-decoration:underline;text-underline-offset:6px;text-decoration-thickness:2px}
+.pie-panel{min-width:0}
+.pie-wrap{display:grid;grid-template-columns:minmax(110px,150px) minmax(0,1fr);gap:14px;align-items:center;min-width:0}
+.pie{width:min(100%,150px);aspect-ratio:1;border-radius:50%;margin:0 auto;border:1px solid var(--p10-line)}
+.pie-legend{list-style:none;margin:0;padding:0;display:grid;gap:8px;min-width:0}
+.pie-legend li{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:10px;align-items:center;font-size:13px;color:var(--p10-ink);min-width:0}
+.pie-legend .swatch{width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.18)}
+.pie-legend .value{font-variant-numeric:tabular-nums;color:var(--p10-muted);white-space:normal;overflow-wrap:anywhere;text-align:right}
+.segment{color:#26332c;font-weight:600}
+.chart-line{grid-template-columns:150px minmax(180px,1fr) 170px}
+@media (max-width:1040px){
+  .pie-wrap{grid-template-columns:1fr;gap:14px}
+  .pie{width:min(100%,210px)}
+  .chart-line{grid-template-columns:120px minmax(150px,1fr) 150px;gap:10px}
+  .panel{padding:18px}
+  h1{font-size:24px}
+}
+.legend span{color:#22322b;font-weight:600}
+
+.card-chips span{max-width:100%;overflow-wrap:anywhere;display:inline-flex;align-items:center;gap:4px}
+.card-name,.card-view h2{overflow-wrap:anywhere}
+.deck-card .caption{overflow-wrap:anywhere}

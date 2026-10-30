@@ -1,0 +1,1 @@
+(()=>{const p=location.pathname;let active=p.includes('card')||p.includes('investment')?'/statistics/card-table':p.includes('matrix')?'/statistics/matrix':p.includes('recording')?'/statistics/recordings':'/statistics';for(const a of document.querySelectorAll('body>.main-nav a')){if(a.getAttribute('href')===active)a.setAttribute('aria-current','page')}})();

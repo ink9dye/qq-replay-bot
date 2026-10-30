@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "path": "atomic-facts-20261025-172305\\bot.sqlite3",
+      "sha256": "d0bf5462a3975fa5ec3e525ac295d6bb8290421facc8eab05dda97dcc06c1201",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "atomic-facts-deployment.json",
+      "expiry_source": "earliest_contained_original_expiry"
+    },
+    {
+      "path": "build-classification-20261025-175309\\bot.sqlite3",
+      "sha256": "cf2674a3b5e26191f522cd407f7e5e716d2b055c89393042fdc20f7b05ba9e70",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "build-classification-deployment.json",
+      "expiry_source": "earliest_contained_original_expiry"
+    },
+    {
+      "path": "card-statistics-20261025-180800\\bot.sqlite3",
+      "sha256": "c3d0c0f940bc1d7a5cb9458865c974fe3d858b29256b3e1e3c5b5955eb936f4c",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "card-statistics-deployment.json",
+      "expiry_source": "earliest_contained_original_expiry"
+    },
+    {
+      "path": "dynamic-top100-20261025-174324\\bot.sqlite3",
+      "sha256": "fc3b5292100e03f9db963451b8fa4c863491cefe9f7c4b273423e3f2b9dbc98f",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "dynamic-top100-deployment.json",
+      "expiry_source": "earliest_contained_original_expiry"
+    },
+    {
+      "path": "pilot-files-20261025-165149\\10-07 “久 远”（17）【列车ftk】vs“葬夜”（1）【混沌道化】.yrp",
+      "sha256": "67fdfcd4e2364c96e6b1faf8df1860c44fed2d9ed168d3f5304886d5e173edc7",
+      "expires_at": 1794105230.1994705,
+      "proof_manifest": "pilot-files-recovered.json",
+      "expiry_source": "original_saved_at_from_copy_manifest"
+    },
+    {
+      "path": "pilot-files-20261025-165149\\10-22 “久 远”（17）【列车ftk】vs“葬夜”（1）【混沌道化】.yrp",
+      "sha256": "250de3728bf933e0d3439c0fad608865d8d453944051cf478990082a92a3fa2e",
+      "expires_at": 1794105230.2039905,
+      "proof_manifest": "pilot-files-recovered.json",
+      "expiry_source": "original_saved_at_from_copy_manifest"
+    },
+    {
+      "path": "pilot-files-20261025-165149\\10-23 “久 远”（17）【列车ftk】vs“葬夜”（1）【混沌道化】.yrp",
+      "sha256": "63fe925594d1bd7bbec7c66ba2f517bfca2d5d2418487e7af5b12e769d93eff2",
+      "expires_at": 1794105230.208988,
+      "proof_manifest": "pilot-files-recovered.json",
+      "expiry_source": "original_saved_at_from_copy_manifest"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1\\preview-data\\preview.sqlite3",
+      "sha256": "2a8c5af4b19e1144088ff271ec893e963a454107facb5f7155c2ec33cfa17b6a",
+      "expires_at": 1794024537.0544145,
+      "expiry_source": "original_production_digest",
+      "producer": "phase1/tools/preview_replay_analysis.py"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1\\preview-data\\preview.sqlite3-wal",
+      "sha256": "9f48f0d703626e68417b825006ffac2478dba8f1bd56d209690347874bbb19fc",
+      "expires_at": 1794024537.0544145,
+      "expiry_source": "original_production_digest",
+      "producer": "phase1/tools/preview_replay_analysis.py"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1\\preview-data\\preview.sqlite3-shm",
+      "sha256": "6a85c75db547747b0982b2b014f924618a1d46a34d881f72441afce5755abd81",
+      "expires_at": 1794024537.0544145,
+      "expiry_source": "original_production_digest",
+      "producer": "phase1/tools/preview_replay_analysis.py"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1\\preview-data\\replays\\sample.yrp",
+      "sha256": "3e3c406f0019ff81c4ce6fa5d43fd8839d391d8052d57840fb3a9a197e4e7fbc",
+      "expires_at": 1794024537.0544145,
+      "expiry_source": "original_production_digest",
+      "producer": "phase1/tools/preview_replay_analysis.py"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1\\preview-data\\replays\\sample.yrp.analysis.json",
+      "sha256": "687f3a199035756c91acf0bcb260877439ced2497a7a0576ec2331c3c28fffcf",
+      "expires_at": 1794024537.0544145,
+      "expiry_source": "original_production_digest",
+      "producer": "phase1/tools/preview_replay_analysis.py"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "match-page-preview\\preview.sqlite3",
+      "sha256": "109af4d57a593c20fa0d1ffb6de52dae5e0c0f7f91326a7319b81e4eb86ee7a0",
+      "expires_at": 1793865865.1788337,
+      "expiry_source": "original_cloned_saved_at",
+      "producer": "preview_match_page.py"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "match-page-preview\\preview.sqlite3-wal",
+      "sha256": "e6f2f6c570168ad129539922fd714e334af6b69d94c1d2af6a202a34a9b603ca",
+      "expires_at": 1793865865.1788337,
+      "expiry_source": "original_cloned_saved_at",
+      "producer": "preview_match_page.py"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "match-page-preview\\preview.sqlite3-shm",
+      "sha256": "def717b17e4e8327afc09a4efd99c99a747ed8252787a0f48e4c4c7cb77e53ed",
+      "expires_at": 1793865865.1788337,
+      "expiry_source": "original_cloned_saved_at",
+      "producer": "preview_match_page.py"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1/preview-data/feature65-evidence/feature65-card-metrics-live.png",
+      "sha256": "d9bd7463e52bc0c11499169e039e218217519ad78ef592b353339546cac33d08",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "workflow-results/feature65-live-validation.json",
+      "expiry_source": "conservative_earliest_unexpired_original_fact_expiry",
+      "owner": "this_chat_feature65_screenshots"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1/preview-data/feature65-evidence/feature65-build-live.png",
+      "sha256": "1d8cb1692b80791dbf4e4116c8d0ba2b3b81dc08966f2dcac3f9f25bbf27d3d5",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "workflow-results/feature65-live-validation.json",
+      "expiry_source": "conservative_earliest_unexpired_original_fact_expiry",
+      "owner": "this_chat_feature65_screenshots"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1/preview-data/feature65-evidence/feature65-side-live.png",
+      "sha256": "294a785b6f1d964e13bb3536128144ea2357382f6168b98f11bbcf8cb771cf97",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "workflow-results/feature65-live-validation.json",
+      "expiry_source": "conservative_earliest_unexpired_original_fact_expiry",
+      "owner": "this_chat_feature65_screenshots"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1/preview-data/feature65-evidence/feature65-build-mobile.png",
+      "sha256": "5a25c34f2ec90e4c9b15794ae439ba35630365d2fd36d8c6654162e881c33956",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "workflow-results/feature65-live-validation.json",
+      "expiry_source": "conservative_earliest_unexpired_original_fact_expiry",
+      "owner": "this_chat_feature65_screenshots"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1/preview-data/feature65-evidence/feature65-match-swaps-live.png",
+      "sha256": "459333c56999ad299a6f925534101ce34c76d8e9b46f67db113afc0586f4b923",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "workflow-results/feature65-live-validation.json",
+      "expiry_source": "conservative_earliest_unexpired_original_fact_expiry",
+      "owner": "this_chat_feature65_screenshots"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1/preview-data/ui20-evidence/build-compact.png",
+      "sha256": "71a36c01bdb36b9ef8d8556f5269534b0bb13c953ff848ef8a6dbd93792b3ef5",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "workflow-results/ui20-browser-validation.json",
+      "expiry_source": "conservative_earliest_unexpired_original_fact_expiry",
+      "owner": "this_chat_ui20_screenshot"
+    },
+    {
+      "scope": "workspace_validation",
+      "path": "phase1/preview-data/main-draw-evidence/build-history.png",
+      "sha256": "50e65797a85e717b557e2c6097b888d8cc54aa6d0ea9dbb76cb8fc0e4bcddb49",
+      "expires_at": 1793464704.2057736,
+      "proof_manifest": "workflow-results/main-draw-browser-20261027.json",
+      "owner": "this_chat_main_draw_screenshot",
+      "expiry_source": "earliest_original_unexpired_fact_deadline"
+    }
+  ]
+}

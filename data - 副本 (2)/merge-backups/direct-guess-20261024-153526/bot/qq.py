@@ -1,0 +1,360 @@
+# -*- coding: utf-8 -*-
+"""连接本机 NapCat：私聊指令，以及可选的群内 @ 指令。"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from collections import deque
+from typing import Optional
+
+from .watch_core import WebSocketClient
+from .account_guard import AccountMismatch, verify_transport_account
+
+
+def connection_hint(exc: Exception) -> str:
+    """只返回固定提示，不把响应原文、URL 参数或密钥写进日志。"""
+    if isinstance(exc, AccountMismatch):
+        return str(exc)
+    if "401" in str(exc) or "403" in str(exc):
+        return "Token 验证失败，请使用 Websocket Server 的 Token，而非网页登录密码。"
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return "连接或响应超时，请检查 NapCat 是否运行、工具号是否在线。"
+    if isinstance(exc, ConnectionRefusedError):
+        return "连接被拒绝，请启动 NapCat 并启用 127.0.0.1:3001 的 WebSocket 服务端。"
+    return "连接断开或无法建立，请检查 NapCat 和接口设置。"
+
+
+class NapCatTransport:
+    def __init__(self, url: str, token: str):
+        if any(char in (token or "") for char in "\r\n"):
+            raise RuntimeError("接口 Token 无效")
+        self.url = url
+        self.token = token
+        self.client: Optional[WebSocketClient] = None
+
+    async def connect(self) -> None:
+        await self.close()
+        self.client = WebSocketClient(self.url)
+        try:
+            await self.client.connect({"Authorization": "Bearer " + self.token})
+        except BaseException:
+            await self.close()
+            raise
+
+    async def recv_text(self) -> Optional[str]:
+        if self.client is None:
+            return None
+        return await self.client.recv_text()
+
+    async def send_text(self, text: str) -> None:
+        if self.client is None:
+            raise ConnectionError("尚未连接")
+        await self.client.send_text(text)
+
+    async def close(self) -> None:
+        if self.client is not None:
+            await self.client.close()
+            self.client = None
+
+
+def event_text(event: dict) -> str:
+    message = event.get("message")
+    if isinstance(message, str):
+        return message
+    if isinstance(message, list):
+        parts = []
+        for segment in message:
+            if isinstance(segment, dict) and segment.get("type") == "text":
+                data = segment.get("data") or {}
+                parts.append(str(data.get("text") or ""))
+        return "".join(parts)
+    raw = event.get("raw_message")
+    return raw if isinstance(raw, str) else ""
+
+
+def group_command_text(event: dict, allow_commands: bool = False) -> Optional[str]:
+    """支持明确指令免@；普通聊天、仅@别人或@全体不触发。"""
+    self_id = str(event.get("self_id") or "")
+    group_id = str(event.get("group_id") or "")
+    if not self_id.isdigit() or not group_id.isdigit() or int(group_id) <= 0:
+        return None
+    message = event.get("message")
+    if isinstance(message, list):
+        mentioned = any(
+            isinstance(segment, dict) and segment.get("type") == "at"
+            and str((segment.get("data") or {}).get("qq")) == self_id
+            for segment in message
+        )
+        if mentioned:
+            return event_text(event).strip() or "帮助"
+        if any(isinstance(segment, dict) and segment.get('type') == 'at' for segment in message):
+            return None
+    if isinstance(message, str):
+        at = re.compile(r"\[CQ:at,qq=([0-9]+|all)(?:,[^\]]*)?\]")
+        if any(match.group(1) == self_id for match in at.finditer(message)):
+            return at.sub("", message).strip() or "帮助"
+        if at.search(message):
+            return None
+    if allow_commands:
+        from .commands import parse_command
+        text = event_text(event).strip()
+        if parse_command(text).get('op') not in ('empty', 'unknown'):
+            return text
+    return None
+
+
+class OneBotClient:
+    def __init__(self, url: str, token: str, on_event, transport=None, pause=None, timeout: float = 8, on_status=None, accept_group_messages: bool = False, expected_self_id=None, account_probe=None, allow_unmentioned_commands: bool = False):
+        self.url = url
+        self.token = token
+        self.on_event = on_event
+        self.transport = transport if transport is not None else NapCatTransport(url, token)
+        self.pause = pause or asyncio.sleep
+        self.timeout = timeout
+        self.disconnects = 0
+        self.connected = False
+        self._stopped = False
+        self._seen: set[str] = set()
+        self._seen_order: deque[str] = deque()
+        self._pending: dict[str, asyncio.Future] = {}
+        self._echo = 0
+        self.on_status = on_status
+        self.accept_group_messages = accept_group_messages
+        self.allow_unmentioned_commands = allow_unmentioned_commands
+        self.expected_self_id = str(expected_self_id or '')
+        self.account_probe = account_probe
+        self._dispatch_tasks: set[asyncio.Task] = set()
+
+    def stop(self) -> None:
+        self._stopped = True
+        closer = getattr(self.transport, "close", None)
+        if closer is not None:
+            result = closer()
+            if asyncio.iscoroutine(result):
+                asyncio.get_running_loop().create_task(result)
+
+    def _remember(self, message_id) -> bool:
+        if message_id is None:
+            return False
+        key = str(message_id)
+        if key in self._seen:
+            return True
+        self._seen.add(key)
+        self._seen_order.append(key)
+        while len(self._seen_order) > 4000:
+            self._seen.discard(self._seen_order.popleft())
+        return False
+
+    async def run(self) -> None:
+        delay = 1.0
+        try:
+            while not self._stopped:
+                failure = None
+                try:
+                    try:
+                        await self.transport.connect()
+                    except Exception:
+                        if self.expected_self_id and self.account_probe:
+                            actual = await asyncio.to_thread(self.account_probe)
+                            if actual and str(actual) != self.expected_self_id:
+                                raise AccountMismatch(self.expected_self_id, actual)
+                        raise
+                    try:
+                        if self.expected_self_id:
+                            await asyncio.wait_for(verify_transport_account(self.transport, self.expected_self_id), timeout=self.timeout)
+                    except BaseException:
+                        await self._close_transport()
+                        raise
+                    self.connected = True
+                    delay = 1.0
+                    if self.on_status:
+                        self.on_status("NapCat 接口已连接，正在接收 QQ 事件。")
+                    await self._read_loop()
+                except Exception as exc:
+                    failure = exc
+                    self.disconnects += 1
+                finally:
+                    was_connected = self.connected
+                    self.connected = False
+                    self._fail_pending(ConnectionError("NapCat 连接已断开"))
+                    if was_connected:
+                        await self._close_transport()
+                if self._stopped:
+                    break
+                if self.on_status and failure is not None:
+                    self.on_status(connection_hint(failure) + f" {delay:g} 秒后重试。")
+                await self.pause(delay)
+                delay = min(delay * 2, 30.0)
+        finally:
+            self.connected = False
+            self._fail_pending(ConnectionError("NapCat 连接已停止"))
+            tasks = list(self._dispatch_tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _close_transport(self) -> None:
+        try:
+            result = self.transport.close()
+            if asyncio.iscoroutine(result):
+                await asyncio.wait_for(result, timeout=2)
+        except Exception:
+            pass
+
+    async def _read_loop(self) -> None:
+        while not self._stopped:
+            raw = await self.transport.recv_text()
+            if raw is None:
+                raise ConnectionError("NapCat 连接已断开")
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            if self.expected_self_id and data.get('self_id') is not None and str(data['self_id']) != self.expected_self_id:
+                raise AccountMismatch(self.expected_self_id, data['self_id'])
+            echo = data.get("echo")
+            if echo is not None and str(echo) in self._pending:
+                future = self._pending.pop(str(echo))
+                if not future.done():
+                    future.set_result(data)
+                continue
+            task = asyncio.create_task(self._dispatch(data))
+            self._dispatch_tasks.add(task)
+            task.add_done_callback(self._dispatch_tasks.discard)
+
+    async def _dispatch(self, event: dict) -> None:
+        if event.get("post_type") != "message":
+            return
+        kind = event.get("message_type")
+        if kind == "group":
+            if not self.accept_group_messages or group_command_text(event, self.allow_unmentioned_commands) is None:
+                return
+        elif kind != "private":
+            return
+        if event.get("self_id") is not None and str(event.get("self_id")) == str(event.get("user_id")):
+            return
+        message_id = event.get("message_id")
+        key = None if message_id is None else f"{kind}:{event.get('group_id') or event.get('user_id')}:{message_id}"
+        if self._remember(key):
+            return
+        try:
+            await self.on_event(event)
+        except Exception:
+            if self.on_status:
+                self.on_status("处理 QQ 指令失败，请检查配置或稍后重试。")
+
+    def _fail_pending(self, exc: Exception) -> None:
+        pending = list(self._pending.items())
+        self._pending.clear()
+        for _echo, future in pending:
+            if not future.done():
+                future.set_exception(exc)
+
+    async def call(self, action: str, params: dict, *, timeout: Optional[float] = None) -> dict:
+        if not self.connected:
+            raise ConnectionError("NapCat 尚未连接")
+        self._echo += 1
+        echo = str(self._echo)
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending[echo] = future
+        payload = json.dumps({"action": action, "params": params, "echo": echo}, ensure_ascii=False)
+        try:
+            await self.transport.send_text(payload)
+            return await asyncio.wait_for(future, timeout=self.timeout if timeout is None else timeout)
+        finally:
+            self._pending.pop(echo, None)
+            if not future.done():
+                future.cancel()
+
+    async def send_private(self, user_id, text: str, retries: int = 3) -> bool:
+        return await self._send_message("send_private_msg", "user_id", user_id, text, retries)
+
+    async def send_group(self, group_id, text: str, retries: int = 3) -> bool:
+        return await self._send_message("send_group_msg", "group_id", group_id, text, retries)
+
+    async def _send_message(self, action, destination, receiver, text, retries):
+        params = {
+            destination: int(receiver) if str(receiver).isdigit() else str(receiver),
+            "message": text,
+            "auto_escape": True,
+        }
+        image_url = getattr(text, "image_url", None)
+        if image_url:
+            try:
+                response = await self.call(action, {
+                    destination: params[destination],
+                    "message": [
+                        {"type": "text", "data": {"text": str(text)}},
+                        {"type": "image", "data": {"file": image_url}},
+                    ],
+                })
+                if int(response.get("retcode", -1)) == 0:
+                    return True
+            except Exception:
+                pass
+            # 卡图下载或发送失败时仍提供文字和原图链接。
+            fallback = getattr(text, "image_fallback", None)
+            if fallback is None:
+                fallback = ('\n图片发送失败，请稍后重试。' if image_url.startswith('base64://')
+                            else "\n卡图：" + image_url)
+            params["message"] = str(text) + fallback
+        for attempt in range(retries):
+            try:
+                result = await self.call(action, params)
+                if int(result.get("retcode", -1)) == 0:
+                    return True
+            except Exception:
+                pass
+            if attempt + 1 < retries:
+                await self.pause(0.2 * (attempt + 1))
+        return False
+
+    async def send_private_forward(self, user_id, cards: list[str], self_id=None) -> bool:
+        return await self._send_forward("send_private_forward_msg", "user_id", user_id, cards, self_id)
+
+    async def send_group_forward(self, group_id, cards: list[str], self_id=None) -> bool:
+        return await self._send_forward("send_group_forward_msg", "group_id", group_id, cards, self_id)
+
+    async def _send_forward(self, action, destination, receiver, cards, self_id):
+        try:
+            if not str(self_id or '').isdigit():
+                info = await self.call('get_login_info', {})
+                if int(info.get('retcode', -1)) != 0:
+                    return False
+                self_id = (info.get('data') or {}).get('user_id')
+            if not str(self_id or '').isdigit():
+                return False
+            result = await self.call(action, {
+                destination: int(receiver),
+                'messages': [{'type': 'node', 'data': {
+                    'name': '录像订阅助手', 'uin': str(self_id),
+                    'content': [{'type': 'text', 'data': {'text': card}}],
+                }} for card in cards],
+                'source': '游戏王机器人',
+                'summary': str(cards[0])[:80] if cards else '查询结果',
+                'prompt': '[聊天记录] 游戏王机器人',
+                'news': [{'text': str(cards[0])[:80]}] if cards else [],
+                'timeout': 25000,
+            }, timeout=30)
+            return int(result.get('retcode', -1)) == 0
+        except Exception:
+            return False
+
+    async def send_group_notice(self, group_id, user_id, text: str) -> bool:
+        """发送带有用户提及的群内提示。"""
+        try:
+            response = await self.call("send_group_msg", {
+                "group_id": int(group_id),
+                "message": [
+                    {"type": "at", "data": {"qq": str(user_id)}},
+                    {"type": "text", "data": {"text": " " + text}},
+                ],
+            })
+            return int(response.get("retcode", -1)) == 0
+        except Exception:
+            return False

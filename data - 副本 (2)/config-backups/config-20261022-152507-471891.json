@@ -1,0 +1,37 @@
+{
+  "_comment": "复制本文件为 config.json 后再填写。以 _ 开头的字段会被忽略。不要把密码、Token 发到聊天里。",
+  "ygopro_dir": "D:\\MyCardLibrary\\ygopro",
+  "data_dir": "D:\\pythons\\qq-replay-bot\\data",
+  "mycard": {
+    "_comment": "账号密码只留在本机 config.json。host 留空时使用萌卡竞技服 tiramisu.moenext.com:8911。",
+    "host": "tiramisu.moenext.com",
+    "port": 8911,
+    "version": "0x1362",
+    "nickname": "",
+    "account": "",
+    "password": "",
+    "mycard_secret": null
+  },
+  "qq": {
+    "_comment": "access_token 是 NapCat 正向 WebSocket 的接口令牌。webui_password 只供你登录 NapCat 网页，机器人不会使用它，也不会写进日志。admins 和 users 都是允许订阅和查看录像的 QQ 号。",
+    "onebot_ws": "ws://127.0.0.1:3001",
+    "access_token": "ICJ4pW1mYK.0fhSZ",
+    "webui_password": "",
+    "admins": [],
+    "users": []
+  },
+  "share": {
+    "_comment": "分享服务只绑定本机。public_base_url 填隧道给出的 https 地址，不要填 127.0.0.1。link_hours 是链接有效小时数。",
+    "bind_host": "127.0.0.1",
+    "bind_port": 8787,
+    "public_base_url": "",
+    "link_hours": 5
+  },
+  "watch": {
+    "poll_seconds": 5,
+    "max_concurrent": 2,
+    "join_after_min_seconds": 120,
+    "join_after_max_seconds": 240,
+    "watch_waiting_rooms": true
+  }
+}

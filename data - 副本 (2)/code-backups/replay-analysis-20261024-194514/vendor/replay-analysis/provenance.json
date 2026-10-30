@@ -1,0 +1,12 @@
+[
+  {
+    "file": "core.zip",
+    "url": "https://codeload.github.com/Fluorohydride/ygopro-core/zip/refs/heads/master",
+    "sha256": "993665a886d2af51e85660291320320e62c4e4e7be6684e7f673f7786cd008cf"
+  },
+  {
+    "file": "lua.tar.gz",
+    "url": "https://www.lua.org/ftp/lua-5.4.8.tar.gz",
+    "sha256": "4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae"
+  }
+]

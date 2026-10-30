@@ -1,0 +1,18 @@
+{
+  "files": [
+    "bot/main.py",
+    "bot/qq.py",
+    "bot/service.py",
+    "bot/store.py",
+    "bot/watch_core.py",
+    "bot/setup.py",
+    "tests/test_setup_and_runtime.py",
+    "setup.bat",
+    "doctor.bat",
+    "start.bat",
+    "config.example.json",
+    "README.md",
+    ".gitignore"
+  ],
+  "token_corrected": false
+}

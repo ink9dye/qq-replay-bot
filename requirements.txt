@@ -1,0 +1,3 @@
+# Python 3.9及以上。观战与基础机器人使用标准库，竞技历史走势图需要matplotlib。
+# 运行：python -m bot.main
+matplotlib>=3.5
