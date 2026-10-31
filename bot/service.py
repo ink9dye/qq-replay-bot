@@ -15,7 +15,7 @@ from .account_guard import webui_login_id
 from .card_search import CardSearch
 from .player_history import PlayerHistory
 from .commands import HELP, parse_command
-from .help import help_cards
+from .roles import normalize_roles
 from .replay_window import REPLAY_WINDOW_SECONDS, replay_in_window
 from .qq import OneBotClient, event_text, group_command_text
 from .share import ShareApp, ShareServer, format_time, safe_replay_file
@@ -78,8 +78,39 @@ def subscription_accepts(sub: dict, replay: dict) -> bool:
     return any(rank_is_within(replay["ranks"].get(name), int(sub["rank_top"])) for name in opponents)
 
 
+def join_mode_value(value) -> str:
+    """房间口令模式：auto（有凭证用萌卡口令）/ plain（口令=房间号）/ mycard。"""
+    mode = str(value or "").strip().lower()
+    return mode if mode in ("auto", "plain", "mycard") else "auto"
+
+
+def url_items(value) -> list[str]:
+    """房间列表/推送地址只接受非空字符串；配置写错时宁可为空，也不猜。"""
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def room_items(value) -> list:
+    """直连房间只接受房间号字符串或 {id,title} 字典。"""
+    if not isinstance(value, list):
+        return []
+    rooms = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            rooms.append(item.strip())
+        elif isinstance(item, dict):
+            room_id = str(item.get("id") or "").strip()
+            title = str(item.get("title") or "").strip()
+            if room_id or title:
+                rooms.append({"id": room_id, "title": title or room_id})
+    return rooms
+
+
 class BotService:
-    def __init__(self, config: dict, root: Path, clock=None):
+    def __init__(self, config: dict, root: Path, clock=None, roles=None):
+        # roles=None 仍是全开；拆分后每个进程只跑自己的任务，但共用同一个库。
+        self.roles = normalize_roles(roles)
         self.config = config
         self.root = Path(root)
         self.data_dir = Path(config.get("data_dir") or (self.root / "data"))
@@ -93,22 +124,15 @@ class BotService:
         self.log_path = self.data_dir / "logs" / "bot.log"
         self.clock = system_clock if clock is None else clock
         self.store = Store(self.data_dir / "bot.sqlite3")
-        # 旧版把每局开局时间当成收录时间。现有录像按落盘时间补齐，旧分享快照保持不变。
-        legacy = []
-        for replay in self.store.legacy_replays():
-            path = safe_replay_file(self.replay_root, replay["rel_path"])
-            saved_at = path.stat().st_mtime if path is not None else replay["recorded_at"]
-            legacy.append((float(saved_at), int(replay["id"])))
-        if legacy:
-            self.store.backfill_saved_times(legacy)
-        from .match_history import recover_legacy_sessions
-        recover_legacy_sessions(self.store, self.replay_root, self.deck_dir)
         self._fact_signatures = {}
         self._top100_enabled = bool(config.get('_pycharm_watch_entry')) and (config.get('statistics') or {}).get('top100_enabled', True) is not False
         self._capture_status_written = 0.0
         self._classification_rules_signature = None
-        self.index_existing_replays()
-        self.sync_replay_facts()
+        # 事实/录像索引只由观战进程写（设计：只有 collector 写事实库）。
+        # 拆分后的 QQ 进程只读同一份库，启动时不再扫描录像、不再补写事实表，
+        # 这样重启 QQ 窗口不会和正在录的观战抢写锁；M3 再把 QQ 的写请求交给 collector。
+        if "watch" in self.roles:
+            self.index_collector_data()
         share_cfg = config.get("share") or {}
         qq_cfg = config.get("qq") or {}
         self.link_hours = float(share_cfg.get("link_hours") or 5)
@@ -132,9 +156,7 @@ class BotService:
         self.tunnel = None
         self._public_status = None
         if share_cfg.get("quick_tunnel") is True:
-            from .tunnel import QuickTunnel
-            self.tunnel = QuickTunnel(self.root, self.data_dir, self.share.local_base(),
-                                      int(share_cfg.get("tunnel_metrics_port", 47879)))
+            self.tunnel = self.build_tunnel(share_cfg)
             self.share.public_url_provider = self.tunnel.current_url
         self.admins = {str(item) for item in (qq_cfg.get("admins") or [])}
         self.users = {str(item) for item in (qq_cfg.get("users") or [])}
@@ -147,7 +169,7 @@ class BotService:
         self._guess_reveal_lock: Optional[asyncio.Lock] = None
         self.card_search = CardSearch(self.data_dir)
         self.card_extras = CardExtras(self.data_dir, self.card_search)
-        self.player_history = PlayerHistory()
+        self.player_history = PlayerHistory(log=self.write_log)
 
     def authorized(self, user_id) -> bool:
         text = str(user_id)
@@ -197,6 +219,25 @@ class BotService:
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(line)
 
+    def build_tunnel(self, share_cfg: dict):
+        """按 share.tunnel_mode 选隧道：缺省 ssh（localhost.run）；cpolar 是候选实现。
+
+        两种对象都提供 ensure_started / current_url / last_error / origin，QQ 进程只读它们的地址。
+        免费版只允许 1 条隧道，所以 cpolar 用 data/cpolar-tunnel.lock 防重复启动。
+        """
+        from .cpolar_tunnel import resolve_mode
+        try:
+            mode = resolve_mode(share_cfg)
+        except ValueError:
+            mode = "ssh"
+            self.write_log("share.tunnel_mode 配置无效，按 ssh 隧道处理。")
+        if mode == "cpolar":
+            from .cpolar_runtime import CpolarTunnel
+            return CpolarTunnel(self.root, self.data_dir, self.share.local_base(), share_cfg)
+        from .tunnel import QuickTunnel
+        return QuickTunnel(self.root, self.data_dir, self.share.local_base(),
+                           int(share_cfg.get("tunnel_metrics_port", 47879)))
+
     def watch_config(self) -> dict:
         mycard = self.config.get("mycard") or {}
         watch = self.config.get("watch") or {}
@@ -209,12 +250,14 @@ class BotService:
             "account": str(mycard.get("account") or ""),
             "password": str(mycard.get("password") or ""),
             "mycard_secret": mycard.get("mycard_secret"),
-            "join_mode": "auto",
+            "join_mode": join_mode_value(watch.get("join_mode")),
             "name_match": "exact",
             "watch_waiting_rooms": bool(watch.get("watch_waiting_rooms", True)),
-            "direct_rooms": [],
-            "room_list_urls": [],
-            "websocket_urls": [],
+            # 房间来源允许由 config.json 指定（三个都为空时用观战核心自带的萌卡进行中对局列表）。
+            # 只传字符串/房间字典；没配置时与原来完全一致。
+            "direct_rooms": room_items(watch.get("direct_rooms")),
+            "room_list_urls": url_items(watch.get("room_list_urls")),
+            "websocket_urls": url_items(watch.get("websocket_urls")),
             "room_list_username": "",
             "room_list_password": "",
             "replay_dir": str(self.replay_root),
@@ -226,6 +269,20 @@ class BotService:
             "max_queued_rooms": int(watch.get("max_queued_rooms") or 200),
             "join_after_min_seconds": float(watch.get("join_after_min_seconds") or 120),
             "join_after_max_seconds": float(watch.get("join_after_max_seconds") or 240),
+            # 以下三项沿用生产 2026-10-30 23:18 的既有改动（启动时不再一次性扑中途局）。
+            "join_preexisting": bool(watch.get("join_preexisting", False)),
+            "preexisting_join_min_seconds": float(watch.get("preexisting_join_min_seconds") or 1),
+            "preexisting_join_max_seconds": float(watch.get("preexisting_join_max_seconds") or 10),
+            # 进场节流四键：只透传，策略在 bot/join_throttle.py（由 watch.py 消费）。
+            # 用 is not None 判断，允许把间隔/暂停显式配成 0（测试或临时放开）。
+            "max_join_concurrent": int(watch.get("max_join_concurrent")
+                                       if watch.get("max_join_concurrent") is not None else 2),
+            "join_min_interval_seconds": float(watch.get("join_min_interval_seconds")
+                                               if watch.get("join_min_interval_seconds") is not None else 5),
+            "join_fail_threshold": int(watch.get("join_fail_threshold")
+                                       if watch.get("join_fail_threshold") is not None else 3),
+            "join_pause_seconds": float(watch.get("join_pause_seconds")
+                                        if watch.get("join_pause_seconds") is not None else 60),
         }
 
     def current_rules(self) -> tuple[list[str], list[RankRule]]:
@@ -338,6 +395,13 @@ class BotService:
             answer = command.get('text') or ''
             if self.card_extras.is_guess_answer(conversation or user, answer):
                 return self.card_extras.handle(conversation or user, 'guess_answer', answer)
+            # 有查卡候选时：裸数字=选卡，next=下一页；没有候选就不抢这两句。
+            session_key = (conversation + ":" + user) if conversation else user
+            if self.card_search.has_candidates(session_key):
+                if answer.isascii() and answer.isdigit() and len(answer) <= 4:
+                    return self.card_search.handle(session_key, 'select', answer)
+                if answer.casefold() == 'next':
+                    return self.card_search.handle(session_key, 'next')
             player = command.get("text") or ""
             if self.store.get_subscription(user, player):
                 return self._replay_text(user, player)
@@ -510,6 +574,23 @@ class BotService:
             if self._index_replay_file(path, player):
                 indexed += 1
         return indexed
+
+    def index_collector_data(self) -> None:
+        """观战进程启动时补齐旧录像、会话和事实索引；QQ 进程不调用。
+
+        旧版把每局开局时间当成收录时间：这里按落盘时间补齐，旧分享快照保持不变。
+        """
+        legacy = []
+        for replay in self.store.legacy_replays():
+            path = safe_replay_file(self.replay_root, replay["rel_path"])
+            saved_at = path.stat().st_mtime if path is not None else replay["recorded_at"]
+            legacy.append((float(saved_at), int(replay["id"])))
+        if legacy:
+            self.store.backfill_saved_times(legacy)
+        from .match_history import recover_legacy_sessions
+        recover_legacy_sessions(self.store, self.replay_root, self.deck_dir)
+        self.index_existing_replays()
+        self.sync_replay_facts()
 
     def index_existing_replays(self) -> int:
         """扫描录像目录，把已存在但还没索引的录像（例如 watch.py 保存的）加入索引。"""
@@ -706,14 +787,9 @@ class BotService:
         forward = self.qq.send_group_forward if is_group else self.qq.send_private_forward
         conversation = "group:" + str(receiver) if is_group else ""
         if parse_command(text).get('op') == 'help':
-            cards = help_cards()
-            if not self.authorized(str(user_id)):
-                cards.append('你目前没有使用权限，不能订阅或查看录像。')
-            ok = await forward(receiver, cards, event.get('self_id'))
-            if not ok:
-                self.write_log('合并转发帮助发送失败，尝试发送文字版。')
-                reply = '合并转发帮助暂时发送失败，以下为文字版：\n\n' + await asyncio.to_thread(self.handle_text, user_id, text, conversation)
-                ok = await send(receiver, reply)
+            # 帮助是一条分组清单，直接发文字，不再走合并转发。
+            reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+            ok = await send(receiver, reply)
         else:
             reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
             pages = getattr(reply, 'forward_cards', None)
@@ -730,7 +806,9 @@ class BotService:
         while True:
             try:
                 if self.tunnel is not None:
-                    await asyncio.to_thread(self.tunnel.ensure_started)
+                    # 隧道进程归分享服务；QQ 进程只读同一份隧道状态，自己不再开第二条。
+                    if "share" in self.roles:
+                        await asyncio.to_thread(self.tunnel.ensure_started)
                     public_ready = bool(self.share.public_base())
                     status = (public_ready, self.tunnel.last_error)
                     if status != self._public_status:
@@ -783,59 +861,76 @@ class BotService:
                 self.write_log('猜卡自动揭晓发送失败，稍后重试。')
             await asyncio.sleep(1)
 
-    async def run(self) -> None:
-        self.share_server.start()
-        if self.tunnel is not None:
-            self.tunnel.origin = self.share.local_base()
+    async def run(self, roles=None) -> None:
+        # 多进程共用同一个 SQLite：这里不是单写者；M3 才把 QQ 的写请求收敛到 collector。
+        active = self.roles if roles is None else normalize_roles(roles)
+        if "share" in active:
+            self.share_server.start()
+            if self.tunnel is not None:
+                self.tunnel.origin = self.share.local_base()
         for line in self.startup_lines():
             print(line, flush=True)
             self.write_log(line)
-        self.write_log(f"分享服务监听 http://{self.share.bind_host}:{self.share.bind_port}/")
+        if "share" in active:
+            self.write_log(f"分享服务监听 http://{self.share.bind_host}:{self.share.bind_port}/")
         qq_cfg = self.config.get("qq") or {}
         token = str(qq_cfg.get("access_token") or "").strip()
-        tasks = [asyncio.create_task(self.notify_loop()), asyncio.create_task(self.cleanup_loop()),
-                 asyncio.create_task(self.guess_reveal_loop()), asyncio.create_task(self.napcat_watchdog())]
-        if self._top100_enabled:
+        tasks = []
+        # 只按角色裁剪；全开时任务创建顺序与原来完全一致。
+        if "qq" in active:
+            tasks.append(asyncio.create_task(self.notify_loop()))
+        if "watch" in active:
+            tasks.append(asyncio.create_task(self.cleanup_loop()))
+        if "qq" in active:
+            tasks.append(asyncio.create_task(self.guess_reveal_loop()))
+            tasks.append(asyncio.create_task(self.napcat_watchdog()))
+        if self._top100_enabled and "watch" in active:
             tasks.append(asyncio.create_task(self.top100_loop()))
-        if token:
-            def qq_status(message):
-                print(message, flush=True)
-                self.write_log(message)
+        if "qq" in active:
+            if token:
+                def qq_status(message):
+                    print(message, flush=True)
+                    self.write_log(message)
 
-            self.qq = OneBotClient(
-                str(qq_cfg.get("onebot_ws") or "ws://127.0.0.1:3001"), token,
-                self.on_qq_event, on_status=qq_status,
-                accept_group_messages=self.group_commands,
-                allow_unmentioned_commands=self.group_without_at,
-                group_extra_accept=self.accept_group_guess,
-                send_interval=float(qq_cfg.get('send_interval_seconds', 1)),
-                destination_interval=float(qq_cfg.get('destination_interval_seconds', 2)),
-                duplicate_reply_seconds=float(qq_cfg.get('duplicate_reply_seconds', 15)),
-                request_cooldown=float(qq_cfg.get('request_cooldown_seconds', .8)),
-                duplicate_command_seconds=float(qq_cfg.get('duplicate_command_seconds', 8)),
-                state_dir=self.data_dir,
-                expected_self_id=qq_cfg.get('expected_self_id'),
-                account_probe=lambda: webui_login_id(self.root),
-            )
-            tasks.append(asyncio.create_task(self.qq.run()))
-        else:
-            self.write_log("未填写 NapCat Token，跳过 QQ 连接。")
-        names, rules = self.current_rules()
-        tasks.append(
-            asyncio.create_task(
-                serve(
-                    self.watch_config(),
-                    names,
-                    rules,
-                    rules_provider=self.current_rules,
-                    on_saved=self.on_replay_saved,
-                    on_session=self.store.record_session,
-                    on_status=self.on_capture_status,
+                self.qq = OneBotClient(
+                    str(qq_cfg.get("onebot_ws") or "ws://127.0.0.1:3001"), token,
+                    self.on_qq_event, on_status=qq_status,
+                    accept_group_messages=self.group_commands,
+                    allow_unmentioned_commands=self.group_without_at,
+                    group_extra_accept=self.accept_group_guess,
+                    send_interval=float(qq_cfg.get('send_interval_seconds', 1)),
+                    destination_interval=float(qq_cfg.get('destination_interval_seconds', 2)),
+                    duplicate_reply_seconds=float(qq_cfg.get('duplicate_reply_seconds', 15)),
+                    request_cooldown=float(qq_cfg.get('request_cooldown_seconds', .8)),
+                    duplicate_command_seconds=float(qq_cfg.get('duplicate_command_seconds', 8)),
+                    state_dir=self.data_dir,
+                    expected_self_id=qq_cfg.get('expected_self_id'),
+                    account_probe=lambda: webui_login_id(self.root),
+                )
+                tasks.append(asyncio.create_task(self.qq.run()))
+            else:
+                self.write_log("未填写 NapCat Token，跳过 QQ 连接。")
+        if "watch" in active:
+            names, rules = self.current_rules()
+            tasks.append(
+                asyncio.create_task(
+                    serve(
+                        self.watch_config(),
+                        names,
+                        rules,
+                        rules_provider=self.current_rules,
+                        on_saved=self.on_replay_saved,
+                        on_session=self.store.record_session,
+                        on_status=self.on_capture_status,
+                    )
                 )
             )
-        )
         try:
-            await asyncio.gather(*tasks)
+            if tasks:
+                await asyncio.gather(*tasks)
+            else:
+                # 只开分享服务时没有后台任务，等窗口关闭或 Ctrl+C。
+                await asyncio.Event().wait()
         finally:
             for task in tasks:
                 task.cancel()

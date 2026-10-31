@@ -16,8 +16,12 @@ def _rank_label(rank):
     return "排名暂缺"
 
 
+def _clean(value, default):
+    return safe_filename(value or default, '')
+
+
 def _side(rank, name, deck):
-    return f"{_rank_label(rank)} {safe_filename(name or '对手未知')} · {safe_filename(deck or '卡组未识别')}"
+    return f"{_rank_label(rank)} {_clean(name, '对手未知')} · {_clean(deck, '卡组未识别')}"
 
 
 def match_folder(game):
@@ -26,7 +30,10 @@ def match_folder(game):
     head = f"{date} 第{number}场" if number is not None else date
     left = _side(game.get('current_rank'), game.get('player'), game.get('deck_type'))
     right = _side(game.get('opponent_current_rank'), game.get('opponent'), game.get('opponent_deck_type'))
-    return f"{head} {left} vs {right}/"
+    folder = f"{head} {left} vs {right}"
+    while len(folder.encode('utf-16-le')) > 300:
+        folder = folder[:-1]
+    return folder + "/"
 
 
 def archive(db,root,now,player,digest=None,scope='build',match=None,clock=time.time,allowed_digests=None,history_digests=None):
@@ -38,7 +45,12 @@ def archive(db,root,now,player,digest=None,scope='build',match=None,clock=time.t
         if not groups:raise ValueError('match_not_in_scope')
         games=groups[0]['games']
     if not games or len(games)>1000:raise ValueError('empty_or_too_many_sources')
-    output=io.BytesIO();seen=set();names=set();size=0
+    output=io.BytesIO();seen=set();names=set();size=0;flat_names=set();flat_entries=[]
+    match_folders={}
+    for game in sorted(games,key=lambda r:(r['observed_date'],r['observed_match_no'],r['observed_game_no'] or 999)):
+        key=(game['observed_date'],game['observed_match_no'])
+        if key not in match_folders:
+            match_folders[key]=match_folder(game)
     with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_STORED)as package:
         for game in sorted(games,key=lambda r:(r['observed_date'],r['observed_match_no'],r['observed_game_no']or 999,r['digest'])):
             identity=game['digest']
@@ -57,8 +69,17 @@ def archive(db,root,now,player,digest=None,scope='build',match=None,clock=time.t
             name=game['download_filename']
             if name in names:name=safe_filename(game['recording_title']+' '+identity[:12])
             names.add(name)
-            folder=match_folder(game)
+            folder=match_folders[(game['observed_date'],game['observed_match_no'])]
             package.writestr(folder+name,blob)
+            if match is None:
+                flat=name
+                if flat in flat_names:
+                    stem,dot,suffix=flat.rpartition('.')
+                    flat=f"{stem}-{identity[:8]}{dot}{suffix}" if dot else f"{flat}-{identity[:8]}"
+                flat_names.add(flat)
+                flat_entries.append((flat,blob))
+        for flat,blob in flat_entries:
+            package.writestr('总/'+flat,blob)
     if any(g['expires_at']<=max(now,float(clock()))for g in games):raise ValueError('source_expired_during_archive')
     label=player+' '+('整场已收录录像'if match else'该构筑全部已收录录像')
     return output.getvalue(),safe_filename(label,'.zip'),len(seen)

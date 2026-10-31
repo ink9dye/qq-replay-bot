@@ -13,7 +13,7 @@ function select(index){selected=index;const g=result.games[index],target=$('ptSe
 
 }
 function render(r){result=r;const container=$('trend');container.replaceChildren();
- if(!r.games.length){container.append(el('p','本月暂无竞技记录。','note'));return}
+ if(!r.games.length){container.append(el('p','暂无竞技记录。','note'));return}
  const points=[r.initial_points,...r.games.map(g=>g.after)],width=650,height=220,pad={left:58,right:20,top:18,bottom:32},low=Math.min(...points),high=Math.max(...points),margin=Math.max(10,(high-low)*.12),min=low-margin,max=high+margin;
  const x=i=>pad.left+i*(width-pad.left-pad.right)/(points.length-1),y=v=>pad.top+(max-v)*(height-pad.top-pad.bottom)/(max-min);
  const chart=svg('svg',{viewBox:`0 0 ${width} ${height}`,role:'img','aria-label':`${player}本月PT走势，点击曲线查看某场对手和积分变化`});
@@ -25,9 +25,9 @@ function render(r){result=r;const container=$('trend');container.replaceChildren
  const start=svg('text',{x:pad.left,y:height-7,fill:'#7a8aa0','font-size':11});start.textContent='首场赛前';const end=svg('text',{x:width-pad.right,y:height-7,'text-anchor':'end',fill:'#7a8aa0','font-size':11});end.textContent=`第${r.count}场`;chart.append(start,end);container.append(chart);select(r.games.length-1);
 }
 async function load(){const button=$('retryTrend');button.hidden=true;$('trendStatus').textContent='正在自动读取本月竞技历史…';
- try{const r=await SS.api('pt-history?player='+encodeURIComponent(player));if(r.status!=='ok'){throw Error(r.message||'本月历史暂不可用。')}
-  $('trendStatus').textContent=`${r.month} · ${r.count}场竞技对局 · 胜率${r.win_rate===null?'暂无':r.win_rate.toFixed(2)+'%'} · 点击曲线查看对手与积分变化`;
-  $('winRate').textContent=r.win_rate===null?'暂无官方样本':r.win_rate.toFixed(1)+'%';$('officialRateMeta').textContent=`官方${r.month} · ${r.wins}胜 / ${r.count}场`;render(r);
+ try{const r=await SS.api('pt-history?player='+encodeURIComponent(player));if(r.status!=='ok'){throw Error(r.message||'历史暂不可用。')}
+  $('trendStatus').textContent=`${r.window_label} · ${r.count}场竞技对局 · 胜率${r.win_rate===null?'暂无':r.win_rate.toFixed(2)+'%'} · 点击曲线查看对手与积分变化`;
+  $('winRate').textContent=r.win_rate===null?'暂无官方样本':r.win_rate.toFixed(1)+'%';$('officialRateMeta').textContent=`官方${r.window_label} · ${r.wins}胜 / ${r.count}场`;render(r);
  }catch(e){$('winRate').textContent='暂无官方数据';$('trend').replaceChildren(el('p','PT记录暂不可用','note'));$('trendStatus').textContent=e.message;button.hidden=false}finally{$('trend').setAttribute('aria-busy','false')}
 }
 $('retryTrend').onclick=load;if(player)load();

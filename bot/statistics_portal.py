@@ -59,7 +59,7 @@ class StatisticsPortal:
             value=self._session(int(self.clock())+SESSION_SECONDS)
             return self._reply(303,'',extra={'Location':'/statistics','Set-Cookie':f'{COOKIE}={value}; Path=/statistics; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}'})
         if not self._authenticated(headers.get('Cookie')):return self._reply(403,'请使用本机“打开统计页面”入口。')
-        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js'):
+        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
             return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
         if parts==['statistics']:
@@ -90,6 +90,39 @@ class StatisticsPortal:
                 status,kind,_,headers=self._reply(200,'','application/zip',{'Content-Disposition':"attachment; filename=replays.zip; filename*=UTF-8''"+quote(filename),'X-Replay-Count':str(count),'Cache-Control':'no-store'})
                 return status,kind,body,headers
             except(ValueError,sqlite3.Error,OSError):return self._reply(409,'有效录像范围已变化、为空或过大，请刷新并缩小范围后重试。')
+        if parts==['statistics','recordings-zip']:
+            # 录像页"按当前全部筛选条件打包下载"：和 api/recordings 同一套条件与口径。
+            from .statistics_recording_archive_filters import filtered_archive
+            from urllib.parse import quote
+            args=parse_qs(parsed.query)
+            if any(len(v)>2000 for v in args.values()):return self._reply(400,'筛选项过多。')
+            try:
+                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5))as db:
+                    db.row_factory=sqlite3.Row;db.execute('BEGIN')
+                    body,filename,files,views=filtered_archive(db,self.replay_root,float(self.clock()),args,clock=self.clock)
+                status,kind,_,headers=self._reply(200,'','application/zip',{'Content-Disposition':"attachment; filename=replays.zip; filename*=UTF-8''"+quote(filename),'X-Replay-Count':str(files),'X-View-Count':str(views),'Cache-Control':'no-store'})
+                return status,kind,body,headers
+            except ValueError as exc:
+                message={'empty_scope':'当前筛选没有可打包的录像，请调整条件后重试。',
+                         'scope_too_large':'筛选范围过大（超过 5000 个玩家小局视角），请缩小条件后重试。',
+                         'archive_too_many_files':'命中的录像文件过多（超过 2000 个），请缩小条件后重试。',
+                         'archive_too_large':'打包内容超过 256MB，请缩小范围后重试。',
+                         'source_expired_during_archive':'有录像在打包过程中到期，请刷新后重试。',
+                         'source_excluded':'有录像已被排除，请刷新后重试。',
+                         'source_missing':'有原始录像文件缺失，请刷新后重试。',
+                         'source_changed':'有原始录像字节已变化，请刷新后重试。'}.get(str(exc),'打包条件无效，请刷新后重试。')
+                return self._reply(409,message)
+            except(sqlite3.Error,OSError):return self._reply(409,'有效录像范围已变化、为空或过大，请刷新并缩小范围后重试。')
+        if parts==['statistics','deck-naming']:
+            return self._reply(200,Path(__file__).with_name('statistics_deck_naming.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
+        if parts==['statistics','api','deck-naming']:
+            from .statistics_deck_naming import detail,list_rows
+            args=parse_qs(parsed.query);player=args.get('player',[''])[0]
+            def run(db):
+                return detail(db,self.database.parent,float(self.clock()),player) if player else list_rows(db,float(self.clock()))
+            try:return self._query_reply(run)
+            except LookupError:return self._reply(404,'这个玩家不在当前前100名单。')
+            except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','api','pt-history']:
             player=parse_qs(parsed.query).get('player',[''])[0]
             if not player.strip() or len(player)>100:return self._reply(400,'玩家名无效。')
@@ -172,6 +205,32 @@ class StatisticsPortal:
             except (ValueError,TypeError):
                 return self._reply(400,json.dumps({'error':'卡组条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
             return self._query_reply(lambda db:scoped_query(ranges,lambda:overview(db,self.replay_root,float(self.clock()),basis,decks)))
+        if parts==['statistics','cards-report']:
+            return self._reply(200,Path(__file__).with_name('statistics_cards_report.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
+        if parts==['statistics','api','card-report']:
+            from .card_statistics import Filters
+            from .statistics_card_report import query as card_report
+            args=parse_qs(parsed.query,keep_blank_values=True)
+            try:
+                from .statistics_rank_scope import parse_ranges,scoped_query
+                ranges=parse_ranges(args)
+                codes=args.get('code',[])
+                values=[[json.loads(v) for v in args.get(k,[])] for k in ('deck','opponent','series','opponent_series')]
+                if any(len(v)>100 or any(s is not None and (not isinstance(s,str) or not s.strip() or len(s)>128) for s in v) for v in values):raise ValueError()
+                seat=args.get('seat',['all'])[0]
+                if seat not in ('all','first','second'):raise ValueError()
+            except (ValueError,TypeError):
+                return self._reply(400,json.dumps({'error':'筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1')
+            try:
+                return self._query_reply(lambda db:scoped_query(ranges,lambda:card_report(
+                    db,self.replay_root,float(self.clock()),codes=codes,filters=filters,
+                    metric=args.get('metric',['drawn'])[0],threshold=args.get('threshold',['1'])[0],
+                    min_games=args.get('min',['0'])[0],sort=args.get('sort',['people'])[0],
+                    partition=args.get('partition',['auto'])[0],limit=args.get('limit',['500'])[0],
+                    exclude=args.get('exclude',[]))))
+            except ValueError as exc:
+                return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts in (['statistics','cards'],['statistics','matrix']):
             name='statistics_card_metrics.html' if parts[-1]=='cards' else 'statistics_matrix.html'
             return self._reply(200,Path(__file__).with_name(name).read_text(encoding='utf8'),'text/html; charset=utf-8')
@@ -308,10 +367,48 @@ class StatisticsPortal:
         except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')
 
     def post(self,path,headers,client,body):
-        # Every HTTP credential on this portal is a read-only viewer credential.
-        # Maintenance functions remain local Python operations; there is no
-        # administrator HTTP fallback, even for loopback/private sessions.
-        return self._reply(403,'用户统计页面仅提供查询与下载，不支持管理操作。')
+        # 网页默认仍只提供查询与下载；唯一例外是本机 owner 的"卡组命名"后台。
+        # 它要求：本机回环 + 本机 Host + owner cookie + 自定义请求头 + 同源 Origin + 有界请求体。
+        parsed=urlsplit(path)
+        if parsed.path!='/statistics/api/deck-naming':
+            return self._reply(403,'用户统计页面仅提供查询与下载，不支持管理操作。')
+        try:host=urlsplit('//'+headers.get('Host','')).hostname
+        except ValueError:return self._reply(403,'本机入口地址无效。')
+        try:local=ip_address(client).is_loopback
+        except ValueError:local=False
+        if (not local or host not in ('127.0.0.1','localhost','::1')
+                or any(headers.get(k) for k in ('Forwarded','X-Forwarded-For','X-Forwarded-Host'))):
+            return self._reply(403,'仅允许从本机入口访问。')
+        if not self._authenticated(headers.get('Cookie')):return self._reply(403,'请使用本机“打开统计页面”入口。')
+        if headers.get('X-Deck-Naming')!='1':return self._reply(403,'缺少本页操作标记。')
+        if headers.get('Origin','')!='http://'+headers.get('Host',''):return self._reply(403,'来源校验失败。')
+        if len(body)>4096:return self._reply(400,'请求内容过大。')
+        try:
+            payload=json.loads(body.decode('utf-8'))
+            build=payload['build'];deck=payload['deck']
+        except (UnicodeDecodeError,ValueError,KeyError,TypeError):
+            return self._reply(400,'命名参数无效。')
+        from .statistics_deck_naming import apply_name
+        try:
+            with closing(sqlite3.connect(str(self.database),timeout=10)) as db:
+                db.row_factory=sqlite3.Row;db.execute('PRAGMA busy_timeout=5000')
+                result=apply_name(db,build,deck);db.commit()
+        except LookupError:return self._reply(404,'找不到这个构筑，可能已经过期。')
+        except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
+        except sqlite3.Error:return self._reply(409,'统计库正忙，请稍后重试。')
+        self._log_deck_name(result,client)
+        return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
+
+    def _log_deck_name(self,result,client):
+        try:
+            from datetime import datetime
+            log=self.database.parent/'logs'/'deck-naming.log'
+            log.parent.mkdir(parents=True,exist_ok=True)
+            with log.open('a',encoding='utf-8') as handle:
+                handle.write('\t'.join([datetime.now().isoformat(timespec='seconds'),str(client),
+                    str(result.get('build')),str(result.get('old')),str(result.get('deck')),
+                    str(result.get('revision'))])+'\n')
+        except OSError:pass
 
     @staticmethod
     def _reply(status,body,content_type='text/plain; charset=utf-8',extra=None):

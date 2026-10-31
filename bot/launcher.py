@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from .setup import probe_napcat, read_config
 from .napcat_start import existing_napcat
 from .account_guard import webui_login_id, AccountMismatch
+from .roles import lock_filenames
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -49,27 +50,213 @@ def ensure_statistics_web(root, *, port=8788, popen=subprocess.Popen, pause=time
     return False
 
 
-@contextmanager
-def startup_lock(root: Path, filename: str = 'startup.lock'):
-    """防止连续双击，在服务尚未绑定端口时启动出两个副本。"""
-    import msvcrt
-    path = root / 'data' / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('a+b') as handle:
-        if path.stat().st_size == 0:
+class StartupLock:
+    """一个启动锁文件；关窗或进程退出时由 Windows 释放文件锁，不会留下僵尸锁。"""
+
+    def __init__(self, root: Path, filename: str = 'startup.lock'):
+        self.path = Path(root) / 'data' / filename
+        self._handle = None
+        self.acquired = False
+
+    def acquire(self) -> bool:
+        import msvcrt
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.path.open('a+b')
+        if self.path.stat().st_size == 0:
             handle.write(b'0')
             handle.flush()
         handle.seek(0)
         try:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:
-            yield False
+            handle.close()
+            return False
+        self._handle = handle
+        self.acquired = True
+        return True
+
+    def release(self) -> None:
+        handle, self._handle, self.acquired = self._handle, None, False
+        if handle is None:
             return
         try:
-            yield True
-        finally:
+            import msvcrt
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        finally:
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc) -> bool:
+        self.release()
+        return False
+
+
+@contextmanager
+def startup_lock(root: Path, filename: str = 'startup.lock'):
+    """防止连续双击，在服务尚未绑定端口时启动出两个副本。"""
+    lock = StartupLock(root, filename)
+    try:
+        yield lock.acquire()
+    finally:
+        lock.release()
+
+
+@contextmanager
+def startup_locks(root: Path, roles=None):
+    """按角色占用启动锁。
+
+    全开（roles=None 或 all）仍只占 bot-runtime.lock；
+    拆分后 collector 占 collector.lock，QQ 占 bot.lock，两者互不阻塞。
+    """
+    locks = []
+    try:
+        for filename in lock_filenames(roles):
+            lock = StartupLock(root, filename)
+            if not lock.acquire():
+                yield False
+                return
+            locks.append(lock)
+        yield True
+    finally:
+        for lock in reversed(locks):
+            lock.release()
+
+
+_CONSOLE_HANDLERS = []
+
+
+def set_console_title(title: str) -> bool:
+    """给独立控制台窗口一个可区分的标题。"""
+    if os.name != 'nt':
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.kernel32.SetConsoleTitleW(str(title)))
+    except (AttributeError, OSError):
+        return False
+
+
+def install_close_handler(cleanup) -> bool:
+    """关闭控制台窗口时先清理，再让系统结束进程。
+
+    Ctrl+C 不在这里处理，仍走 KeyboardInterrupt 的原有退出路径。
+    """
+    if os.name != 'nt':
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+        def handle(event):
+            if event not in (2, 5, 6):  # CTRL_CLOSE_EVENT / LOGOFF / SHUTDOWN
+                return False
+            try:
+                cleanup()
+            except Exception:
+                pass
+            print('已停止', flush=True)
+            return True
+
+        handler = handler_type(handle)
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleCtrlHandler.argtypes = [handler_type, wintypes.BOOL]
+        kernel32.SetConsoleCtrlHandler.restype = wintypes.BOOL
+        if not kernel32.SetConsoleCtrlHandler(handler, True):
+            return False
+        _CONSOLE_HANDLERS.append(handler)
+        return True
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+# 每个后台服务一个可见窗口，关窗即结束该服务。
+# collector 是拆分时的备用入口（手工/诊断）；正常拆分由 PyCharm 固定 watch Run 承担观战。
+ROLE_PROCESSES = (
+    ('collector', 'bot.collector', 'collector.lock', '观战采集'),
+    ('qq', 'bot.qq_service', 'bot.lock', 'QQ机器人'),
+)
+_ROLE_PROCESS_HANDLES = []
+
+
+def watch_roles(config: dict):
+    """读 8787 健康检查里的 service_roles；老版本没有这个字段时返回 None。"""
+    share = config.get('share') or {}
+    host = str(share.get('bind_host') or '127.0.0.1')
+    if host in ('0.0.0.0', '::', 'localhost'):
+        host = '127.0.0.1'
+    port = int(share.get('bind_port', 8787))
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f'http://{host}:{port}/health', timeout=1) as response:
+            payload = json.loads(response.read(4096))
+    except (OSError, ValueError, AttributeError):
+        return None
+    roles = payload.get('service_roles')
+    if not isinstance(roles, list):
+        return None
+    return frozenset(str(role) for role in roles)
+
+
+def role_process_running(root: Path, filename: str) -> bool:
+    """角色锁已被占用就说明对应服务在跑；探测后立刻释放，不抢锁。"""
+    probe = StartupLock(root, filename)
+    if probe.acquire():
+        probe.release()
+        return False
+    return True
+
+
+def ensure_role_processes(root: Path, config: dict | None = None, *, popen=None, names=None):
+    """只补缺：已占用角色锁或 8787 健康检查已就绪的服务跳过，不重启、不杀进程。
+
+    names 限定要补的窗口；拆模式下 start-all 只负责 QQ，观战由 PyCharm 固定 watch Run 拉起。
+    """
+    if popen is None:
+        popen = subprocess.Popen
+    if config is not None and not role_process_running(root, 'collector.lock'):
+        # 8787 已被本程序占用，但 collector 锁没被占：可能是原来的全开 watch。
+        # 全开 watch 一个进程已经包含观战/分享/QQ，不能再起拆分进程去抢端口；
+        # 但拆分后的观战进程只含 watch+share，它跑着不代表 QQ 也在跑，仍要补 QQ 窗口。
+        if bot_state(config) == 'ready':
+            roles = watch_roles(config)
+            if roles is None or 'qq' in roles:
+                print('检测到全开 watch 已运行（8787健康检查通过），拆分服务跳过。', flush=True)
+                return [], []
+            print('检测到拆分后的观战进程在运行（只含观战/分享），继续补起 QQ 窗口。', flush=True)
+    wanted = None if names is None else tuple(names)
+    started, failed = [], []
+    for name, module, lock_name, title in ROLE_PROCESSES:
+        if wanted is not None and name not in wanted:
+            continue
+        if role_process_running(root, lock_name):
+            print(f'{title}服务已运行，跳过。', flush=True)
+            continue
+        try:
+            process = popen([sys.executable, '-m', module], cwd=str(root),
+                            env=dict(os.environ, PYTHONUTF8='1'),
+                            creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0))
+        except OSError as exc:
+            failed.append(name)
+            print(f'无法打开{title}服务窗口：{exc}', flush=True)
+            continue
+        _ROLE_PROCESS_HANDLES.append(process)
+        started.append(name)
+        print(f'已打开{title}服务窗口（python -m {module}）。', flush=True)
+    return started, failed
+
+
+def service_split_enabled(config: dict) -> bool:
+    """config.json 的 service_mode=split 才拆进程；缺省 unified 保持原行为。"""
+    return str((config or {}).get('service_mode') or '').strip().lower() == 'split'
 
 
 def request_qq_resume(data_dir: Path, expected: str = '') -> str:
@@ -183,7 +370,12 @@ def restart_lagrange(root: Path) -> None:
 
 async def launch_services(root: Path, config: dict, *, spawn=spawn_batch, probe=probe_napcat,
                           state=bot_state, port_open=ws_port_open, pause=asyncio.sleep,
-                          clock=time.monotonic, login_timeout=300, bot_timeout=25, attempt=False) -> bool:
+                          clock=time.monotonic, login_timeout=300, bot_timeout=25, attempt=False,
+                          start_bot=None) -> bool:
+    # 默认仍走 start.bat；拆分模式或测试可以传入自己的启动回调。
+    if start_bot is None:
+        def start_bot():
+            spawn(root / 'start.bat')
     status = await asyncio.to_thread(state, config)
     if status == 'busy':
         print('录像服务端口被占用，可能是旧版程序。请先关闭旧录像程序窗口，再双击 start-all.bat。', flush=True)
@@ -197,7 +389,7 @@ async def launch_services(root: Path, config: dict, *, spawn=spawn_batch, probe=
         if status == 'ready':
             print('观战服务已运行；QQ仍处于暂停状态，不能称为全部启动成功。',flush=True)
             return False
-        spawn(root / 'start.bat')
+        start_bot()
         deadline = clock() + bot_timeout
         while clock() < deadline:
             if await asyncio.to_thread(state, config) == 'ready':
@@ -259,7 +451,7 @@ async def launch_services(root: Path, config: dict, *, spawn=spawn_batch, probe=
         print('录像服务端口已被占用，请检查是否有旧程序窗口。', flush=True)
         return False
     print('正在打开录像程序……', flush=True)
-    spawn(root / 'start.bat')
+    start_bot()
     deadline = clock() + bot_timeout
     while clock() < deadline:
         if await asyncio.to_thread(state, config) == 'ready':
@@ -271,20 +463,81 @@ async def launch_services(root: Path, config: dict, *, spawn=spawn_batch, probe=
 
 
 def main() -> None:
+    from . import pycharm_link
+    watch_error = None
+    role_failures = []
     try:
         config = read_config(ROOT / 'config.json')
         if not (config.get('qq') or {}).get('access_token'):
             print('接口 Token 尚未填写，请先运行 setup.bat。')
             raise SystemExit(2)
+        split = service_split_enabled(config)
+        start_called = [False]
+        watch_requested = [False]
+
+        def request_watch():
+            # 观战只由 PyCharm 固定 watch Run 承担：拆分模式也不另开 collector 控制台窗口。
+            watch_requested[0] = True
+            return pycharm_link.launch(ROOT)
+
+        if split:
+            def start_bot():
+                start_called[0] = True
+                # 拆分模式：先补起 QQ 窗口，最后请求 PyCharm 运行固定 watch（观战+分享）。
+                started, failed = ensure_role_processes(ROOT, config, names=('qq',))
+                role_failures.extend(failed)
+                request_watch()
+                return started
+        else:
+            # 全开模式：start-all 直接复用 pycharm_link.launch()，不再经 start.bat 中转；
+            # start.bat 仍保留给手动启动。
+            def start_bot():
+                start_called[0] = True
+                return request_watch()
         with startup_lock(ROOT) as acquired:
             if not acquired:
                 print('已有启动窗口正在等待登录，请切换到那个窗口完成扫码。')
                 return
-            web_ready=ensure_statistics_web(ROOT)
+            web_ready = ensure_statistics_web(ROOT)
             print('统计网页：'+('已就绪。' if web_ready else '未就绪，请检查8788端口和统计资料。'),flush=True)
-            ok = asyncio.run(launch_services(ROOT, config,attempt=True))
+            # 顺序：网页 → QQ/NapCat → 最后才拉起观战，避免观战先跑起来空转。
+            ok = asyncio.run(launch_services(ROOT, config, attempt=True, start_bot=start_bot))
+            if split:
+                if not start_called[0]:
+                    # 观战早已在跑时 launch_services 会提前返回：QQ 窗口仍按锁补起（重复启动会被拒）。
+                    _started, failed = ensure_role_processes(ROOT, config, names=('qq',))
+                    role_failures.extend(failed)
+                if bot_state(config) != 'ready' and not watch_requested[0]:
+                    try:
+                        request_watch()
+                    except (pycharm_link.IDEError, OSError) as exc:
+                        if pycharm_link.watch_status(ROOT):
+                            print(f'watch已在运行，未能打开PyCharm文件：{exc}', flush=True)
+                        else:
+                            watch_error = exc
+                            print(f'未能启动PyCharm观战：{exc}', flush=True)
+                            print('未完成 PyCharm 自动运行授权，请手动在 PyCharm 运行 watch.py。', flush=True)
+            elif ok and not start_called[0]:
+                # 8787 已经显示 watch 在跑：launch() 只打开文件，不会再请求第二份。
+                try:
+                    request_watch()
+                except (pycharm_link.IDEError, OSError) as exc:
+                    if pycharm_link.watch_status(ROOT):
+                        # watch 已经在跑，只是没法打开 IDE 文件；不能因此回滚或报启动失败。
+                        print(f'watch已在运行，未能打开PyCharm文件：{exc}', flush=True)
+                    else:
+                        watch_error = exc
+                        print(f'未能启动PyCharm观战：{exc}', flush=True)
+                        print('未完成 PyCharm 自动运行授权，请手动在 PyCharm 运行 watch.py。', flush=True)
+        if role_failures:
+            print('部分服务窗口未能打开：' + '、'.join(role_failures), flush=True)
         if not ok:print('启动未全部完成。请按上方提示处理；窗口会保留。',flush=True)
-        raise SystemExit(0 if ok and web_ready else 1)
+        raise SystemExit(0 if ok and web_ready and not role_failures and watch_error is None else 1)
+    except pycharm_link.IDEError as exc:
+        # PyCharm 自动运行失败：网页、NapCat 等已经起来的服务不回滚、不杀进程。
+        print(f'未能启动PyCharm观战：{exc}', flush=True)
+        print('未完成 PyCharm 自动运行授权，请手动在 PyCharm 运行 watch.py。', flush=True)
+        raise SystemExit(1) from None
     except (OSError, ValueError):
         print('无法启动，请检查 config.json 和项目内的启动文件。')
         raise SystemExit(2) from None

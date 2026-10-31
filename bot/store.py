@@ -42,7 +42,10 @@ class Store:
         self._db = sqlite3.connect(str(self.path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute('PRAGMA foreign_keys=ON')
+        # 多进程共用同一个库：collector 与 QQ 各开连接，不是单写者。
+        # WAL 允许读写并行，busy_timeout 让偶发写锁最多等 5 秒；M3 才把 QQ 的写请求收敛到 collector。
         self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA busy_timeout=5000")
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS subscriptions (

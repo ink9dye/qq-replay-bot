@@ -141,15 +141,45 @@ def _time_arg(args,name):
     return value.timestamp()
 
 
-def query(db,root,now,args):
+def query(db,root,now,args,limit=2000):
+    """录像筛选入口：我方/对手排名范围（前100、前200、全部）在这里生效。
+
+    默认我方前100、对手全部，和本页改造前的口径一致；旧链接里的 internal=1 仍然等价于双方前100。
+    返回里带 rank_scope（范围、未知/核验中人数），页面用它说明"为什么少了/为什么还在核验"。
+    """
+    from .statistics_rank_scope import parse_ranges,population_scope
+    ranges=parse_ranges(args)
+    with population_scope(*ranges) as scope:
+        result=_query(db,root,now,args,limit,ranges)
+    result['recording_filters_version']=4
+    result['rank_scope']=dict(self_range=ranges[0],opponent_range=ranges[1],
+        unknown_rank_players=len(scope['unknown']),pending_rank_players=len(scope['pending']),
+        complete=not scope['unknown'],rank_source='official_top100_and_per_player',rank_max_age_seconds=120)
+    return result
+
+
+def _query(db,root,now,args,limit=2000,ranges=None):
+    """limit=None 表示返回全部命中（给打包下载用）；默认仍只回 2000 条给页面。"""
     basis,rows,draws,used,carried,canonical=snapshot(db,root,now,include_opponents=True)
     from .statistics_recording_names import decorate
     decorate(db,rows,root,now)
+    # 前200/全部时，自己可能不在当前前100名单里：用范围筛选给出的名次补显示字段。
+    for row in rows:
+        if not row.get('current_rank') and row.get('rank'):
+            row['current_rank']=row['rank']
+    if ranges and ranges[1]!='all':
+        missing={row['opponent'] for row in rows
+                 if row.get('opponent') and not row.get('opponent_current_rank')}
+        if missing:
+            from .statistics_rank_scope import ranks_for
+            extra=ranks_for(missing,float(now))
+            for row in rows:
+                if not row.get('opponent_current_rank') and row.get('opponent') in extra:
+                    row['opponent_current_rank']=extra[row['opponent']]
     for row in rows:
         row['deck_type']=row.get('match_deck_type')or row['deck_type']
         row['opponent_deck_type']=row.get('opponent_match_deck_type')or row['opponent_deck_type']
     values=lambda name:args.get(name,[])
-    internal=_scalar_arg(args,'internal',('0','1'),'0')
     mode=_scalar_arg(args,'mode',('drawn','not_drawn','used'),'drawn')
     match=_scalar_arg(args,'match',('any','all'),'any')
     not_match=_scalar_arg(args,'not_match',('any','all'),'all')
@@ -167,8 +197,6 @@ def query(db,root,now,args):
     firsts=list(dict.fromkeys(_list_arg(args,'first',length=8,label='先后攻')))
     if any(v not in ('1','0','None')for v in firsts):raise ValueError('先后攻条件无效。')
     outcomes=list(dict.fromkeys(outcomes))
-    # 双方都要在当前前100名单内；榜单缺失或过期时名单已由 roster 标记，不把未知当上榜。
-    both_top=internal=='1'
     conditions=[]
     # 每组卡片条件：我方/对手 × 命中列表/“必须未抽到”列表，两两独立，可同时成立。
     for prefix in ('','opponent_','not_','opponent_not_'):
@@ -188,7 +216,6 @@ def query(db,root,now,args):
     result=[]
     for row in rows:
         if any(args.get(key+'_none')==['1']for key in none_keys):continue
-        if both_top and not (_in_current_top100(row.get('current_rank'))and _in_current_top100(row.get('opponent_current_rank'))):continue
         if start is not None and row['recorded_at']<start:continue
         if end is not None and row['recorded_at']>=end:continue
         if series and not (set(row.get('series')or ())& set(series)):continue
@@ -213,4 +240,8 @@ def query(db,root,now,args):
         if not accepted:continue
         result.append({k:row.get(k)for k in ('digest','player','deck_type','opponent','opponent_deck_type','recorded_at','expires_at','first_player','outcome','recording_title','download_filename','observed_date','observed_day','observed_match_no','observed_game_no','observed_match_id','current_rank','opponent_current_rank')})
     result.sort(key=lambda r:r['recorded_at'],reverse=True)
-    return dict(recording_filters_version=3,card_filters_version=2,samples=result[:2000],total=len(result),limited=len(result)>2000,roster=basis['roster'],metrics=win_rate(result))
+    unique_recordings=len({r['digest'] for r in result})
+    samples=result if limit is None else result[:limit]
+    return dict(recording_filters_version=3,card_filters_version=2,
+                samples=samples,total=len(result),limited=(limit is not None and len(result)>limit),
+                unique_recordings=unique_recordings,roster=basis['roster'],metrics=win_rate(result))

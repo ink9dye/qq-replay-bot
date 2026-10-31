@@ -88,6 +88,17 @@ STOC_HS_WATCH_CHANGE = 0x22
 NETPLAYER_OBSERVER = 7
 DEFAULT_VERSION = 0x1362
 from retention_policy import RETENTION_SECONDS, next_cleanup_delay
+from bot.join_throttle import DEFAULT_FAIL_THRESHOLD, DEFAULT_PAUSE, JoinGate
+
+# 进场节流（观战侧口径，2026-10-31 用户定）：同时最多观战 8 场、两次进场至少隔 10 秒、
+# 连续 3 次失败暂停 60 秒。bot/join_throttle.py 自己的默认仍是 2/5/3/60，由配置或这里覆盖。
+JOIN_CONCURRENT_DEFAULT = 8
+JOIN_MIN_INTERVAL_DEFAULT = 10.0
+# 启动前就在打的对局（积压）：到期窗口 20—40 秒随机错峰，让它们慢慢进，不在启动瞬间一起扑进去。
+# 注意：split 模式下 bot/service.py 会把 config.json 的 preexisting_join_min/max_seconds 传进来
+# （它自己的缺省仍是 1/10），所以生产要真正生效需要 config 里写上这两个键或 framework owner 改默认。
+PREEXISTING_JOIN_MIN_DEFAULT = 20.0
+PREEXISTING_JOIN_MAX_DEFAULT = 40.0
 
 
 def log(message: str) -> None:
@@ -2216,6 +2227,55 @@ def cleanup_old_files(replay_dir: Path, deck_dir: Path, now: float, max_age: flo
     return removed
 
 
+def join_gate_from_config(config: dict) -> JoinGate:
+    """按 watch 配置建"进场节流"闸门；缺省或非法值回落 watch 侧策略默认 8/10/3/60。
+
+    模块自身的默认是 2/5/3/60（见 bot/join_throttle.py，那里保持通用），但"同时观战 2 场"实测
+    满足不了采集需求（2026-10-31 常态 7—9 场），所以观战口径由这里定：并发 8、间隔 10 秒、
+    连败 3 次暂停 60 秒。这四个键以后由框架 owner 从 config.json 透传，传了就以配置为准。
+    """
+    def read(key, default, cast):
+        value = config.get(key)
+        if value is None:
+            return default
+        try:
+            return cast(value)
+        except (TypeError, ValueError):
+            log(f"进场节流配置 {key}={value!r} 不是数字，改用默认 {default}")
+            return default
+    values = dict(
+        max_concurrent=read('max_join_concurrent', JOIN_CONCURRENT_DEFAULT, int),
+        min_interval=read('join_min_interval_seconds', JOIN_MIN_INTERVAL_DEFAULT, float),
+        fail_threshold=read('join_fail_threshold', DEFAULT_FAIL_THRESHOLD, int),
+        pause_seconds=read('join_pause_seconds', DEFAULT_PAUSE, float),
+    )
+    try:
+        return JoinGate(**values)
+    except ValueError:
+        log(f"进场节流配置超出范围（{values}），改用默认 {JOIN_CONCURRENT_DEFAULT}/"
+            f"{JOIN_MIN_INTERVAL_DEFAULT:g}/{DEFAULT_FAIL_THRESHOLD}/{DEFAULT_PAUSE:g}")
+        return JoinGate(JOIN_CONCURRENT_DEFAULT, JOIN_MIN_INTERVAL_DEFAULT)
+
+
+def preexisting_join_window(config: dict) -> tuple[float, float]:
+    """启动前已在打的对局：到期窗口（秒）。缺省 20—40 秒错峰，避免启动瞬间一起扑进去。
+
+    split 模式下 config 里这两个键由 bot/service.py 透传；传了就以配置为准（可以更短，也可以更长）。
+    """
+    def number(key, default):
+        value = config.get(key)
+        if value is None:
+            return default
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            log(f"进屋错峰配置 {key}={value!r} 不是数字，改用默认 {default}")
+            return default
+    low = number('preexisting_join_min_seconds', PREEXISTING_JOIN_MIN_DEFAULT)
+    high = number('preexisting_join_max_seconds', PREEXISTING_JOIN_MAX_DEFAULT)
+    return low, max(low, high)
+
+
 async def serve(
     config: dict,
     names: list[str],
@@ -2242,6 +2302,9 @@ async def serve(
         tasks.append(asyncio.create_task(websocket_loop(url, board, stop)))
     active: dict[str, asyncio.Task] = {}
     monitor = CaptureMonitor(config.get('max_queued_rooms') or 200)
+    gate = join_gate_from_config(config)
+    log(f"进场节流：最多同时观战 {gate.max_concurrent} 个，两次进场至少间隔 {gate.min_interval:g} 秒，"
+        f"连续失败 {gate.fail_threshold} 次暂停 {gate.pause_seconds:g} 秒。")
     adaptive = AdaptiveConcurrency(config)
     rank_window=None
     if config.get('automatic_rank_limit',100)>100:
@@ -2260,8 +2323,9 @@ async def serve(
     noted: set[str] = set()
     join_at: dict[str, float] = {}
     announced_wait: set[str] = set()
-    preexisting_min = float(config.get("preexisting_join_min_seconds") if config.get("preexisting_join_min_seconds") is not None else 1)
-    preexisting_max = float(config.get("preexisting_join_max_seconds") if config.get("preexisting_join_max_seconds") is not None else 10)
+    gate_blocked: dict[str, tuple[str, float]] = {}
+    gate_pauses = 0
+    preexisting_min, preexisting_max = preexisting_join_window(config)
     min_delay = float(config.get("join_after_min_seconds") if config.get("join_after_min_seconds") is not None else 120)
     max_delay = float(config.get("join_after_max_seconds") if config.get("join_after_max_seconds") is not None else 240)
     log(
@@ -2343,6 +2407,10 @@ async def serve(
                     outcome = "retry"
                 pause = {"saved": 12, "noreplay": 20, "leave": 30, "retry": 3, "unstable": 120, "gone": 300, "config": 120}.get(outcome, 5)
                 monitor.finished(outcome)
+                gate.finished(now, outcome)
+                if gate.stats['pauses'] > gate_pauses:
+                    gate_pauses = gate.stats['pauses']
+                    log(f"进场节流：连续失败 {gate.fail_threshold} 次，暂停进场 {gate.pause_seconds:g} 秒。")
                 if outcome == "gone":
                     dead_rooms.add(key)
                 if outcome in ('retry', 'unstable'):
@@ -2384,19 +2452,41 @@ async def serve(
                         shown = await asyncio.to_thread(room_label_with_ranks, room)
                         log(f"已看到开局，将在 {clock} 进入（约 {waited // 60} 分 {waited % 60} 秒后）：{shown}")
                     continue
+                gate_now = time.monotonic()
+                allowed, wait_seconds = gate.allow(gate_now)
+                if not allowed:
+                    # 并发满/间隔未到/失败暂停：本轮不发起连接，只留等待日志（同一房间同一原因最多每 60 秒一行）。
+                    if wait_seconds is None:
+                        kind = 'concurrent'
+                    else:
+                        kind = 'paused' if gate_now < gate.paused_until else 'interval'
+                    last = gate_blocked.get(room.key)
+                    if last is None or last[0] != kind or gate_now - last[1] >= 60:
+                        gate_blocked[room.key] = (kind, gate_now)
+                        title = room.title or room.join_id or room.key
+                        if kind == 'concurrent':
+                            why = f"正在观战 {gate.in_flight}/{gate.max_concurrent} 个"
+                        elif kind == 'paused':
+                            why = f"失败暂停中，还需等 {wait_seconds:g} 秒"
+                        else:
+                            why = f"距上次进场还需等 {wait_seconds:g} 秒"
+                        log(f"进场节流：暂不进入「{title}」（{why}）")
+                    continue
+                gate_blocked.pop(room.key, None)
                 shown = await asyncio.to_thread(room_label_with_ranks, room)
                 reason=selection_reason(room,str(config.get('name_match') or 'exact'))
                 if known_start is None:
                     log(f"对局已在进行，开始观战：{shown}；收录依据：{reason}")
                 else:
                     log(f"到达进入时间，开始观战：{shown}；收录依据：{reason}")
+                gate.started(time.monotonic())
                 session = Spectator(config, room, writer.for_room(room.players), known_start)
                 active[room.key] = asyncio.create_task(session.run())
                 monitor.joined(room.key)
             message = adaptive.tick(time.monotonic())
             if message: log(message)
             if on_status:
-                try:on_status(dict(monitor.snapshot(len(active), writer), concurrent_limit=limit, **(adaptive.state()), **(rank_window.status() if rank_window else {})))
+                try:on_status(dict(monitor.snapshot(len(active), writer), concurrent_limit=limit, join_throttle=gate.state(), **(adaptive.state()), **(rank_window.status() if rank_window else {})))
                 except Exception:log('采集状态暂未写入，观战继续')
             await asyncio.sleep(float(config.get("poll_seconds") or 5))
     finally:

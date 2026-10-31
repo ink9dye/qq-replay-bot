@@ -1,7 +1,0 @@
-{
-  "state": "stopped",
-  "reason": "已暂停收发，请处理QQ限制后运行 resume-qq.bat。",
-  "updated_at": 1793086100.4111867,
-  "expected_self_id": "1617562300",
-  "queued": 0
-}

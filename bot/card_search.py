@@ -190,6 +190,16 @@ class CardSearch:
         lines.append(f"百鸽：https://ygocdb.com/card/{card_id}")
         return CardReply("\n\n".join(lines), f"https://cdn.233.momobako.com/ygopro/pics/{card_id}.jpg")
 
+    def has_candidates(self, user, now=None):
+        """当前会话是否有未过期的查卡候选（给"直接发数字/next"做上下文判断）。"""
+        user = str(user)
+        with self.lock:
+            session = self.sessions.get(user)
+            if not session:
+                return False
+            moment = self.clock() if now is None else now
+            return moment - session["time"] < 300
+
     def handle(self, user, action, value=""):
         # handle_text 在线程中执行；保护候选和缓存，避免同一用户并发串页。
         with self.lock:

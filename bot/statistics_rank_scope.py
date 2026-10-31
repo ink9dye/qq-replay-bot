@@ -12,6 +12,8 @@ _LOCK=Lock();_CACHE={};_PENDING={};_RETRY={}
 
 
 def parse_ranges(args):
+    if 'internal' in args and args['internal'] not in (['0'],['1']):
+        raise ValueError('internal 只支持 0 或 1。')
     result=[]
     for key,default in [('self_range','100'),('opponent_range','all')]:
         values=args.get(key,[default])
