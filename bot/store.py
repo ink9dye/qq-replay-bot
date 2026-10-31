@@ -90,6 +90,12 @@ class Store:
                 replay_ids_json TEXT NOT NULL,
                 range_start REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS stats_links (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            );
             """
         )
         columns = {row[1] for row in self._db.execute("PRAGMA table_info(replays)")}
@@ -510,3 +516,23 @@ class Store:
                                           else row['replay_ids_json']),
             "range_start": row["range_start"],
         }
+
+    def insert_stats_link(self, token: str, user_id: str, created_at: float, expires_at: float) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO stats_links (token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
+                (token, str(user_id), float(created_at), float(expires_at)),
+            )
+            self._db.commit()
+
+    def get_stats_link(self, token: str) -> Optional[dict]:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM stats_links WHERE token=?", (token,)).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    def purge_stats_links(self, now: float) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM stats_links WHERE expires_at<=?", (float(now),))
+            self._db.commit()

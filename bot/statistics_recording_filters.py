@@ -179,6 +179,22 @@ def _query(db,root,now,args,limit=2000,ranges=None):
     for row in rows:
         row['deck_type']=row.get('match_deck_type')or row['deck_type']
         row['opponent_deck_type']=row.get('opponent_match_deck_type')or row['opponent_deck_type']
+    # 局面多选：主卡局/Side局 × 先攻/后攻（另含先后攻未知）。
+    phases=list(dict.fromkeys(v for v in args.get('phase',[]) if v))
+    if phases:
+        allowed={'main_first','main_second','side_first','side_second','unknown_order'}
+        if any(v not in allowed for v in phases):raise ValueError('局面条件无效。')
+        kept=[]
+        for row in rows:
+            first=row.get('first_player')
+            order='first' if first==1 else ('second' if first==0 else None)
+            if order is None:
+                if 'unknown_order' in phases:kept.append(row)
+                continue
+            game=row.get('observed_game_no')
+            kind='main' if game==1 else ('side' if isinstance(game,int) and game>1 else None)
+            if kind and kind+'_'+order in phases:kept.append(row)
+        rows=kept
     values=lambda name:args.get(name,[])
     mode=_scalar_arg(args,'mode',('drawn','not_drawn','used'),'drawn')
     match=_scalar_arg(args,'match',('any','all'),'any')
@@ -213,6 +229,14 @@ def _query(db,root,now,args,limit=2000,ranges=None):
             group_mode,group_match=mode,match
         if codes:conditions.append((prefix,{canonical(int(c))for c in codes},group_mode,group_match))
     none_keys=('deck','opponent','card','opponent_card','not_card','opponent_not_card','first','outcome')
+    all_carried={}
+    for card in db.execute('SELECT build,code FROM stat_build_cards WHERE copies>0'):
+        all_carried.setdefault(card['build'],set()).add(canonical(card['code']))
+    facts_present=set()
+    for fact in db.execute('SELECT digest,player,code FROM stat_card_facts'):
+        facts_present.add((fact['digest'],fact['player'],canonical(fact['code'])))
+    reasons={'opponent_evidence_missing':0,'self_evidence_missing':0,
+             'draw_process_incomplete':0,'card_fact_missing':0,'condition_not_met':0}
     result=[]
     for row in rows:
         if any(args.get(key+'_none')==['1']for key in none_keys):continue
@@ -226,22 +250,35 @@ def _query(db,root,now,args,limit=2000,ranges=None):
         if opponent_values and (row['opponent_deck_type']or '__unknown__')not in opponent_values:continue
         if values('first')and str(row['first_player'])not in values('first'):continue
         if values('outcome')and row['outcome']not in values('outcome'):continue
-        accepted=True
+        # P16：卡片条件失败时区分"证据不足"与"确实不满足"（每行只记第一个原因）。
+        failure=None
         for prefix,codes,mode,match in conditions:
             if not codes:continue
             opponent_side=prefix.startswith('opponent')
             subject=basis['_opponent_views'].get((row['digest'],row['opponent'])) if opponent_side else row
-            if subject is None:accepted=False;break
-            observed=(used if mode=='used'else draws).get((subject['digest'],subject['player']),set())
+            if subject is None:
+                failure='opponent_evidence_missing' if opponent_side else 'self_evidence_missing';break
+            key=(subject['digest'],subject['player'])
+            observed=(used if mode=='used'else draws).get(key,set())
             if mode=='not_drawn':
-                if not subject['draw_complete']:accepted=False;break
+                if not subject['draw_complete']:
+                    failure='draw_process_incomplete';break
                 observed=carried.get(subject['build'],set())-observed
-            if not (codes<=observed if match=='all'else bool(codes&observed)):accepted=False;break
-        if not accepted:continue
+            elif codes:
+                deck_cards=carried.get(subject['build'],set()) if mode=='drawn' else all_carried.get(subject['build'],set())
+                missing=[code for code in codes if code in deck_cards and (subject['digest'],subject['player'],code)not in facts_present]
+                if missing and (match=='all' or len(missing)==len(codes)):
+                    failure='card_fact_missing';break
+            if not (codes<=observed if match=='all'else bool(codes&observed)):
+                failure='condition_not_met';break
+        if failure:
+            reasons[failure]+=1;continue
         result.append({k:row.get(k)for k in ('digest','player','deck_type','opponent','opponent_deck_type','recorded_at','expires_at','first_player','outcome','recording_title','download_filename','observed_date','observed_day','observed_match_no','observed_game_no','observed_match_id','current_rank','opponent_current_rank')})
     result.sort(key=lambda r:r['recorded_at'],reverse=True)
     unique_recordings=len({r['digest'] for r in result})
     samples=result if limit is None else result[:limit]
     return dict(recording_filters_version=3,card_filters_version=2,
                 samples=samples,total=len(result),limited=(limit is not None and len(result)>limit),
-                unique_recordings=unique_recordings,roster=basis['roster'],metrics=win_rate(result))
+                unique_recordings=unique_recordings,roster=basis['roster'],metrics=win_rate(result),
+                filter_reasons=reasons if conditions else {},
+                filter_reasons_scope='rows_that_passed_non_card_filters')

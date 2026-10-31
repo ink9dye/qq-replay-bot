@@ -19,6 +19,26 @@ from pathlib import Path
 from .qq_diagnostics import Diagnostics, trace_id, exception_fields
 
 
+def mark_stopped(state_dir, reason='QQ窗口已关闭'):
+    """QQ 进程退出时把状态写成 stopped；保留其它字段，原子替换。
+
+    只用于"进程要退出了"的收尾：不发消息、不碰网络；写失败就静默放弃。
+    """
+    if not state_dir:
+        return
+    path = Path(state_dir) / 'qq-status.json'
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+        if not isinstance(value, dict):
+            raise ValueError('invalid_status')
+    except (OSError, ValueError):
+        value = {}
+    value.update(state='stopped', reason=reason, updated_at=time.time())
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
+    temporary.replace(path)
+
+
 class InterfaceReconnectRequested(ConnectionError):
     """Explicit local request, not a transport failure or login attempt."""
 

@@ -180,7 +180,7 @@ class CardSearch:
     def _detail(card):
         card_id = int(card["id"])
         text = card.get("text") or {}
-        lines = [card_name(card), f"卡片密码：{card_id:08d}"]
+        lines = [card_name(card), f"卡密：{card_id:08d}"]
         for name in (card.get("sc_name") or text.get("sc_name"), card.get("md_name") or text.get("md_name")):
             if name and name not in lines:
                 lines.append(name)
@@ -190,15 +190,15 @@ class CardSearch:
         lines.append(f"百鸽：https://ygocdb.com/card/{card_id}")
         return CardReply("\n\n".join(lines), f"https://cdn.233.momobako.com/ygopro/pics/{card_id}.jpg")
 
-    def has_candidates(self, user, now=None):
-        """当前会话是否有未过期的查卡候选（给"直接发数字/next"做上下文判断）。"""
+    def has_candidates(self, user, max_age=300, now=None):
+        """当前会话是否有查卡候选；max_age 控制"裸数字/next"的快捷接话窗口。"""
         user = str(user)
         with self.lock:
             session = self.sessions.get(user)
             if not session:
                 return False
             moment = self.clock() if now is None else now
-            return moment - session["time"] < 300
+            return moment - session["time"] < max_age
 
     def handle(self, user, action, value=""):
         # handle_text 在线程中执行；保护候选和缓存，避免同一用户并发串页。
@@ -268,5 +268,5 @@ class CardSearch:
         lines = [f"“{session['query']}”的候选："]
         lines += [f"{i + 1}. {card_name(card)}（{int(card['id']):08d}）"
                   for i, card in enumerate(session["rows"]) if offset <= i < offset + 5]
-        lines.append("5分钟内发送“选卡1”或“选卡 1”查看；发送“查卡下一页”翻页。序号对应你在当前会话中的列表；群内这些指令无需@。")
+        lines.append("2分钟内直接发数字查看，发 next 翻页。序号对应你在当前会话中的列表；群里有候选时同样无需@。")
         return "\n".join(lines)

@@ -15,6 +15,10 @@ def capture_metadata(db,digests):
 
 def inherit_first_game_types(db,rows):
     metadata=capture_metadata(db,{r['digest']for r in rows})
+    for row in rows:
+        meta=metadata.get(row['digest'])
+        row['observed_game_no']=meta[1] if meta else None
+        row['observed_captured_from_start']=bool(meta[2]) if meta else None
     pairs={}
     for row in db.execute('SELECT digest,player FROM stat_views'):
         pairs.setdefault(row['digest'],set()).add(row['player'])

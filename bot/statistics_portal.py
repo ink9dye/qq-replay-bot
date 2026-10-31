@@ -57,7 +57,9 @@ class StatisticsPortal:
         if len(parts)==3 and parts[:2]==['statistics','access']:
             if not hmac.compare_digest(parts[2],self.secret):return self._reply(403,'入口凭据无效。')
             value=self._session(int(self.clock())+SESSION_SECONDS)
-            return self._reply(303,'',extra={'Location':'/statistics','Set-Cookie':f'{COOKIE}={value}; Path=/statistics; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}'})
+            # 只允许跳到固定的本机后台页，避免成为开放重定向。
+            target='/statistics/deck-naming' if parse_qs(parsed.query).get('next')==['/statistics/deck-naming'] else '/statistics'
+            return self._reply(303,'',extra={'Location':target,'Set-Cookie':f'{COOKIE}={value}; Path=/statistics; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}'})
         if not self._authenticated(headers.get('Cookie')):return self._reply(403,'请使用本机“打开统计页面”入口。')
         if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
@@ -66,6 +68,29 @@ class StatisticsPortal:
             return self._reply(200,Path(__file__).with_name('statistics_portal.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','build']:
             return self._reply(200,Path(__file__).with_name('statistics_build.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
+        if parts==['statistics','decks']:
+            return self._reply(200,Path(__file__).with_name('statistics_decks.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
+        if parts==['statistics','api','decks']:
+            from .deck_statistics import usage
+            def run(db):return usage(db,self.replay_root,float(self.clock()))
+            return self._query_reply(run)
+        if parts==['statistics','api','deck']:
+            from .deck_statistics import detail
+            args=parse_qs(parsed.query)
+            if any(len(v)>2000 for v in args.values()):return self._reply(400,'筛选项过多。')
+            deck=args.get('deck',[''])[0];rank=args.get('rank',['carried'])[0];order=args.get('order',['all'])[0]
+            partition=args.get('partition',['main'])[0];parts_threshold=args.get('threshold',['0.01'])
+            if len(parts_threshold)>1:return self._reply(400,json.dumps({'error':'样本占比参数重复。'},ensure_ascii=False),'application/json; charset=utf-8')
+            threshold=parts_threshold[0].strip()
+            from decimal import Decimal,InvalidOperation
+            try:
+                value=Decimal(threshold)
+                if not value.is_finite():raise InvalidOperation
+            except (InvalidOperation,ValueError):return self._reply(400,json.dumps({'error':'样本占比无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if value<0 or value>1:return self._reply(400,json.dumps({'error':'样本占比应在0到100%之间。'},ensure_ascii=False),'application/json; charset=utf-8')
+            def run(db):return detail(db,self.replay_root,float(self.clock()),deck,rank,order,threshold,partition)
+            try:return self._query_reply(run)
+            except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','recordings']:
             return self._reply(200,Path(__file__).with_name('statistics_recordings.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','api','recordings']:
@@ -118,10 +143,11 @@ class StatisticsPortal:
         if parts==['statistics','api','deck-naming']:
             from .statistics_deck_naming import detail,list_rows
             args=parse_qs(parsed.query);player=args.get('player',[''])[0]
+            scope=args.get('scope',['100'])[0];query=args.get('q',[''])[0]
             def run(db):
-                return detail(db,self.database.parent,float(self.clock()),player) if player else list_rows(db,float(self.clock()))
+                return detail(db,self.database.parent,float(self.clock()),player) if player else list_rows(db,float(self.clock()),scope,query)
             try:return self._query_reply(run)
-            except LookupError:return self._reply(404,'这个玩家不在当前前100名单。')
+            except LookupError:return self._reply(404,'没有找到这个玩家的有效构筑或名单记录。')
             except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','api','pt-history']:
             player=parse_qs(parsed.query).get('player',[''])[0]
@@ -191,7 +217,8 @@ class StatisticsPortal:
         if parts==['statistics','groups']:
             return self._reply(200,Path(__file__).with_name('statistics_groups.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','card-table']:
-            return self._reply(200,Path(__file__).with_name('statistics_card_table.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
+            # 2026-10-31 合并：卡片对比升级为唯一的卡片统计页，旧入口 303 过去（书签/旧链接继续可用）。
+            return self._reply(303,'',extra={'Location':'/statistics/cards-report'})
         if parts==['statistics','api','card-table']:
             from .statistics_card_overview import query as overview
             args=parse_qs(parsed.query,keep_blank_values=True)
@@ -228,7 +255,7 @@ class StatisticsPortal:
                     metric=args.get('metric',['drawn'])[0],threshold=args.get('threshold',['1'])[0],
                     min_games=args.get('min',['0'])[0],sort=args.get('sort',['people'])[0],
                     partition=args.get('partition',['auto'])[0],limit=args.get('limit',['500'])[0],
-                    exclude=args.get('exclude',[]))))
+                    exclude=args.get('exclude',[]),phases=args.get('phase',[]))))
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts in (['statistics','cards'],['statistics','matrix']):
@@ -272,6 +299,19 @@ class StatisticsPortal:
                 if order not in ('all','first','second'):raise ValueError()
             except (ValueError,TypeError):return self._reply(400,'矩阵筛选条件无效。')
             return self._query_reply(lambda db:matrix(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1'))
+        if parts==['statistics','api','matrix-cell']:
+            from .statistics_matrix_cell import query as matrix_cell
+            args=parse_qs(parsed.query)
+            try:
+                row=json.loads(args.get('row',['null'])[0]);column=json.loads(args.get('column',['null'])[0])
+                if not (row is None or isinstance(row,str)) or not (column is None or isinstance(column,str)) or len(row or '')>128 or len(column or '')>128:raise ValueError()
+                order=args.get('first',['all'])[0]
+                if order not in ('all','first','second'):raise ValueError()
+            except (ValueError,TypeError):return self._reply(400,'矩阵格子条件无效。')
+            try:
+                return self._query_reply(lambda db:matrix_cell(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1',threshold=args.get('threshold',['10'])[0]))
+            except ValueError as exc:
+                return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','api','sample'] or len(parts)==3 and parts[:2]==['statistics','sample']:
             from .statistics_samples import details
             args=parse_qs(parsed.query);player=args.get('player',[''])[0];digest=args.get('digest',[''])[0] if parts[1]=='api' else parts[2]

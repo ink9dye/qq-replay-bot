@@ -9,6 +9,14 @@ from .statistics_portal import StatisticsPortal,owner_secret
 def make_handler(portal):
     class Handler(BaseHTTPRequestHandler):
         protocol_version='HTTP/1.1'
+        def _compress(self,kind,body,headers):
+            """P11：文本/JSON 响应按需 gzip（>1KB 且客户端接受），不改任何统计口径。"""
+            if not isinstance(body,bytes) or len(body)<1024:return body,headers
+            if not (kind.startswith('text/') or kind.startswith('application/json')):return body,headers
+            if 'gzip' not in (self.headers.get('Accept-Encoding','')or'').lower():return body,headers
+            import gzip
+            result=dict(headers);result['Content-Encoding']='gzip';result['Vary']='Accept-Encoding'
+            return gzip.compress(body,6),result
         def do_GET(self):
             if self.path=='/health':
                 result=portal._reply(200,json.dumps(dict(service='qq-statistics-web',status='running',pid=os.getpid(),
@@ -17,6 +25,7 @@ def make_handler(portal):
                 result=portal.route(self.path,self.headers,self.client_address[0])
             else:result=portal._reply(404,'找不到此统计页面。')
             status,kind,body,headers=result
+            body,headers=self._compress(kind,body,headers)
             self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
             for key,value in headers.items():self.send_header(key,value)
             self.end_headers();self.wfile.write(body)
@@ -28,7 +37,9 @@ def make_handler(portal):
                 if not 0<length<=2048:raise ValueError()
                 result=portal.post(self.path,self.headers,self.client_address[0],self.rfile.read(length))
             except ValueError:result=portal._reply(400,'请求内容无效。')
-            status,kind,body,headers=result;self.send_response(status)
+            status,kind,body,headers=result
+            body,headers=self._compress(kind,body,headers)
+            self.send_response(status)
             self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
             for key,value in headers.items():self.send_header(key,value)
             self.end_headers();self.wfile.write(body)

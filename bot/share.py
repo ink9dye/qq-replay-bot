@@ -112,6 +112,21 @@ class ShareApp:
             "replay_ids": list(replay_ids),
         }
 
+    def create_stats_link(self, user_id: str, hours: float = 2) -> dict:
+        """只读统计页的临时入口；与录像链接分开表和有效期。"""
+        now = float(self.clock())
+        token = secrets.token_urlsafe(32)
+        expires = now + max(0.1, float(hours)) * 3600
+        self.store.insert_stats_link(token, user_id, now, expires)
+        try:
+            self.store.purge_stats_links(now)
+        except Exception:
+            pass
+        public = self.public_base()
+        base = public or self.local_base()
+        return {"token": token, "url": base + "/stats/" + token,
+                "public": bool(public), "created_at": now, "expires_at": expires}
+
     def page(self, token: str, kind: str, replay_id: str = "") -> tuple[int, str, bytes]:
         if not TOKEN_RE.fullmatch(token or ""):
             return self._text(404, "找不到这个分享链接。")
@@ -158,8 +173,34 @@ class ShareApp:
                 return self._html(200, '单小局解析', render_report(report, token, int(replay_id)))
             return 200, "application/octet-stream", path.read_bytes()
         if kind == "zip":
+            from .statistics_recording_names import catalog
             buffer = io.BytesIO()
             used: set[str] = set()
+            catalogs: dict[str, dict] = {}
+
+            def folder_for(replay: dict) -> str:
+                player = link['player']
+                if player not in catalogs:
+                    try:
+                        catalogs[player] = catalog(self.store._db, player)
+                    except Exception:
+                        catalogs[player] = {}
+                digest = None
+                try:
+                    row = self.store._db.execute(
+                        'SELECT digest FROM stat_files WHERE replay_id=? LIMIT 1', (replay['id'],)).fetchone()
+                    digest = row[0] if row else None
+                except Exception:
+                    digest = None
+                info = catalogs[player].get(digest) if digest else None
+                if info and info.get('observed_date'):
+                    return f"{info['observed_date']} 第{info.get('observed_match_no') or '?'}场"
+                stamp = replay.get('recorded_at') or replay.get('saved_at')
+                try:
+                    return datetime.fromtimestamp(float(stamp)).strftime('%Y-%m-%d')
+                except (TypeError, ValueError, OSError):
+                    return ''
+
             with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for item in link["replay_ids"]:
                     replay = self.store.get_replay(int(item))
@@ -170,10 +211,18 @@ class ShareApp:
                     if path is None:
                         continue
                     name = self.download_name(replay)
-                    if name in used:
-                        name = f"{path.stem}-{item}{path.suffix}"
-                    used.add(name)
-                    archive.write(path, arcname=name)
+                    folder = folder_for(replay)
+                    arcname = f"{folder}/{name}" if folder else name
+                    if arcname in used:
+                        fallback = f"{path.stem}-{item}{path.suffix}"
+                        arcname = f"{folder}/{fallback}" if folder else fallback
+                        suffix = 2
+                        while arcname in used:
+                            fallback = f"{path.stem}-{item}-{suffix}{path.suffix}"
+                            arcname = f"{folder}/{fallback}" if folder else fallback
+                            suffix += 1
+                    used.add(arcname)
+                    archive.write(path, arcname=arcname)
             return 200, "application/zip", buffer.getvalue()
         return self._html(200, "录像目录", self._directory_body(link))
 
@@ -234,6 +283,8 @@ def make_handler(app: ShareApp):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            if 'Location' in extra:
+                self.send_header('Location', extra['Location'])
             if 'Content-Disposition' in extra:
                 self.send_header('Content-Disposition',extra['Content-Disposition'])
             elif status == 200 and content_type == "application/octet-stream":
@@ -250,6 +301,9 @@ def make_handler(app: ShareApp):
             self.wfile.write(body)
 
         def _route(self, parts: list[str]) -> tuple[int, str, bytes]:
+            if len(parts) >= 2 and parts[0] == 'stats':
+                from .statistics_proxy import route as stats_route
+                return stats_route(app, self.path, parts)
             if len(parts)>=2 and parts[0]=='s':
                 from .share_build import route
                 result=route(app,self.path,parts)

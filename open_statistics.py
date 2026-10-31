@@ -9,6 +9,7 @@ from urllib.error import HTTPError,URLError
 
 def main():
     root=Path(__file__).resolve().parent
+    target=sys.argv[1].strip().lower() if len(sys.argv)>1 else ''
     cfg=json.loads((root/'config.json').read_text(encoding='utf-8-sig'))
     data=Path(cfg.get('data_dir') or root/'data');port=8788
     base=f'http://127.0.0.1:{port}'
@@ -33,8 +34,9 @@ def main():
     except (OSError,ValueError,URLError,HTTPError):
         print('本机统计页面暂不可用，请检查统计服务端口或资料。观战进程未改动。')
         return 1
-    webbrowser.open(base+'/statistics/access/'+secret)
-    print('已打开本机统计页面。')
+    suffix='?next=/statistics/deck-naming' if target=='deck-naming' else ''
+    webbrowser.open(base+'/statistics/access/'+secret+suffix)
+    print('已打开本机'+('卡组命名' if target=='deck-naming' else '统计')+'页面。')
     return 0
 
 

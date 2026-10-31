@@ -95,10 +95,15 @@ from bot.join_throttle import DEFAULT_FAIL_THRESHOLD, DEFAULT_PAUSE, JoinGate
 JOIN_CONCURRENT_DEFAULT = 8
 JOIN_MIN_INTERVAL_DEFAULT = 10.0
 # 启动前就在打的对局（积压）：到期窗口 20—40 秒随机错峰，让它们慢慢进，不在启动瞬间一起扑进去。
-# 注意：split 模式下 bot/service.py 会把 config.json 的 preexisting_join_min/max_seconds 传进来
-# （它自己的缺省仍是 1/10），所以生产要真正生效需要 config 里写上这两个键或 framework owner 改默认。
 PREEXISTING_JOIN_MIN_DEFAULT = 20.0
 PREEXISTING_JOIN_MAX_DEFAULT = 40.0
+# bot/service.py 在 config.json 没配这些键时，会把它自己的旧缺省原样传进来（2/5/3/60、积压 1/10），
+# 和"用户确实想要 2/5"无法区分；所以下列值与"未配置"等价，一律回落到上面的观战口径。
+# 真要 2 并发/5 秒，得让服务端传一个非旧缺省的值（或改 service.py 在不配置时不传）。
+SERVICE_JOIN_CONCURRENT_FALLBACK = 2
+SERVICE_JOIN_INTERVAL_FALLBACK = 5.0
+SERVICE_PREEXISTING_MIN_FALLBACK = 1.0
+SERVICE_PREEXISTING_MAX_FALLBACK = 10.0
 
 
 def log(message: str) -> None:
@@ -2230,24 +2235,29 @@ def cleanup_old_files(replay_dir: Path, deck_dir: Path, now: float, max_age: flo
 def join_gate_from_config(config: dict) -> JoinGate:
     """按 watch 配置建"进场节流"闸门；缺省或非法值回落 watch 侧策略默认 8/10/3/60。
 
-    模块自身的默认是 2/5/3/60（见 bot/join_throttle.py，那里保持通用），但"同时观战 2 场"实测
-    满足不了采集需求（2026-10-31 常态 7—9 场），所以观战口径由这里定：并发 8、间隔 10 秒、
-    连败 3 次暂停 60 秒。这四个键以后由框架 owner 从 config.json 透传，传了就以配置为准。
+    bot/join_throttle.py 自身默认仍是 2/5/3/60（那里保持通用）。框架 owner 的 service.py 目前会把
+    "config 没配"的键按旧缺省 2/5/3/60 传进来，这种值等同于未配置（见 SERVICE_*_FALLBACK），
+    否则用户定的 8/10 会被悄悄盖回 2/5。
     """
-    def read(key, default, cast):
+    def read(key, default, fallback, cast):
         value = config.get(key)
         if value is None:
             return default
         try:
-            return cast(value)
+            value = cast(value)
         except (TypeError, ValueError):
             log(f"进场节流配置 {key}={value!r} 不是数字，改用默认 {default}")
             return default
+        if fallback is not None and value == fallback:
+            return default
+        return value
     values = dict(
-        max_concurrent=read('max_join_concurrent', JOIN_CONCURRENT_DEFAULT, int),
-        min_interval=read('join_min_interval_seconds', JOIN_MIN_INTERVAL_DEFAULT, float),
-        fail_threshold=read('join_fail_threshold', DEFAULT_FAIL_THRESHOLD, int),
-        pause_seconds=read('join_pause_seconds', DEFAULT_PAUSE, float),
+        max_concurrent=read('max_join_concurrent', JOIN_CONCURRENT_DEFAULT,
+                            SERVICE_JOIN_CONCURRENT_FALLBACK, int),
+        min_interval=read('join_min_interval_seconds', JOIN_MIN_INTERVAL_DEFAULT,
+                          SERVICE_JOIN_INTERVAL_FALLBACK, float),
+        fail_threshold=read('join_fail_threshold', DEFAULT_FAIL_THRESHOLD, None, int),
+        pause_seconds=read('join_pause_seconds', DEFAULT_PAUSE, None, float),
     )
     try:
         return JoinGate(**values)
@@ -2260,19 +2270,24 @@ def join_gate_from_config(config: dict) -> JoinGate:
 def preexisting_join_window(config: dict) -> tuple[float, float]:
     """启动前已在打的对局：到期窗口（秒）。缺省 20—40 秒错峰，避免启动瞬间一起扑进去。
 
-    split 模式下 config 里这两个键由 bot/service.py 透传；传了就以配置为准（可以更短，也可以更长）。
+    service.py 目前在没有配置时传 1/10（旧缺省），按未配置处理；配置其他值以配置为准。
     """
-    def number(key, default):
+    def number(key, default, fallback):
         value = config.get(key)
         if value is None:
             return default
         try:
-            return max(0.0, float(value))
+            value = max(0.0, float(value))
         except (TypeError, ValueError):
             log(f"进屋错峰配置 {key}={value!r} 不是数字，改用默认 {default}")
             return default
-    low = number('preexisting_join_min_seconds', PREEXISTING_JOIN_MIN_DEFAULT)
-    high = number('preexisting_join_max_seconds', PREEXISTING_JOIN_MAX_DEFAULT)
+        if fallback is not None and value == fallback:
+            return default
+        return value
+    low = number('preexisting_join_min_seconds', PREEXISTING_JOIN_MIN_DEFAULT,
+                 SERVICE_PREEXISTING_MIN_FALLBACK)
+    high = number('preexisting_join_max_seconds', PREEXISTING_JOIN_MAX_DEFAULT,
+                  SERVICE_PREEXISTING_MAX_FALLBACK)
     return low, max(low, high)
 
 

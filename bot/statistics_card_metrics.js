@@ -7,10 +7,10 @@ function difference(m,key){const a=m[key].percentage,b=m.scope_win_rate.percenta
 function cell(m,key){const f=m[key],n=el('td');n.append(el('b',format(f)),el('div',difference(m,key),'delta'));if(f.denominator)n.append(el('div',`${f.numerator} / ${f.denominator} · 未知 ${f.unknown_samples}`,'note'));else n.append(el('div',`有效样本0 · 未知 ${f.unknown_samples}`,'note'));if('wins'in f)n.append(el('div',`胜${f.wins}／负${f.losses}／平${f.draws}`,'note'));return n}
 function personRate(p){return p.percentage===null?'暂无对应玩家':p.unknown_players===p.population?'未知（无完整记录）':(p.lower_bound?'至少 ':'')+p.percentage.toFixed(1)+'%'}
 
-const PALETTE=['#c9c4b6','#8fa7b6','#c3ae86','#b08b88'],UNKNOWN_COLOR='#a49ab0';
+const PALETTE=['#DDE3EA','#8FB8DE','#93C9BC','#F5B47B'],UNKNOWN_COLOR='#AAB5C4';
 function allocationPies(){const root=$('allocationPies');root.replaceChildren();const base=investment.card_details?.base_partition||'main';
  for(const part of [base,'side','total']){const p=investment.partitions[part],bins=part==='total'?{...p.recorded_bins,0:p.confirmed_absent_players}:p.bins;
-  const entries=['0','1','2','3'].map((n,i)=>({label:n+'张'+(part==='total'?'·记录':''),count:bins[n]||0,color:PALETTE[i]}));
+  const entries=['0','1','2','3'].map((n,i)=>({label:(n==='3'?'3张及以上':n+'张')+(part==='total'?'·记录':''),count:(n==='3'?(bins['3']||0)+(bins['4']||0)+(bins['4+']||0):bins[n]||0),color:PALETTE[i]}));
   const unknown=Math.max(0,p.population-entries.reduce((a,b)=>a+b.count,0));
   const all=[...entries,{label:'未知或不完整',count:unknown,color:UNKNOWN_COLOR}];
   const box=el('section',undefined,'panel pie-panel');box.append(el('h3',({main:'主卡',extra:'额外',side:'Side',total:'总'})[part]+'投入量'));

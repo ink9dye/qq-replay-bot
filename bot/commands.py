@@ -34,7 +34,6 @@ def parse_scope(text: str) -> Optional[int]:
 
 
 def parse_command(text: str) -> dict:
-    text = re.sub(r'^选卡([0-9]+)$', r'选卡 \1', text.strip())
     tokens = tokenize(text.strip())
     if not tokens:
         return {"op": "empty"}
@@ -44,6 +43,11 @@ def parse_command(text: str) -> dict:
         if not player or len(player) > 100:
             return {"op": "error", "message": "格式：历史 玩家名，例如：历史 花无十日红。"}
         return {"op": "player_history", "player": player}
+    if head == "构筑":
+        player = " ".join(rest).strip()
+        if not player or len(player) > 100:
+            return {"op": "error", "message": "格式：构筑 玩家名，例如：构筑 花无十日红。"}
+        return {"op": "deck_build", "player": player}
     if head in ("随机一卡", "随机卡", "猜卡", "揭晓猜卡"):
         if rest:
             return {"op": "error", "message": f"直接发送“{head}”即可。"}
@@ -69,14 +73,15 @@ def parse_command(text: str) -> dict:
         return {"op": "limits_card", "value": query}
     if head in ("查卡", "ck", "CK"):
         return {"op": "card_search", "query": " ".join(rest)}
-    if head == "选卡":
-        if len(rest) != 1 or not rest[0].isascii() or not rest[0].isdigit() or len(rest[0]) > 4:
-            return {"op": "error", "message": "格式：选卡 1（使用当前候选列表里的序号）"}
-        return {"op": "card_select", "index": rest[0]}
-    if head == "查卡下一页":
-        return {"op": "card_next"}
     if head == "帮助":
         return {"op": "help"}
+    if head == "统计":
+        page = rest[0] if rest else ""
+        if len(rest) > 1 or page not in ("", "卡组", "录像", "卡片", "系列"):
+            return {"op": "error", "message": "格式：统计 或 统计 卡组/录像/卡片/系列"}
+        pages = {"": "", "卡组": "statistics/decks", "录像": "statistics/recordings",
+                 "卡片": "statistics/card-table", "系列": "statistics/groups"}
+        return {"op": "stats_page", "page": pages[page]}
     if head == "我的订阅":
         return {"op": "list"}
     if head == "订阅":
@@ -102,4 +107,38 @@ def parse_command(text: str) -> dict:
             return {"op": "error", "message": f"请写上玩家名：{head} “玩家名”"}
         op = {"推送": "push", "静默": "silent", "取消订阅": "unsubscribe", "录像": "replays"}[head]
         return {"op": op, "player": player}
+    if head == "预定":
+        if len(rest) < 2:
+            return {"op": "error", "message": "格式：预定 卡名 罕贵 预期价，例如：预定 决斗者之力 UTR 160"}
+        try:
+            target = float(rest[-1])
+        except ValueError:
+            return {"op": "error", "message": "预期价格要写数字，例如 160"}
+        if target <= 0:
+            return {"op": "error", "message": "预期价格要大于 0"}
+        args = list(rest[:-1])
+        rarity = ""
+        if len(args) >= 2 and re.fullmatch(r"[A-Za-z0-9]{1,12}", args[-1]):
+            rarity = args[-1].upper()
+            args = args[:-1]
+        name = " ".join(args).strip()
+        if not name:
+            return {"op": "error", "message": "格式：预定 卡名 罕贵 预期价"}
+        return {"op": "price_reserve", "name": name, "rarity": rarity, "target": target}
+    if head == "我的预定":
+        if rest:
+            return {"op": "error", "message": "直接发送“我的预定”即可。"}
+        return {"op": "price_reservations"}
+    if head == "取消预定":
+        if not rest:
+            return {"op": "error", "message": "格式：取消预定 卡名 罕贵"}
+        args = list(rest)
+        rarity = ""
+        if len(args) >= 2 and re.fullmatch(r"[A-Za-z0-9]{1,12}", args[-1]):
+            rarity = args[-1].upper()
+            args = args[:-1]
+        name = " ".join(args).strip()
+        if not name:
+            return {"op": "error", "message": "格式：取消预定 卡名 罕贵"}
+        return {"op": "price_cancel", "name": name, "rarity": rarity}
     return {"op": "unknown", "text": " ".join(tokens).strip()}

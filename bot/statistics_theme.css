@@ -1,7 +1,7 @@
 :root{
   --p10-bg:#f4f5f1;--p10-surface:#ffffff;--p10-ink:#22322b;--p10-muted:#5e6f65;
   --p10-line:#dbe2d8;--p10-accent:#3f6b52;--p10-accent-soft:#edf2e9;--p10-focus:#2f5d45;
-  --p10-c0:#c9c4b6;--p10-c1:#8fa7b6;--p10-c2:#c3ae86;--p10-c3:#b08b88;--p10-unknown:#a49ab0;
+  --p10-c0:#DDE3EA;--p10-c1:#8FB8DE;--p10-c2:#93C9BC;--p10-c3:#F5B47B;--p10-unknown:#AAB5C4;
 }
 body{background:var(--p10-bg);color:var(--p10-ink)}
 h1{font-size:26px;line-height:1.35;margin:16px 0 10px;letter-spacing:.2px}
@@ -38,3 +38,21 @@ a[aria-current=page]{text-decoration:underline;text-underline-offset:6px;text-de
 .card-chips span{max-width:100%;overflow-wrap:anywhere;display:inline-flex;align-items:center;gap:4px}
 .card-name,.card-view h2{overflow-wrap:anywhere}
 .deck-card .caption{overflow-wrap:anywhere}
+
+/* P17 手机：点击区域与固定表头（2026-10-31）。只在窄屏生效，桌面不变。 */
+@media (max-width:520px){
+  .main-nav{gap:4px 16px}
+  .main-nav a{min-height:40px;display:inline-flex;align-items:center}
+  .panel{padding:14px}
+  h1{font-size:22px}
+  .actions button,.filters button,.controls button,.search button,form>button{min-height:40px}
+  select,input[type=text],input[type=number],input[type=search],input[type=datetime-local]{min-height:40px}
+  .chip-x{min-width:32px;min-height:32px}
+  table a{display:inline-flex;align-items:center;min-height:36px}
+  .textbutton{display:inline-flex;align-items:center;min-height:34px}
+  .detail{min-height:34px}
+  input[type=checkbox],input[type=radio]{width:20px;height:20px}
+}
+@media (max-width:760px){
+  .wrap table thead th,.table-wrap table thead th{position:sticky;top:0;z-index:2;background:var(--p10-surface,#fff)}
+}
