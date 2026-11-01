@@ -69,16 +69,13 @@ class OcrQuote:
         self.ui.run(["shell", "am", "start", "-S", "--activity-clear-task", "-n",
                      "com.jihuanshe/com.jihuanshe.ui.page.main.MainActivity"], check=False)
         time.sleep(6.0)
-        for _ in range(8):
+        for _ in range(3):
             focus = self._focus().lower()
             if "mainactivity" in focus:
                 break
-            if "com.jihuanshe" in focus:
-                self.ui.back()
-            else:
-                self.ui.run(["shell", "am", "start", "-S", "--activity-clear-task", "-n",
-                             "com.jihuanshe/com.jihuanshe.ui.page.main.MainActivity"], check=False)
-            time.sleep(1.0)
+            self.ui.run(["shell", "am", "start", "-S", "--activity-clear-task", "-n",
+                         "com.jihuanshe/com.jihuanshe.ui.page.main.MainActivity"], check=False)
+            time.sleep(2.5)
         if "chrom" in self._focus().lower():
             self.ui.back()
             time.sleep(1.0)
@@ -104,62 +101,76 @@ class OcrQuote:
         raise OcrQuoteError("没有进入集换社搜索页")
 
     def _search(self, name):
-        # 清空：搜索框右侧的 ×
-        for _ in range(2):
-            self.ui.tap(844, 94)
-            time.sleep(0.6)
-        typed = False
-        for _ in range(3):
-            self.ui.tap(300, 94)
-            time.sleep(0.3)
-            self.ui.tap(844, 94)
-            time.sleep(0.6)
-            self.ui.tap(300, 94)
-            time.sleep(0.3)
-            self.ui.key(123)
-            for _ in range(40):
-                self.ui.key(67)
-            self.ui.text(name)
-            time.sleep(0.8)
-            top = [row["text"] for row in self._items()
-                   if 50 <= row["center"][1] <= 120 and "取消" not in row["text"]]
-            if any(self._norm(value) == self._norm(name) for value in top):
-                typed = True
-                break
-        if not typed:
-            raise OcrQuoteError("搜索框没有输入目标卡名")
-        self.ui.key(66)
-        time.sleep(2.5)
-        wanted = self._norm(name)
-        for _ in range(10):
-            time.sleep(1.2)
-            if "SearchActivity" not in self._focus():
-                raise OcrQuoteError("搜索页已退出")
+        try:
+            try:
+                self.ui.open_search()
+            except Exception:
+                pass
+            typed = False
+            for _ in range(3):
+                self.ui.tap(300, 94)
+                time.sleep(0.4)
+                self.ui.tap(844, 94)
+                time.sleep(0.5)
+                self.ui.tap(300, 94)
+                time.sleep(0.4)
+                self.ui.text(name)
+                time.sleep(0.8)
+                top = [row["text"] for row in self._items()
+                       if 50 <= row["center"][1] <= 120 and "取消" not in row["text"]]
+                if any(self._norm(value) == self._norm(name) for value in top):
+                    typed = True
+                    break
+            if not typed:
+                raise OcrQuoteError("搜索框没有输入目标卡名")
+            self.ui.key(66)
+        except Exception as exc:
+            raise OcrQuoteError("搜索输入失败：%s" % exc)
+        time.sleep(2.0)
+        rows = self._items()
+        tab = next((row for row in rows if row["text"].strip() == "商品"), None)
+        if tab is not None:
+            self._tap(tab)
+            time.sleep(2.0)
             rows = self._items()
-            text = " ".join(row["text"] for row in rows)
-            if "搜索历史" in text:
-                self.ui.key(66)
-                continue
-            if any(wanted and wanted in self._norm(row["text"]) for row in rows):
-                return
-        raise OcrQuoteError("结果页没有出现目标卡名")
+        if "SearchActivity" not in self._focus():
+            raise OcrQuoteError("结果页已离开")
+        if any("搜索历史" in row["text"] for row in rows):
+            try:
+                self.ui.type_search(name)
+            except Exception:
+                pass
+            time.sleep(2.0)
+            rows = self._items()
+        if any("搜索历史" in row["text"] for row in rows):
+            raise OcrQuoteError("搜索结果仍是历史页")
+        if any(self._norm(row["text"]) == self._norm(name) and row["center"][1] > 300 for row in rows):
+            return
+        # 再给页面 2 秒；仍没有完全同名卡就失败，不点用户/店铺
+        time.sleep(2.0)
+        rows = self._items()
+        if any(self._norm(row["text"]) == self._norm(name) and row["center"][1] > 300 for row in rows):
+            return
+        raise OcrQuoteError("商品结果里没有完全同名卡")
 
     def _open_card(self, name):
         wanted = self._norm(name)
         for _ in range(3):
             rows = self._items()
             exact = [row for row in rows if self._norm(row["text"]) == wanted
+                     and row["center"][1] > 300
                      and "未拆封" not in row["text"] and "未开封" not in row["text"]]
             near = [row for row in rows if wanted and wanted in self._norm(row["text"])
                     and "未拆封" not in row["text"] and "未开封" not in row["text"]]
             for row in exact + near:
-                self._tap(row)
+                below = [other for other in rows
+                         if row["center"][1] < other["center"][1] <= row["center"][1] + 260
+                         and ("¥" in other["text"] or "￥" in other["text"] or self._money(other) is not None)]
+                target = min(below, key=lambda other: other["center"][1]) if below else row
+                self._tap(target)
                 time.sleep(3.0)
                 if "CardDetailActivity" not in self._focus():
-                    if "SearchActivity" not in self._focus():
-                        self.ui.back()
-                        time.sleep(0.8)
-                    continue
+                    raise OcrQuoteError("点击结果后没有进入卡片详情")
                 detail = self._items()
                 title = any(self._norm(item["text"]) == wanted for item in detail)
                 if title:
@@ -173,30 +184,26 @@ class OcrQuote:
         wanted = (rarity or "").strip().upper()
         if not wanted:
             return
-        for _ in range(3):
-            rows = self._items()
-            button = next((row for row in rows if "共有" in row["text"] or "切换版本" in row["text"]), None)
-            if button is None:
-                return
-            self._tap(button)
-            time.sleep(2.0)
-            for _ in range(10):
-                rows = self._items()
-                hit = next((row for row in rows if row["text"].strip().upper() == wanted), None)
-                if hit is not None:
-                    self._tap(hit)
-                    time.sleep(2.5)
-                    return
-                self.ui.swipe(540, 1500, 540, 700)
-                time.sleep(1.0)
-        raise OcrQuoteError("没有找到目标罕贵")
+        if "CardDetailActivity" not in self._focus():
+            raise OcrQuoteError("不在卡片详情页，无法选择版本")
+        if not self.ui.select_version(wanted):
+            raise OcrQuoteError("没有找到目标罕贵")
+        time.sleep(1.0)
+        if "CardDetailActivity" not in self._focus():
+            raise OcrQuoteError("切换版本后离开详情页")
 
     @staticmethod
     def _money(row):
-        match = re.search(r"\d+(?:\.\d+)?", row["text"].replace(",", ""))
-        return float(match.group()) if match else None
+        text = row["text"].replace(",", "")
+        match = re.search(r"[¥￥]\s*(\d+(?:\.\d+)?)", text)
+        if match:
+            return float(match.group(1))
+        values = re.findall(r"\d+(?:\.\d+)?", text)
+        return float(values[-1]) if values else None
 
     def _prices(self):
+        if "CardDetailActivity" not in self._focus():
+            raise OcrQuoteError("不在卡片详情页，不能读价")
         rows = self._items()
         result = {}
         for row in rows:

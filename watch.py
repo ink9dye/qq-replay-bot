@@ -948,6 +948,25 @@ def in_night_window(ts=None, start=NIGHT_START_HOUR, end=NIGHT_END_HOUR) -> bool
     return hour >= start or hour < end
 
 
+def config_number(config, key, default, cast):
+    value = config.get(key)
+    if value is None:
+        return default
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def config_flag(config, key, default):
+    value = config.get(key)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "off", "")
+    return bool(value)
+
+
 def default_local_ip() -> str:
     """当前默认出口的本地 IP（不联网、只做 UDP connect），用于发现换网。"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -2706,22 +2725,22 @@ async def serve(
                 jitter=gate.jitter, max_per_hour=gate.max_per_hour,
                 fail_threshold=gate.fail_threshold, pause_seconds=gate.pause_seconds,
                 floor=tuner.floor, ceiling=tuner.ceiling)
-    night_enabled = bool(config.get("night_mode_enabled", True)) and gate.min_interval > 0
-    night_start = int(config.get("night_start_hour", NIGHT_START_HOUR))
-    night_end = int(config.get("night_end_hour", NIGHT_END_HOUR))
-    night_floor = int(config.get("night_min_concurrent", NIGHT_MIN_CONCURRENT))
-    night_ceiling = int(config.get("night_max_concurrent", NIGHT_MAX_CONCURRENT))
-    night_interval = float(config.get("night_min_interval_seconds", NIGHT_MIN_INTERVAL))
-    night_jitter = float(config.get("night_jitter_seconds", NIGHT_JITTER))
+    night_enabled = config_flag(config, "night_mode_enabled", True) and gate.min_interval > 0
+    night_start = config_number(config, "night_start_hour", NIGHT_START_HOUR, int)
+    night_end = config_number(config, "night_end_hour", NIGHT_END_HOUR, int)
+    night_floor = config_number(config, "night_min_concurrent", NIGHT_MIN_CONCURRENT, int)
+    night_ceiling = config_number(config, "night_max_concurrent", NIGHT_MAX_CONCURRENT, int)
+    night_interval = config_number(config, "night_min_interval_seconds", NIGHT_MIN_INTERVAL, float)
+    night_jitter = config_number(config, "night_jitter_seconds", NIGHT_JITTER, float)
     day_jitter = gate.jitter
     day_interval = gate.min_interval
     day_cap = gate.max_concurrent
     night_mode = False
-    catchup_limit = int(config.get("startup_catchup_limit", STARTUP_CATCHUP_LIMIT))
+    catchup_limit = config_number(config, "startup_catchup_limit", STARTUP_CATCHUP_LIMIT, int)
     catchup_joined = 0
     catchup_skipped = set()
     silent_tracker = SilentWindowTracker()
-    probation_enabled = bool(config.get("probation_enabled", True)) and gate.min_interval > 0
+    probation_enabled = config_flag(config, "probation_enabled", True) and gate.min_interval > 0
     probation_until = time.monotonic() + PROBATION_SECONDS if probation_enabled else 0.0
     probation_fail_mark = gate.stats["failed"]
     if probation_enabled:
@@ -2916,7 +2935,7 @@ async def serve(
                 monitor.finished(outcome, detail)
                 silent_room = bool(outcome == 'gone' and (detail.get('packets') or 0) == 0)
                 silent_tracker.note(time.time(), silent_room)
-                rolling.note_outcome(now, outcome == 'saved', silent_room)
+                rolling.note_outcome(time.time(), outcome == 'saved', silent_room)
                 if outcome == 'saved':
                     silent_streak = 0
                 elif silent_room:

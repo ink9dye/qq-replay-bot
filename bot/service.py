@@ -1338,7 +1338,7 @@ class BotService:
     def _price_quote_blocking(self, command):
         from .price_quote import PriceQuote, format_quote
         from .price_shipping import ShippingCache
-        if not self._price_ui_lock.acquire(timeout=60):
+        if not self._price_ui_lock.acquire(timeout=180):
             return "前面还有查价在跑，请稍后再试。"
         try:
             result = PriceQuote(ShippingCache(self._price_database_path()), log=self.write_log).quote(
@@ -1363,7 +1363,7 @@ class BotService:
     async def _price_quote_job(self, command, receiver, send):
         try:
             reply = await asyncio.wait_for(
-                asyncio.to_thread(self._price_quote_blocking, command), timeout=90)
+                asyncio.to_thread(self._price_quote_blocking, command), timeout=300)
         except asyncio.TimeoutError:
             reply = "查价超时：集换社页面没有响应，已复位，请稍后重试。"
             await asyncio.to_thread(self._reset_price_ui)

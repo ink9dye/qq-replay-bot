@@ -179,6 +179,8 @@ class OneBotClient:
         from .qq_recovery import RecoveryPolicy
         self.recovery = RecoveryPolicy(self.state_dir)
         self._online_since = None
+        self._ever_connected = False
+        self._startup_grace_until = time.monotonic() + 90
         self._connection_clock = time.monotonic
         self.diagnostics = Diagnostics(self.state_dir)
         self._diagnostic_heartbeat_at = 0
@@ -344,6 +346,7 @@ class OneBotClient:
                             self.recovery.announce('attention')
                             raise ConnectionError('QQ账号离线，等待NapCat或人工恢复，不自动登录。')
                     self.connected = True
+                    self._ever_connected = True
                     connected_at = self._connection_clock()
                     self._online_since = connected_at
                     self.publish_state('online')
@@ -367,6 +370,13 @@ class OneBotClient:
                         await self._close_transport()
                 if self._stopped:
                     break
+                if (not self._ever_connected and time.monotonic() < self._startup_grace_until
+                        and isinstance(failure, OSError)):
+                    # 刚启动时 NapCat 可能还没监听 3001：只等待，不消耗故障重试预算。
+                    if self.on_status:
+                        self.on_status("NapCat 尚未监听 3001，继续等待启动…")
+                    await self.pause(2)
+                    continue
                 if manual_reconnect:
                     delay = 1.0
                     continue

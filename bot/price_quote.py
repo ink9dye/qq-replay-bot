@@ -280,7 +280,19 @@ class PriceQuote:
         want_rarity = (rarity or "").strip().upper()
         if want_rarity and (data.get("rarity") or "").strip().upper() != want_rarity:
             self.log("查价: 切换罕贵 %s" % want_rarity)
-            if not ui.select_version(want_rarity):
+            selected = False
+            for attempt in range(3):
+                if ui.select_version(want_rarity):
+                    selected = True
+                    break
+                self.log("查价: 版本选择失败，第 %d 次重试" % (attempt + 1))
+                time.sleep(1.5)
+                try:
+                    ui.back()
+                except Exception:
+                    pass
+                time.sleep(0.8)
+            if not selected:
                 raise PriceQuoteError("集换社没有找到「%s」的 %s 版本。" % (name, want_rarity))
             self._show_products(ui)
             data = ui.read_detail()

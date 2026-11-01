@@ -556,6 +556,13 @@ class Store:
 
     def get_link(self, token: str) -> Optional[dict]:
         with self._lock:
+            if self.readonly:
+                # 独立 share 进程启动时 BEGIN 固定了快照；QQ 之后写入的新链接必须重新可见。
+                try:
+                    self._db.execute('COMMIT')
+                except sqlite3.OperationalError:
+                    pass
+                self._db.execute('BEGIN')
             row = self._db.execute(
                 "SELECT * FROM share_links WHERE token = ?",
                 (token,),
