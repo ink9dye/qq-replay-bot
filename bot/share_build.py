@@ -3,7 +3,7 @@ import json,re,sqlite3,hashlib
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import parse_qs,urlsplit
-from .statistics_build_detail import query,ydk
+from .statistics_build_detail import query,ydk,ydk_filename
 from .statistics_recording_archive import archive
 from .statistics_recording_names import safe_filename
 
@@ -17,10 +17,10 @@ def route(app,path,parts):
     if link is None:return app._text(404,'找不到这个分享链接。')
     if app.clock()>=link['expires_at']:return app._text(410,'分享链接已失效，请重新查询。')
     base='/s/'+token
-    def reply(value,kind='application/json; charset=utf-8',filename=None):
+    def reply(value,kind='application/json; charset=utf-8',filename=None,fallback='download'):
         body=value if isinstance(value,bytes) else (value if isinstance(value,str) else json.dumps(value,ensure_ascii=False)).encode('utf8')
         if app.clock()>=link['expires_at']:return app._text(410,'分享链接已失效，请重新查询。')
-        return 200,kind,body,({'Content-Disposition':attachment_header(filename,'download')}if filename else {})
+        return 200,kind,body,({'Content-Disposition':attachment_header(filename,fallback)}if filename else {})
     if not tail:
         source=Path(__file__).with_name('statistics_build.html').read_text(encoding='utf8')
         source=re.sub(r'<nav class="main-nav".*?</nav>','',source,flags=re.S)
@@ -30,13 +30,10 @@ def route(app,path,parts):
         source=source.replace('<div class="profile">','<p class="note">分享链接有效至 '+format_time(link['expires_at'])+'；重新查询不会延长此链接。</p><div class="profile">')
         source=source.replace('该玩家全部有效小局','本链接全部有效小局')
         source=source.replace('<script src="/statistics/assets/statistics_nav.js"></script>','')
-        source=source.replace('/statistics/assets/',base+'/assets/')
-        source=source.replace('<option value="player">该玩家全部有效小局</option>',
-                              '<option value="player" selected>该玩家全部有效小局</option>')
-        return reply(source,'text/html; charset=utf-8')
+        return reply(source.replace('/statistics/assets/',base+'/assets/'),'text/html; charset=utf-8')
     if len(tail)==2 and tail[0]=='assets':
         name=tail[1]
-        if name not in ('statistics_ui.css','statistics_nav.css','statistics_build.js','statistics_pt.js','statistics_samples.js'):return app._text(404,'找不到资源。')
+        if name not in ('statistics_theme.css','statistics_ui.css','statistics_nav.css','statistics_build.js','statistics_pt.js','statistics_samples.js'):return app._text(404,'找不到资源。')
         if name=='statistics_samples.js':
             source="window.StatisticsSamples={el:(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n},time:t=>new Date(t*1000).toLocaleString('zh-CN',{hour12:false}),api:async path=>{const r=await fetch("+json.dumps(base+'/api/')+"+path,{cache:'no-store'});if(!r.ok)throw Error('分享链接或来源已失效，或不在授权范围内。');return r.json()}};"
         else:source=Path(__file__).with_name(name).read_text(encoding='utf8')
@@ -90,7 +87,10 @@ def route(app,path,parts):
         result=query(db,app.replay_root,app.clock(),link['player'],digest,scope,allowed_digests=allowed,history_digests=set(downloads))
         if tail==['build-ydk']:
             if result is None:return app._text(404,'本链接暂无有效构筑。')
-            try:return reply(ydk(result,args.get('inferred')==['1']),'text/plain; charset=utf-8',safe_filename(link['player'],'.ydk'))
+            try:
+                inferred=args.get('inferred')==['1']
+                name,fallback=ydk_filename(result,inferred)
+                return reply(ydk(result,inferred),'text/plain; charset=utf-8',name,fallback)
             except ValueError:return app._text(409,'推测Side存在冲突，不能导出。')
         if result:
             from .statistics_card_names import index

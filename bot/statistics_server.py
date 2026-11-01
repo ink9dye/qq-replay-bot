@@ -17,13 +17,25 @@ def make_handler(portal):
             import gzip
             result=dict(headers);result['Content-Encoding']='gzip';result['Vary']='Accept-Encoding'
             return gzip.compress(body,6),result
+        def _log_error(self,exc):
+            import traceback
+            try:
+                log=portal.database.parent/'logs'/'web-errors.log'
+                log.parent.mkdir(parents=True,exist_ok=True)
+                with log.open('a',encoding='utf-8') as handle:
+                    handle.write(time.strftime('%Y-%m-%dT%H:%M:%S')+'\t'+traceback.format_exc()+'\n')
+            except OSError:pass
         def do_GET(self):
-            if self.path=='/health':
-                result=portal._reply(200,json.dumps(dict(service='qq-statistics-web',status='running',pid=os.getpid(),
-                    read_only_queries=True,starts_watch=False,version=3,features=['roster','groups','investment','cards','matrix','local_card_library','current_player_investment','build_detail','inferred_side'])),'application/json; charset=utf-8')
-            elif self.path.split('?',1)[0].startswith('/statistics'):
-                result=portal.route(self.path,self.headers,self.client_address[0])
-            else:result=portal._reply(404,'找不到此统计页面。')
+            try:
+                if self.path=='/health':
+                    result=portal._reply(200,json.dumps(dict(service='qq-statistics-web',status='running',pid=os.getpid(),
+                        read_only_queries=True,starts_watch=False,version=3,features=['roster','groups','investment','cards','matrix','local_card_library','current_player_investment','build_detail','inferred_side'])),'application/json; charset=utf-8')
+                elif self.path.split('?',1)[0].startswith('/statistics'):
+                    result=portal.route(self.path,self.headers,self.client_address[0])
+                else:result=portal._reply(404,'找不到此统计页面。')
+            except Exception as exc:
+                self._log_error(exc)
+                result=portal._reply(500,'服务器内部错误，请稍后重试。')
             status,kind,body,headers=result
             body,headers=self._compress(kind,body,headers)
             self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
@@ -37,6 +49,10 @@ def make_handler(portal):
                 if not 0<length<=2048:raise ValueError()
                 result=portal.post(self.path,self.headers,self.client_address[0],self.rfile.read(length))
             except ValueError:result=portal._reply(400,'请求内容无效。')
+            except Exception as exc:
+                self._log_error(exc)
+                try:result=portal._reply(500,'服务器内部错误，请稍后重试。')
+                except Exception:result=portal._reply(500,'服务器内部错误。')
             status,kind,body,headers=result
             body,headers=self._compress(kind,body,headers)
             self.send_response(status)

@@ -8,3 +8,15 @@ const download=el('a','下载对应源录像','download');download.href='/statis
 }catch(e){status.textContent=e.message}}
 function list(container,samples,changed){let page=0;function render(){container.replaceChildren();const limit=25,items=samples.slice(page*limit,(page+1)*limit);for(const s of items){const row=el('div',undefined,'sample-row'),b=el('button',s.recording_title||s.player+' · '+(s.deck_type||'卡组未识别')+' · '+time(s.recorded_at),'textbutton');b.onclick=()=>show(s,changed);row.append(b,el('span',({win:'胜',loss:'负',draw:'平',unknown:'未知'})[s.outcome]+' · '+(s.first_player===1?'先攻':s.first_player===0?'后攻':'先后攻未知'),'note'));container.append(row)}const nav=el('div',undefined,'pagination'),back=el('button','上一页','secondary'),next=el('button','下一页','secondary');back.disabled=page===0;next.disabled=(page+1)*limit>=samples.length;back.onclick=()=>{page--;render()};next.onclick=()=>{page++;render()};nav.append(back,el('span',` ${samples.length? page+1:0}/${Math.ceil(samples.length/limit)} · ${samples.length}视角 `,'note'),next);container.append(nav)}render()}
 return {api,show,list,el,time};})();
+// /stats/<token> 分享页：把相对 /stats/... 链接写成当前入口的绝对 URL。
+// 从公网域名打开时即 https://<公网域名>/stats/...；本机测试打开时是当前本机地址。
+if(location.pathname.startsWith('/stats/')){
+ const absolutize=()=>{
+  for(const link of document.querySelectorAll('a[href^="/stats/"]')){
+   link.setAttribute('href',new URL(link.getAttribute('href'),location.origin).href);
+  }
+ };
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',absolutize);
+ else absolutize();
+ new MutationObserver(absolutize).observe(document.documentElement,{subtree:true,childList:true});
+}

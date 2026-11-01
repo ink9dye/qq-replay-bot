@@ -53,18 +53,9 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
             if card['partition']=='main':counts[mapping.get(card['code'],(card['code'],))[0]]+=card['copies']
         return tuple(sorted(counts.items()))
     selected_meta=metadata.get(selected['digest'])
-    anchored_to_first=False
-    missing_first_game=False
-    if selected_meta and selected_meta[0] and selected_meta[1]>1:
-        first_candidates=[r for r in rows if r['_pair']==selected['_pair']
-                          and metadata.get(r['digest'])==(selected_meta[0],1,True)]
-        if len(first_candidates)==1:
-            selected=first_candidates[0]
-            selected_meta=metadata.get(selected['digest'])
-            anchored_to_first=True
-        else:
-            missing_first_game=True
-    main_anchor=selected
+    first_candidates=[r for r in rows if selected_meta and selected_meta[0] and r['_pair']==selected['_pair']
+                      and metadata.get(r['digest'])==(selected_meta[0],1,True)]
+    main_anchor=first_candidates[0]if selected_meta and selected_meta[1]>1 and len(first_candidates)==1 else selected
     selected_main=main_key(main_anchor)
     same_main={r['digest']for r in rows if main_key(r)==selected_main}
     relevant={group_key(r) for r in rows if r['digest']in same_main}
@@ -135,8 +126,12 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
         canonical=mapping.get(card['code'],(card['code'],))[0]
         card['swap_contexts']=contexts.get(canonical,[])
     stats_rows=rows if history_digests is None else [r for r in rows if r['digest'] in history_digests]
-    return dict(generated_at=now, person=dict(person, deck_type=selected['deck_type']),
-                build_first_game_anchor=anchored_to_first, build_missing_first_game=missing_first_game,
+    from .statistics_deck_labels import labels_for_builds
+    found=labels_for_builds(db,[selected['build']]).get(selected['build'])
+    label=selected['deck_type'] if selected.get('classification_source')=='manual' else (found[0] if found else selected['deck_type'])
+    person_out=dict(person, deck_type=label)
+    if found and selected.get('classification_source')!='manual':person_out['classification_status']='recognized'
+    return dict(generated_at=now, person=person_out,
                 roster={k: v for k, v in basis['roster'].items() if k != 'members'},
                 selected=dict(digest=selected['digest'], build=selected['build'], recorded_at=selected['recorded_at'],
                               expires_at=selected['expires_at'], observation_kind=person['observation_kind'] if selected['digest'] == latest[player]['digest'] else 'historical_observation'),
@@ -240,6 +235,25 @@ def infer_side(rows, selected, cards, metadata, mapping=None):
                 reason='observed_maximum_pool_minus_selected_main_and_extra_not_full_side')
 
 
+def _filename_part(value, fallback):
+    text = str(value or '').strip()
+    text = ''.join(ch if ch not in '\\/:*?"<>|' and ord(ch) >= 32 else '_' for ch in text)
+    text = ' '.join(text.split())[:60].strip()
+    return text or fallback
+
+
+def ydk_filename(result, inferred=False):
+    """返回 (UTF-8 文件名, ASCII 回退名)：玩家名 排名 卡组名.ydk。"""
+    person = result.get('person') or {}
+    digest = str((result.get('selected') or {}).get('digest') or '')
+    player = _filename_part(person.get('player'), '未知玩家')
+    rank = person.get('rank')
+    rank_text = str(rank) if isinstance(rank, int) and rank > 0 else '排名未知'
+    label = _filename_part(person.get('deck_type'), '未识别')
+    fallback = 'build-' + digest[:16] + '.ydk'
+    return f'{player} {rank_text} {label}.ydk', fallback
+
+
 def ydk(result, include_inferred=False):
     partitions = {p: Counter() for p in ('main', 'extra', 'side')}
     for card in result['cards']:
@@ -251,7 +265,7 @@ def ydk(result, include_inferred=False):
             partitions['side'][card['code']] = max(partitions['side'][card['code']], card['copies'])
         if sum(partitions['side'].values()) > 15:
             raise ValueError('side_candidates_exceed_limit')
-    lines = ['#created by local statistics' + ('; inferred Side candidates included, NOT complete' if include_inferred else '; directly recorded cards only')]
+    lines = ['#created by local statistics']
     for part, label in (('main', '#main'), ('extra', '#extra'), ('side', '!side')):
         lines.append(label)
         for code, copies in partitions[part].items():

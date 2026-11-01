@@ -1,6 +1,6 @@
 window.FilterControls={
  values(id){const s=document.getElementById(id);return s.dataset.none==='1'?['"__no_selection__"']:Array.from(s.selectedOptions).map(o=>o.value).filter(Boolean)},
- enhance(ids,changed){for(const id of ids){const s=document.getElementById(id);s.multiple=true;s.size=4;const tools=document.createElement('div'),summary=document.createElement('small');tools.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin:6px 0';summary.style.display='block';const update=()=>{const values=Array.from(s.selectedOptions).filter(o=>o.value);summary.textContent=values.length?'已选：'+values.map(o=>o.textContent).join('、'):'不限制';};for(const [label,mode]of [['全选','all'],['全不选','none']]){const b=document.createElement('button');b.type='button';b.textContent=label;b.className='secondary';b.onclick=()=>{for(const o of s.options)o.selected=mode==='all'&&!!o.value;s.dataset.none='0';update();changed()};tools.append(b)}s.after(tools,summary);s.addEventListener('change',()=>{s.dataset.none='0';update()});update()}}
+ enhance(ids,changed){for(const id of ids){const s=document.getElementById(id);s.multiple=true;s.size=4;const tools=document.createElement('div'),summary=document.createElement('small');tools.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin:6px 0';summary.style.display='block';const update=()=>{const values=Array.from(s.selectedOptions).filter(o=>o.value);summary.textContent=values.length?'已选：'+values.map(o=>o.textContent).join('、'):'不限制';};{const b=document.createElement('button');b.type='button';b.textContent='清空';b.className='secondary';b.onclick=()=>{for(const o of s.options)o.selected=false;s.dataset.none='0';update();changed()};tools.append(b)}s.after(tools,summary);s.addEventListener('change',()=>{s.dataset.none='0';update()});update()}}
 };
 
 // Card choices toggle independently on a plain click; no Ctrl/Command required.
@@ -26,6 +26,6 @@ FilterControls.cardPicker=function(id,searchId,allowedParts){
   if(visible.length>30){const more=document.createElement('small');more.textContent='显示前30项，请输入卡名或卡号缩小范围';choices.append(more)}
   else if(!visible.length){const none=document.createElement('small');none.textContent='当前条件下没有可选的卡';choices.append(none)}
  };
- for(const [label,mode] of [['全选','all'],['全不选','none']]){const button=document.createElement('button');button.type='button';button.textContent=label;button.className='secondary';button.onclick=()=>{for(const o of (mode==='all'?visible:select.options))o.selected=mode==='all';update()};tools.append(button)}
+ {const button=document.createElement('button');button.type='button';button.textContent='清空';button.className='secondary';button.onclick=()=>{for(const o of select.options)o.selected=false;update()};tools.append(button)}
  select.after(choices,chips,tools,hint);search.oninput=update;select.addEventListener('change',update);update();return update;
 };

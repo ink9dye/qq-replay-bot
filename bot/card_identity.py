@@ -50,18 +50,21 @@ def identity(db,code):
                 status=status if code in index or status=='invalid_reference_exact_only' else 'exact',reference_version=version)
 
 
-def facts(db,codes,partition):
+def facts(db,codes,partition,selected_table=None):
     placeholders=','.join('?' for _ in codes)
+    join=f' JOIN {selected_table} s ON s.digest=f.digest AND s.player=f.player' if selected_table else ''
     groups={}
-    for row in db.execute(f'SELECT * FROM stat_card_facts WHERE code IN ({placeholders}) AND partition=?',[*codes,partition]):
+    for row in db.execute(f'SELECT f.* FROM stat_card_facts f{join} '
+                          f'WHERE f.code IN ({placeholders}) AND f.partition=?',[*codes,partition]):
         groups.setdefault((row['digest'],row['player']),[]).append(dict(row))
     # Older reports may emit a different print's code and store it under "other".
     # Include that event only when this exact identity is carried in the requested
     # partition. Prefer an existing same-code row there to avoid replay duplicates.
-    for row in db.execute(f'''SELECT f.* FROM stat_card_facts f JOIN stat_views v ON v.digest=f.digest AND v.player=f.player
+    for row in db.execute(f'''SELECT f.* FROM stat_card_facts f JOIN stat_views v ON v.digest=f.digest AND v.player=f.player{join}
         WHERE f.code IN ({placeholders}) AND f.partition='other'
         AND EXISTS(SELECT 1 FROM stat_build_cards c WHERE c.build=v.build AND c.partition=? AND c.code IN ({placeholders}))
-        AND NOT EXISTS(SELECT 1 FROM stat_card_facts own WHERE own.digest=f.digest AND own.player=f.player AND own.partition=? AND own.code=f.code)''', [*codes,partition,*codes,partition]):
+        AND NOT EXISTS(SELECT 1 FROM stat_card_facts own WHERE own.digest=f.digest AND own.player=f.player AND own.partition=? AND own.code=f.code)''',
+        [*codes,partition,*codes,partition]):
         groups.setdefault((row['digest'],row['player']),[]).append(dict(row))
     result={}
     for key,rows in groups.items():
@@ -73,7 +76,6 @@ def facts(db,codes,partition):
         for field in ('draw_count','initial_count','use_count','appearance_count'):
             values=[r[field] for r in rows]
             merged[field]=sum(values) if all(v is not None for v in values) else None
-        # 两种异画之间的抽到／使用先后，旧原子字段不足以证明跨卡号顺序。
         if len(rows)>1 and merged['drawn']==1 and merged['used']==1 and merged['used_after_draw']!=1:
             merged['used_after_draw']=None
         result[key]=merged

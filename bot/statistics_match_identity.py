@@ -17,6 +17,7 @@ def inherit_first_game_types(db,rows):
     metadata=capture_metadata(db,{r['digest']for r in rows})
     for row in rows:
         meta=metadata.get(row['digest'])
+        row['observed_session_id']=meta[0] if meta else None
         row['observed_game_no']=meta[1] if meta else None
         row['observed_captured_from_start']=bool(meta[2]) if meta else None
     pairs={}
@@ -31,7 +32,10 @@ def inherit_first_game_types(db,rows):
     for row in rows:
         meta=metadata.get(row['digest'])
         if not meta or meta[1]<=1:continue
-        row['observed_deck_type']=row['deck_type'];initial=first.get(key(row),[])
+        row['observed_deck_type']=row['deck_type']
+        # 人工命名优先：换边后小局自己已经被手动命名过，就不能被首局标签覆盖。
+        if row.get('classification_source')=='manual':continue
+        initial=first.get(key(row),[])
         anchor=initial[0]if len(initial)==1 else None
         row['deck_type']=anchor['deck_type']if anchor else None
         row['classification_status']='recognized'if row['deck_type']else'unknown'

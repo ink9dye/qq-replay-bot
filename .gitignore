@@ -1,7 +1,27 @@
 config.json
+config.json.bak*
+config.example.json.bak*
 data/
+data - 副本/
+.venv/
+.idea/
 __pycache__/
 *.pyc
+*.log
+*.yrp
+*.sqlite3
+*.bak
+*.bak-*
+*.bak2-*
+*.bak3-*
+*.bak4-*
+*.bak5-*
+*.bak6-*
+*.bak7-*
+*.bak8-*
+*.tmp
 debug-out.txt
 NapCat*/
 .config-*.tmp
+m3-token
+statistics-owner.key

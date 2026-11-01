@@ -47,12 +47,16 @@ def search(data_dir,term,limit=20):
     cards=index(data_dir);term=term.strip();needle=normalize(term)
     if term.isdigit() and 0<int(term)<=4294967295:
         code=int(term);info=cards.get(str(code))
-        return [dict(code=code,name=card_name(info) if info else '卡号'+str(code)+'（名称暂无）')]
-    found=[]
+        if not info:return [dict(code=code,name='卡号'+str(code)+'（名称暂无）')]
+        name=card_name(info)
+        minimum=min((int(other) for other,value in cards.items() if card_name(value)==name),default=code)
+        return [dict(code=minimum,name=name)]
+    found={}
     for code,info in cards.items():
         values=[info.get(k,'') for k in ('cn_name','sc_name','md_name','jp_name','en_name','nwbbs_n','cnocg_n')]
         values.append((info.get('text') or {}).get('name',''))
         if needle and any(needle in normalize(value) for value in values):
-            found.append(dict(code=int(code),name=card_name(info)))
-        if len(found)>=limit:break
-    return found
+            name=card_name(info);code=int(code)
+            if name not in found or code<found[name]:
+                found[name]=code
+    return [dict(code=code,name=name) for name,code in sorted(found.items(),key=lambda item:item[1])[:limit]]

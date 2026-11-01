@@ -3,18 +3,27 @@ from .top100 import eligible_views
 from .card_statistics import win_rate
 
 
-def deck_usage(db,replay_root,now):
+def deck_usage(db,replay_root,now,basis=None):
     """Distinct current-top100 players per deck type from the normalized latest view.
 
     people 已由 player_statistics 的最新有效视角与 inherit_first_game_types 归一；
     这里必须复用该 deck_type，不能回读 stat_builds 的原始分类覆盖可靠整场身份。
     缺失/未知构筑不进分母，同一玩家只计一次。
+    basis 传入同一请求的 eligible_views 结果，避免重复全量查询（口径不变）。
     """
-    from .player_statistics import query as player_query
-    seed=player_query(db,replay_root,1,now)
+    if basis is None:
+        from .player_statistics import query as player_query
+        seed=player_query(db,replay_root,1,now)
+        counts={}
+        for person in seed['people']:
+            label=person.get('deck_type')
+            if not label:continue
+            counts[label]=counts.get(label,0)+1
+        return counts
+    from .statistics_population import latest_views
     counts={}
-    for person in seed['people']:
-        label=person.get('deck_type')
+    for row in latest_views(basis).values():
+        label=row.get('deck_type')
         if not label:continue
         counts[label]=counts.get(label,0)+1
     return counts
@@ -44,7 +53,7 @@ def query(db,replay_root,now,rows=(),columns=(),first_player=None,internal_only=
         cells.append(dict(row=label,column=column,metrics=win_rate(samples),perspectives=len(samples),small_games=len({s['digest'] for s in samples}),
             first=win_rate([s for s in samples if s['first_player']==1]),second=win_rate([s for s in samples if s['first_player']==0]),
             unknown_first=sum(s['first_player'] is None for s in samples),samples=sorted(samples,key=lambda s:s['recorded_at'],reverse=True)))
-    usage=deck_usage(db,replay_root,now)
+    usage=deck_usage(db,replay_root,now,basis)
     order=lambda label:(label is None,-usage.get(label,0),label or '')
     usage_rows=[dict(deck_type=label,players=count) for label,count in
                 sorted(usage.items(),key=lambda item:(-item[1],item[0]))]

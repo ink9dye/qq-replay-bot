@@ -1,12 +1,21 @@
 """Read-only local YGOPro public card library, enabled by an explicit local config."""
 import json
+import os
 import sqlite3
 import threading
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 
 _cache = {}
 _lock = threading.RLock()
+_pending = set()
+_failed = {}
+_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='card-image')
+REMOTE = 'https://cdntx.moecube.com/ygopro-super-pre/data/pics/%d.jpg'
+RETRY_SECONDS = 600
 
 
 def library_root(data_dir):
@@ -60,6 +69,74 @@ def card_details(data_dir, code):
                 allowed_partitions=['extra', 'side'] if extra else ['main', 'side'] if extra is not None else ['main', 'side', 'extra'])
 
 
+def _schedule(data_dir, code, pics):
+    now = time.time()
+    with _lock:
+        if code in _pending:
+            return
+        if now - _failed.get(code, 0) < RETRY_SECONDS:
+            return
+        _pending.add(code)
+    def work():
+        try:
+            pics.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(REMOTE % code, timeout=60) as response:
+                blob = response.read(8 * 1024 * 1024 + 1)
+            if not blob or len(blob) > 8 * 1024 * 1024:
+                raise ValueError('bad image size')
+            path = (pics / (str(code) + '.jpg')).resolve()
+            if not path.is_relative_to(pics):
+                raise ValueError('bad path')
+            temporary = path.with_suffix('.jpg.tmp')
+            temporary.write_bytes(blob)
+            os.replace(temporary, path)
+            with _lock:
+                _failed.pop(code, None)
+        except (OSError, ValueError):
+            with _lock:
+                _failed[code] = time.time()
+        finally:
+            with _lock:
+                _pending.discard(code)
+    _pool.submit(work)
+
+
+def prefetch(data_dir, codes):
+    """后台预热一批卡图；不阻塞请求。"""
+    root = library_root(data_dir)
+    if root is None:
+        return
+    pics = (root / 'pics').resolve()
+    if not pics.is_relative_to(root):
+        return
+    for code in {int(c) for c in codes if type(c) is int or str(c).isdigit()}:
+        if not 0 < code <= 4294967295:
+            continue
+        if any((pics / (str(code) + suffix)).is_file() for suffix in ('.jpg', '.png', '.webp')):
+            continue
+        _schedule(data_dir, code, pics)
+
+
+
+def wait_for(data_dir, codes, timeout=30):
+    """预热并等待缺图落盘，最多 timeout 秒；给机器人构筑图用。"""
+    prefetch(data_dir, codes)
+    root = library_root(data_dir)
+    if root is None:
+        return
+    pics = (root / 'pics').resolve()
+    wanted = {int(c) for c in codes if str(c).isdigit()}
+    deadline = time.time() + max(0, timeout)
+    while time.time() < deadline:
+        remaining = [c for c in wanted if not any((pics / (str(c) + suffix)).is_file()
+                                                  for suffix in ('.jpg', '.png', '.webp'))]
+        with _lock:
+            pending = [c for c in remaining if c in _pending]
+        if not pending:
+            return
+        time.sleep(0.2)
+
+
 def picture(data_dir, code):
     if type(code) is not int or not 0 < code <= 4294967295:
         return None
@@ -73,4 +150,6 @@ def picture(data_dir, code):
         path = (pics / (str(code) + suffix)).resolve()
         if path.is_relative_to(pics) and path.is_file() and path.stat().st_size <= 8 * 1024 * 1024:
             return path, mime
+    # 新卡只在百鸽新 CDN：后台缓存，当前请求立即返回；前端用重试/远程兜底。
+    _schedule(data_dir, code, pics)
     return None

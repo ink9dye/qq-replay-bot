@@ -6,21 +6,24 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from contextlib import closing
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from .card_extras import CardExtras
 from .account_guard import webui_login_id
 from .card_search import CardReply, CardSearch
 from .player_history import PlayerHistory
 from .price_reservations import PriceReservations
-from .commands import HELP, parse_command
+from .commands import HELP, PRICE_HELP, parse_command
 from .roles import normalize_roles
 from .replay_window import REPLAY_WINDOW_SECONDS, replay_in_window
 from .qq import OneBotClient, event_text, group_command_text
@@ -114,10 +117,52 @@ def room_items(value) -> list:
     return rooms
 
 
+PUBLIC_BASE_MAX_AGE_SECONDS = 300.0
+
+_PRIVATE_HOST_PREFIXES = ("192.168.", "10.", "127.", "172.16.", "172.17.", "172.18.", "172.19.",
+                          "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+                          "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.")
+
+
+def valid_public_https(base) -> str:
+    """只接受"非本机/非内网的 https 地址"；其它一律返回空串（调用方回退）。"""
+    text = str(base or "").strip().rstrip("/")
+    if not text.startswith("https://"):
+        return ""
+    try:
+        host = (urlsplit(text).hostname or "").lower()
+    except ValueError:
+        return ""
+    if not host or host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}:
+        return ""
+    if host.startswith(_PRIVATE_HOST_PREFIXES):
+        return ""
+    return text
+
+
+def read_external_public_base(data_dir, fallback="", *, max_age=PUBLIC_BASE_MAX_AGE_SECONDS,
+                              now=None) -> str:
+    """读独立 share 进程写的 data/share-public-base.json。
+
+    文件缺失/过期/损坏 → 用 config 的 public_base_url；结果仍必须是"非本机 https"，
+    否则返回空串（QQ 会提示未配置公网地址，而不是发一个 127.0.0.1 的假链接）。
+    """
+    from .share_service import read_public_base, share_public_base_path
+    moment = time.time() if now is None else float(now)
+    try:
+        path = share_public_base_path(data_dir)
+        fresh = path.is_file() and (moment - path.stat().st_mtime) <= float(max_age)
+    except OSError:
+        fresh = False
+    value = read_public_base(data_dir, fallback) if fresh else fallback
+    return valid_public_https(value)
+
+
 class BotService:
     def __init__(self, config: dict, root: Path, clock=None, roles=None):
         # roles=None 仍是全开；拆分后每个进程只跑自己的任务，但共用同一个库。
         self.roles = normalize_roles(roles)
+        self._started_at = time.time()
         self.config = config
         self.root = Path(root)
         self.data_dir = Path(config.get("data_dir") or (self.root / "data"))
@@ -162,7 +207,19 @@ class BotService:
         self.share_server = ShareServer(self.share)
         self.tunnel = None
         self._public_status = None
-        if share_cfg.get("quick_tunnel") is True:
+        # share.mode=process（或 tunnel_owner=share）：分享与隧道都归独立 share_service，
+        # QQ/watch 不再建自己的隧道，公网 base 直接读 share 进程写的 share-public-base.json；
+        # 文件缺失/过期/损坏时回退 config 的 public_base_url（且必须是 非本机 https）。
+        self._external_public_base = (
+            self.share_external()
+            or str(share_cfg.get("tunnel_owner") or "").strip().lower() == "share"
+        )
+        if self._external_public_base:
+            fallback_base = str(share_cfg.get("public_base_url") or "")
+            self.share.public_url_provider = (
+                lambda: read_external_public_base(self.data_dir, fallback_base)
+            )
+        elif share_cfg.get("quick_tunnel") is True:
             self.tunnel = self.build_tunnel(share_cfg)
             self.share.public_url_provider = self.tunnel.current_url
         self.admins = {str(item) for item in (qq_cfg.get("admins") or [])}
@@ -180,6 +237,10 @@ class BotService:
         # 价格库可能被 price-watch 占用：不在这里打开，第一次用到“预定”时再连。
         self._price_db = (self.config.get("price_watch") or {}).get("db")
         self._price_reservations = None
+        self._price_ui_lock = threading.Lock()
+        self._price_quote_tasks = set()
+        self._deck_cache = {}
+        self._deck_tasks = set()
 
     @property
     def price_reservations(self):
@@ -192,7 +253,11 @@ class BotService:
         return (self.allow_all_users and text.isdigit() and int(text) > 0) or text in self.admins or text in self.users
 
     def default_query_rule_line(self) -> str:
-        """启动时确认“未订阅默认对手前100”落在当前榜单上；名单缺失时明确说明不把未知当上榜。"""
+        """启动时确认“未订阅默认对手前100”落在当前榜单上；名单缺失时明确说明不把未知当上榜。
+
+        口径提醒：判断用的是**录像收录时**的排名，不是查询时的当前榜单快照，所以榜单刷新/掉榜
+        不会改写已收录录像的查询结果（掉榜仅让该方视角失效，重回按原期限恢复）。
+        """
         try:
             roster = self.store.top100_snapshot(float(self.clock()))
         except (OSError, ValueError, KeyError, AttributeError):
@@ -201,8 +266,8 @@ class BotService:
             return "录像查询默认：未订阅按对手前100；当前前100名单尚未加载，排名未知的对手不当作前100"
         stamp = datetime.fromtimestamp(roster.get("updated_at") or 0).strftime("%m-%d %H:%M")
         stale = "，名单已过期，仍按最近一次完整名单判断" if roster.get("stale") else ""
-        return (f"录像查询默认：未订阅按对手前100（榜单v{roster.get('version')}，{stamp}{stale}）；"
-                "已订阅沿用个人条件")
+        return (f"录像查询默认：未订阅按对手前100（榜单v{roster.get('version')}，{stamp}{stale}；"
+                "按录像收录时的排名判断，不是当前榜单快照）；已订阅沿用个人条件")
 
     def startup_lines(self) -> list[str]:
         mycard = self.config.get("mycard") or {}
@@ -211,7 +276,11 @@ class BotService:
         if self.tunnel is not None:
             public_line = "公网分享：" + ("免费临时地址已连接" if self.share.public_base() else "免费临时隧道正在连接")
         elif self.share.public_base():
-            public_line = "公网地址：已填写"
+            base = self.share.public_base()
+            if self._external_public_base:
+                public_line = "公网地址：已读取分享服务的 https 地址（独立 share 进程）：" + base
+            else:
+                public_line = "公网地址：已填写：" + base
         elif public:
             public_line = "公网地址：填写的是本机地址，好友无法打开。请改成隧道提供的 https 地址"
         else:
@@ -235,6 +304,30 @@ class BotService:
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(line)
 
+    def share_external(self) -> bool:
+        """share.mode=process 时，分享与隧道由独立 share_service 提供，watch 不再监听 8787。"""
+        share_cfg = self.config.get("share") or {}
+        return str(share_cfg.get("mode") or "inline").strip().lower() == "process"
+
+    def write_watch_status(self, status: str = 'running') -> None:
+        """写 data/watch-status.json：pid/started_at/updated_at/roles/health（读不到/过期=未运行）。"""
+        from .watch_status import write as write_watch_status
+        try:
+            write_watch_status(
+                self.data_dir,
+                pid=os.getpid(),
+                roles=self.roles,
+                started_at=getattr(self, '_started_at', 0.0),
+                status=status,
+                entry='pycharm/watch.py' if self.config.get('_pycharm_watch_entry') else '',
+            )
+        except OSError:
+            pass
+
+    async def watch_status_loop(self) -> None:
+        while True:
+            self.write_watch_status()
+            await asyncio.sleep(10)
     def build_tunnel(self, share_cfg: dict):
         """按 share.tunnel_mode 选隧道：缺省 ssh（localhost.run）；cpolar 是候选实现。
 
@@ -299,6 +392,18 @@ class BotService:
                                        if watch.get("join_fail_threshold") is not None else 3),
             "join_pause_seconds": float(watch.get("join_pause_seconds")
                                         if watch.get("join_pause_seconds") is not None else 60),
+            "join_interval_jitter_seconds": watch.get("join_interval_jitter_seconds"),
+            "join_max_room_age_seconds": watch.get("join_max_room_age_seconds"),
+            "night_mode_enabled": watch.get("night_mode_enabled"),
+            "night_start_hour": watch.get("night_start_hour"),
+            "night_end_hour": watch.get("night_end_hour"),
+            "night_min_concurrent": watch.get("night_min_concurrent"),
+            "night_max_concurrent": watch.get("night_max_concurrent"),
+            "night_min_interval_seconds": watch.get("night_min_interval_seconds"),
+            "night_jitter_seconds": watch.get("night_jitter_seconds"),
+            "startup_catchup_limit": watch.get("startup_catchup_limit"),
+            "probation_enabled": watch.get("probation_enabled"),
+            "max_joins_per_hour": watch.get("max_joins_per_hour"),
         }
 
     def current_rules(self) -> tuple[list[str], list[RankRule]]:
@@ -330,11 +435,16 @@ class BotService:
         from .top100 import fetch,REFRESH_SECONDS,error_category
         while True:
             try:
+                previous = self.store.top100_snapshot(float(self.clock()))
                 payload=await asyncio.to_thread(fetch)
                 state=self.store.replace_top100(payload,float(self.clock()))
                 stamp=datetime.fromtimestamp(state['updated_at']).strftime('%H:%M:%S')
                 message=f"官方当前前100已刷新：{stamp}，版本{state['version']}，完整100名；既有对局继续录完"
                 print(message,flush=True);self.write_log(message)
+                if previous.get('consecutive_failures'):
+                    recovery = (f"平台接口（sapi）已恢复：前100刷新成功，此前连续失败 "
+                                f"{previous['consecutive_failures']} 轮")
+                    print(recovery,flush=True);self.write_log(recovery)
             except (OSError,ValueError,TypeError) as error:
                 self.store.top100_failed(float(self.clock()),error_category(error))
                 state=self.store.top100_snapshot(float(self.clock()))
@@ -349,11 +459,21 @@ class BotService:
         import os
         now=float(self.clock())
         if now-self._capture_status_written < 10:return
+        # 与 capture-status 同频刷新 watch-status.json（share 独立后它是唯一的 watch 存活来源）。
+        # 用 getattr 兼容测试里的 duck-type 假对象（没有这个方法时跳过，不影响 capture-status）。
+        writer = getattr(self, 'write_watch_status', None)
+        if callable(writer):
+            try:
+                writer()
+            except OSError:
+                pass
         roster=self.store.top100_snapshot(now)
         payload=dict(status, watch_pid=os.getpid(), top100_enabled=self._top100_enabled, top100_version=roster['version'],
                      top100_updated_at=roster['updated_at'], top100_stale=roster['stale'],
                      top100_last_error=roster['last_error'],top100_consecutive_failures=roster['consecutive_failures'],
-                     top100_member_count=len(roster['members']))
+                     top100_member_count=len(roster['members']),
+                     sapi_ok_at=roster['updated_at'], sapi_error=roster['last_error'],
+                     sapi_failures=roster['consecutive_failures'], sapi_stale=roster['stale'])
         path=self.data_dir/'capture-status.json'
         temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(payload,ensure_ascii=False),encoding='utf-8')
@@ -380,34 +500,54 @@ class BotService:
             return self.card_extras.handle(conversation or user, op, command.get("value", ""))
         if op == "card_search":
             return self.card_search.handle((conversation + ":" + user) if conversation else user, "search", command["query"])
+        if op == "top100_rank_build":
+            return self._top100_rank_build_text(user, command["rank"])
+        if op == "top100_deck":
+            return self._top100_deck_text(command["keyword"])
+        if op == "top100_pie":
+            return self._top100_pie_reply()
+        if op == "price_quote":
+            return self._price_quote_blocking(command)
+
+        if op == "price_help":
+            return PRICE_HELP
         if op == "price_reserve":
             try:
-                self.price_reservations.add(user, command["name"], command["rarity"], command["target"])
+                reservation_id = self.price_reservations.add(
+                    user, command["name"], command["rarity"],
+                    command["target"], command.get("language") or "日文")
+                marked = str(user) in {str(item) for item in
+                                       (self._price_cfg().get("marked_users") or [])}
+                if not marked:
+                    # 普通用户表面上只保留一张卡；不提示限制，也不提标记用户。
+                    self.price_reservations.deactivate_others(user, reservation_id)
             except (ValueError, sqlite3.Error) as exc:
                 return str(exc)
-            label = f"{command['name']} {command['rarity']}".strip()
+            label = f"{command['name']} {command['rarity']} {command.get('language') or '日文'}".strip()
             return f"已记录卡价预定：{label}，预期价 {command['target']:g} 元。到价后只私聊你，不发群。"
         if op == "price_reservations":
             rows = self.price_reservations.list_for(user)
             if not rows:
-                return "你还没有卡价预定。发送：预定 卡名 罕贵 预期价"
+                return "你还没有卡价预定。发送：预定 卡名 罕贵 日文/简中 预期价"
             lines = ["你的卡价预定："]
             for row in rows:
                 state = "已到价" if row["notified_at"] else "监控中"
                 rar = f" {row['rarity']}" if row["rarity"] else ""
-                lines.append(f"{row['name']}{rar}  预期 {row['target']:g} 元  {state}")
+                lang = f" {row['language']}" if row.get("language") else ""
+                lines.append(f"{row['name']}{rar}{lang}  预期 {row['target']:g} 元  {state}")
             return "\n".join(lines)
         if op == "price_cancel":
             try:
-                count = self.price_reservations.cancel(user, command["name"], command["rarity"])
+                count = self.price_reservations.cancel(user, command["name"],
+                                                       command["rarity"], command.get("language") or "")
             except (ValueError, sqlite3.Error) as exc:
                 return str(exc)
-            label = f"{command['name']} {command['rarity']}".strip()
+            label = f"{command['name']} {command['rarity']} {command.get('language') or ''}".strip()
             if count:
                 return f"已取消 {count} 条卡价预定：{label}。"
             return f"没有找到这条预定：{label}。"
         if op == "stats_page":
-            return self._stats_text(user, command.get("page") or "")
+            return self._stats_text(user)
         if op == "list":
             return self._list_text(user)
         if op == "subscribe":
@@ -461,15 +601,13 @@ class BotService:
             return "你还没有订阅。"
         return "你的订阅：\n" + "\n".join(self._format_sub(row) for row in rows)
 
-    def _stats_text(self, user_id: str, page: str) -> str:
+    def _stats_text(self, user_id: str) -> str:
         """统计网页只读入口：2 小时 token，群里所有人可点。"""
         if not self._wait_public_url():
             return "统计页已就绪，公网分享暂未连接。请稍后再发送“统计”。"
         link = self.share.create_stats_link(user_id, hours=2)
-        suffix = ("/" + page) if page else ""
         note = "" if link["public"] else "\n还没有配置公网地址，这个链接只能在本机打开。"
-        return (f"统计网页（2 小时内有效）：{link['url']}{suffix}\n"
-                "群里所有人可打开；只读，不含卡组命名。" + note)
+        return f"统计网页（2 小时内有效）：{link['url']}" + note
 
     def visible_replays(self, user_id: str, player: str) -> Optional[list[dict]]:
         sub = self.store.get_subscription(user_id, player)
@@ -479,8 +617,30 @@ class BotService:
         return [replay for replay in self.store.replays_for_player(player)
                 if subscription_accepts(sub, replay) and replay_in_window(replay, now)]
 
+    def _deck_cache_key(self, user_id, player):
+        """缓存键带上最新构筑与识别结果，网页改名后不会继续吐旧“未识别”。"""
+        try:
+            with closing(sqlite3.connect(self.store.path.resolve().as_uri() + '?mode=ro',
+                                         uri=True, timeout=5)) as db:
+                row = db.execute(
+                    "SELECT v.build,b.deck_type,g.recorded_at FROM stat_views v "
+                    "JOIN stat_games g ON g.digest=v.digest "
+                    "JOIN stat_builds b ON b.fingerprint=v.build "
+                    "WHERE v.player=? AND g.expires_at>? "
+                    "ORDER BY g.recorded_at DESC LIMIT 1",
+                    (player, float(self.clock()))).fetchone()
+                manual = db.execute("SELECT COALESCE(MAX(updated_at),0) FROM stat_manual_decks").fetchone()[0]
+            return ((str(user_id), player, row[0], row[1], row[2], manual)
+                    if row else (str(user_id), player, None, manual))
+        except sqlite3.Error:
+            return (str(user_id), player, None)
+
     def _deck_build_text(self, user_id: str, player: str):
         """构筑 玩家名：最新构筑图（base64）+ 本链接的 ydk 下载地址。"""
+        cache_key = self._deck_cache_key(user_id, player)
+        cached = self._deck_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < 300:
+            return cached[1]
         self.index_player_replays(player)
         from .match_history import recover_sessions_from_prefix
         recover_sessions_from_prefix(self.store, self.replay_root, player)
@@ -516,8 +676,12 @@ class BotService:
             ydk_note = '（含推测 Side）'
         else:
             ydk_note = '（推测 Side 有冲突，未并入）'
-        from .statistics_local_cards import picture
+        from .statistics_local_cards import picture, wait_for
         from . import deck_image
+
+        image_codes = [int(card.get('code') or 0) for card in
+                       (result.get('cards') or []) + ((result.get('inferred_side') or {}).get('cards') or [])]
+        wait_for(self.data_dir, image_codes, timeout=30)
 
         def load(code):
             found = picture(self.data_dir, code)
@@ -531,12 +695,19 @@ class BotService:
         selected = result.get('selected') or {}
         person = result.get('person') or {}
         recorded = selected.get('recorded_at')
+        rank = self._top100_rank(player)
+        rank_line = f"排名：#{rank}\n" if rank else ""
         text = (f"玩家：{player}\n"
+                f"{rank_line}"
                 f"卡组：{person.get('deck_type') or '未识别'}\n"
                 f"观测小局：{format_time(recorded) if recorded else '时间未知'}\n"
                 f"YDK：{ydk_url}{ydk_note}\n"
                 f"链接最晚到期：{format_time(link['expires_at'])}（最长 {self.link_hours:g} 小时；构筑图见下）")
-        return CardReply(text, image_url)
+        reply = CardReply(text, image_url)
+        self._deck_cache[cache_key] = (time.monotonic(), reply)
+        while len(self._deck_cache) > 32:
+            self._deck_cache.pop(next(iter(self._deck_cache)))
+        return reply
 
     def _replay_text(self, user_id: str, player: str) -> str:
         self.index_player_replays(player)
@@ -549,7 +720,7 @@ class BotService:
                   "未订阅，默认仅查看该玩家对手排名前100的录像；不会自动订阅或开启推送。")
         return self.directory_message(user_id, player, reason, rows)
 
-    def _wait_public_url(self, timeout: float = 30.0) -> bool:
+    def _wait_public_url(self, timeout: float = 8.0) -> bool:
         """免费隧道偶尔断线，这里等它自动重连。返回是否连上。"""
         if self.tunnel is None:
             return True
@@ -916,7 +1087,21 @@ class BotService:
         send = self.qq.send_group if is_group else self.qq.send_private
         forward = self.qq.send_group_forward if is_group else self.qq.send_private_forward
         conversation = "group:" + str(receiver) if is_group else ""
-        if parse_command(text).get('op') == 'help':
+        parsed_command = parse_command(text)
+        if parsed_command.get('op') in ('deck_build', 'top100_rank_build'):
+            await send(receiver, "构筑图生成中，约几秒…")
+            task = asyncio.create_task(self._deck_build_job(
+                user_id, text, conversation, receiver, send))
+            self._deck_tasks.add(task)
+            task.add_done_callback(self._deck_tasks.discard)
+            return
+        if parsed_command.get('op') == 'price_quote':
+            await send(receiver, "查价中，约 1 分钟；完成后把结果发到这里。")
+            task = asyncio.create_task(self._price_quote_job(parsed_command, receiver, send))
+            self._price_quote_tasks.add(task)
+            task.add_done_callback(self._price_quote_tasks.discard)
+            return
+        if parsed_command.get('op') == 'help':
             # 帮助是一条分组清单，直接发文字，不再走合并转发。
             reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
             ok = await send(receiver, reply)
@@ -992,7 +1177,7 @@ class BotService:
             await asyncio.sleep(1)
 
     async def price_watch_loop(self) -> None:
-        """机器人在线时，每 N 秒跑一次 price-watch 的 once（到价私聊，不发群）。"""
+        """每张预定单独错峰巡检：一次只查一张，查完再排下一轮。"""
         cfg = self.config.get("price_watch") or {}
         if cfg.get("enabled") is not True:
             return
@@ -1000,48 +1185,409 @@ class BotService:
         if not cli:
             self.write_log("price_watch: 未配置 cli，跳过")
             return
-        interval = max(60.0, float(cfg.get("interval_seconds", 900)))
-        delay = max(0.0, float(cfg.get("initial_delay_seconds", 120)))
+        import random
+        low = max(60.0, float(cfg.get("interval_min_seconds", 1500)))
+        high = max(low, float(cfg.get("interval_max_seconds", 2400)))
         timeout = max(30.0, float(cfg.get("timeout_seconds", 300)))
-        self.write_log(f"price_watch: 已启用，每 {interval:.0f}s 检查一次")
+        retries = max(1, int(cfg.get("retries", 3)))
+        retry_delay = max(5.0, float(cfg.get("retry_delay_seconds", 20)))
+        delay = max(0.0, float(cfg.get("initial_delay_seconds", 120))) + random.uniform(0, 180)
+        self._price_next_allowed = 0.0
+        self._price_idle_logged = False
+        self._price_ensure_schedules(low, high)
+        self.write_log(f"price_watch: 已启用，按预定逐张错峰；每张 {low/60:.0f}-{high/60:.0f} 分钟随机，"
+                       f"两张之间至少隔 {float(cfg.get('min_gap_seconds', 300))/60:.0f}-"
+                       f"{float(cfg.get('min_gap_max_seconds', 600))/60:.0f} 分钟")
         await asyncio.sleep(delay)
         while True:
             try:
-                await asyncio.to_thread(self._run_price_watch_once, cli, timeout)
+                due = self._price_due_reservation()
+                if due is None:
+                    if not self._price_idle_logged:
+                        self.write_log("price_watch: 当前没有到点的预定，等待")
+                        self._price_idle_logged = True
+                    await asyncio.sleep(30)
+                    continue
+                self._price_idle_logged = False
+                if time.monotonic() < self._price_next_allowed:
+                    await asyncio.sleep(20)
+                    continue
+                self.write_log(f"price_watch: 检查预定 #{due['id']} {due['name']} {due['rarity']}".strip())
+                await asyncio.to_thread(self._price_cycle_one, cfg, cli, timeout, retries, retry_delay, due)
+                self._price_mark_checked(due["id"], low, high)
+                self._price_next_allowed = time.monotonic() + random.uniform(
+                    max(60.0, float(cfg.get("min_gap_seconds", 300))),
+                    max(120.0, float(cfg.get("min_gap_max_seconds", 600))))
             except Exception as exc:
                 self.write_log(f"price_watch 异常: {exc}")
-            await asyncio.sleep(interval)
+                await asyncio.sleep(30)
+            await asyncio.sleep(20)
 
-    def _run_price_watch_once(self, cli: str, timeout: float) -> None:
+    def _price_database_path(self):
+        from .price_reservations import DEFAULT_DB
+        if self._price_db:
+            return Path(self._price_db)
+        return Path(self._price_cfg().get("db") or DEFAULT_DB)
+
+    def _price_schedule_conn(self):
+        import sqlite3
+        conn = sqlite3.connect(self._price_database_path(), timeout=5)
+        conn.row_factory = sqlite3.Row
+        conn.execute("""CREATE TABLE IF NOT EXISTS reservation_schedule (
+            reservation_id INTEGER PRIMARY KEY,
+            next_check_at REAL NOT NULL,
+            last_check_at REAL
+        )""")
+        conn.commit()
+        return conn
+
+    def _price_ensure_schedules(self, low, high):
+        import random
+        import sqlite3
+        try:
+            with closing(self._price_schedule_conn()) as conn:
+                rows = conn.execute(
+                    "SELECT r.id FROM reservations r LEFT JOIN reservation_schedule s "
+                    "ON s.reservation_id=r.id WHERE r.active=1 AND s.reservation_id IS NULL").fetchall()
+                now = time.time()
+                for row in rows:
+                    # 新预定随机摊到未来一个周期内，避免同时到点。
+                    conn.execute("INSERT OR IGNORE INTO reservation_schedule (reservation_id, next_check_at) VALUES (?,?)",
+                                 (int(row["id"]), now + random.uniform(0, high)))
+                conn.commit()
+        except (OSError, sqlite3.Error):
+            pass
+
+    def _price_due_reservation(self):
+        import sqlite3
+        try:
+            with closing(self._price_schedule_conn()) as conn:
+                row = conn.execute(
+                    "SELECT r.id,r.name,r.rarity,r.language,s.next_check_at "
+                    "FROM reservations r LEFT JOIN reservation_schedule s ON s.reservation_id=r.id "
+                    "WHERE r.active=1 AND (s.next_check_at IS NULL OR s.next_check_at<=?) "
+                    "ORDER BY COALESCE(s.next_check_at,0) LIMIT 1",
+                    (time.time(),)).fetchone()
+            return dict(row) if row else None
+        except (OSError, sqlite3.Error):
+            return None
+
+    def _price_mark_checked(self, reservation_id, low, high):
+        import random
+        import sqlite3
+        try:
+            with closing(self._price_schedule_conn()) as conn:
+                conn.execute(
+                    "INSERT INTO reservation_schedule (reservation_id,next_check_at,last_check_at) "
+                    "VALUES (?,?,?) ON CONFLICT(reservation_id) DO UPDATE SET "
+                    "next_check_at=excluded.next_check_at,last_check_at=excluded.last_check_at",
+                    (int(reservation_id), time.time() + random.uniform(low, high), time.time()))
+                conn.commit()
+        except (OSError, sqlite3.Error):
+            pass
+
+    def _top100_rank(self, player: str):
+        from . import deck_naming
+        try:
+            with closing(deck_naming.connect(self.store.path, readonly=True)) as db:
+                row = db.execute("SELECT rank FROM stat_current_top100 WHERE player=? AND rank<=100",
+                                 (player,)).fetchone()
+            return int(row["rank"]) if row else None
+        except Exception:
+            return None
+
+    def _top100_rank_build_text(self, user_id, rank: int):
+        from . import deck_naming
+        with closing(deck_naming.connect(self.store.path, readonly=True)) as db:
+            row = db.execute("SELECT player FROM stat_current_top100 WHERE rank=? AND rank<=100",
+                             (int(rank),)).fetchone()
+        if row is None:
+            return f"前100里没有第 {rank} 名，榜单可能刚刷新，请稍后再试。"
+        player = row["player"]
+        reply = self._deck_build_text(user_id, player)
+        if isinstance(reply, str) and self._top100_rank(player):
+            return reply
+        return reply
+
+    def _top100_pie_reply(self):
+        from .top100_pie import render
+        blob, data = render(self.store.path, self.replay_root, self.clock())
+        image_url = "base64://" + base64.b64encode(blob).decode("ascii")
+        text = (f"前100卡组分布（有档案 {data['covered']}/{data['current']} 人，"
+                f"已识别 {len(data['items'])} 类）")
+        return CardReply(text, image_url)
+
+    def _top100_deck_text(self, keyword: str) -> str:
+        from . import deck_naming
+        with closing(deck_naming.connect(self.store.path, readonly=True)) as db:
+            roster = deck_naming.roster(db)
+            views = {row["player"]: row for row in deck_naming.latest_views(db, self.clock(), self.replay_root)}
+        wanted = keyword.strip().lower()
+        hits = []
+        for row in roster:
+            deck = (views.get(row["player"]) or {}).get("deck_type") or "未识别"
+            if wanted in str(deck).lower():
+                hits.append((row["rank"], row["player"], deck))
+        if not hits:
+            return f"前100里没有卡组名包含「{keyword}」的玩家。"
+        lines = [f"前100中卡组名包含「{keyword}」的玩家（{len(hits)} 人）："]
+        for rank, player, deck in hits:
+            lines.append(f"#{rank} {player} · {deck}")
+        return "\n".join(lines)
+
+    def _price_quote_blocking(self, command):
+        from .price_quote import PriceQuote, format_quote
+        from .price_shipping import ShippingCache
+        if not self._price_ui_lock.acquire(timeout=60):
+            return "前面还有查价在跑，请稍后再试。"
+        try:
+            result = PriceQuote(ShippingCache(self._price_database_path()), log=self.write_log).quote(
+                command["name"], command.get("rarity") or "", command.get("language") or "日文")
+            return format_quote(result)
+        finally:
+            self._price_ui_lock.release()
+
+    async def _deck_build_job(self, user_id, text, conversation, receiver, send):
+        try:
+            reply = await asyncio.wait_for(
+                asyncio.to_thread(self.handle_text, user_id, text, conversation), timeout=40)
+        except asyncio.TimeoutError:
+            reply = "构筑生成超时，请稍后再试。"
+        except Exception as exc:
+            reply = f"构筑暂时失败：{exc}"
+        try:
+            await send(receiver, reply)
+        except Exception as exc:
+            self.write_log(f"构筑结果发送失败：{exc}")
+
+    async def _price_quote_job(self, command, receiver, send):
+        try:
+            reply = await asyncio.wait_for(
+                asyncio.to_thread(self._price_quote_blocking, command), timeout=90)
+        except asyncio.TimeoutError:
+            reply = "查价超时：集换社页面没有响应，已复位，请稍后重试。"
+            await asyncio.to_thread(self._reset_price_ui)
+        except Exception as exc:
+            from .price_quote import PriceQuoteError
+            reply = (str(exc) if isinstance(exc, PriceQuoteError)
+                     else "查价暂时不可用：集换社页面异常，已复位，请稍后再试。")
+            self.write_log(f"查价异常: {type(exc).__name__}: {exc}")
+        try:
+            await send(receiver, reply)
+        except Exception as exc:
+            self.write_log(f"查价结果发送失败：{exc}")
+
+    def _reset_price_ui(self):
+        if not self._price_ui_lock.acquire(timeout=90):
+            self.write_log("查价: reset 等待 UI 锁超时，跳过复位")
+            return
+        try:
+            try:
+                self._adb(["shell", "am", "force-stop", self._price_package()], timeout=20)
+                self._adb(["shell", "uiautomator", "dump", "/sdcard/jhs_ui.xml"], timeout=10)
+            except Exception:
+                pass
+        finally:
+            self._price_ui_lock.release()
+
+    def _price_cycle_one(self, cfg, cli, timeout, retries, retry_delay, due):
+        if not self._price_ui_lock.acquire(timeout=10):
+            self.write_log("price_watch: 设备正被查价占用，本轮跳过")
+            return
+        try:
+            from .price_ui_lock import PriceUiLock
+            with PriceUiLock(timeout=120):
+                self._price_cycle_one_unlocked(cfg, cli, timeout, retries, retry_delay, due)
+        finally:
+            self._price_ui_lock.release()
+
+    def _price_cycle_one_unlocked(self, cfg, cli, timeout, retries, retry_delay, due):
+        if not self._ensure_price_emulator():
+            self.write_log("price_watch: 模拟器/设备未就绪，本轮跳过，下一轮再试")
+            return
+        self._start_price_app()
+        for attempt in range(1, retries + 1):
+            started = datetime.now().astimezone().replace(microsecond=0)
+            try:
+                out, code = self._run_price_watch_once(cli, timeout, due["id"])
+            except Exception as exc:
+                out, code = str(exc), -1
+            if code == 0 and self._price_snapshot_fresh(started):
+                self.write_log(f"price_watch: 预定 #{due['id']} 第 {attempt} 次检查成功")
+                return
+            self.write_log(f"price_watch: 预定 #{due['id']} 第 {attempt}/{retries} 次未刷新（exit={code}）：{out[-300:]}")
+            if attempt < retries:
+                time.sleep(retry_delay)
+        self.write_log(f"price_watch: 预定 #{due['id']} 本轮多次未刷新，等下一轮")
+
+    def _price_cfg(self):
+        return self.config.get("price_watch") or {}
+
+    def _price_cli_dir(self):
+        return Path(str(self._price_cfg().get("cli") or "")).resolve().parent
+
+    def _price_adb(self):
+        emu = self._price_cfg().get("emulator") or {}
+        if emu.get("adb"):
+            return str(emu["adb"])
+        bundled = self._price_cli_dir() / "tools" / "platform-tools" / "adb.exe"
+        return str(bundled) if bundled.is_file() else "adb"
+
+    def _price_device(self):
+        emu = self._price_cfg().get("emulator") or {}
+        if emu.get("serial"):
+            return str(emu["serial"])
+        try:
+            import json
+            cfg = json.loads((self._price_cli_dir() / "config.json").read_text(encoding="utf-8"))
+            return str((cfg.get("device") or {}).get("serial") or "127.0.0.1:16416")
+        except (OSError, ValueError):
+            return "127.0.0.1:16416"
+
+    def _price_package(self):
+        emu = self._price_cfg().get("emulator") or {}
+        if emu.get("app_package"):
+            return str(emu["app_package"])
+        try:
+            import json
+            cfg = json.loads((self._price_cli_dir() / "config.json").read_text(encoding="utf-8"))
+            return str((cfg.get("device") or {}).get("app_package") or "com.jihuanshe")
+        except (OSError, ValueError):
+            return "com.jihuanshe"
+
+    def _price_instance(self, serial):
+        emu = self._price_cfg().get("emulator") or {}
+        if emu.get("instance"):
+            return str(emu["instance"])
+        manager = emu.get("manager") or ""
+        if not manager or not Path(manager).is_file():
+            return "1"
+        try:
+            import json
+            proc = subprocess.run([manager, "info", "-v", "all"], capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=30)
+            raw = (proc.stdout or "").strip()
+            data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+            port = str(serial).rsplit(":", 1)[-1]
+            for index, info in data.items():
+                if str(info.get("adb_port")) == port:
+                    return str(index)
+        except Exception:
+            pass
+        return "1"
+
+    def _adb(self, args, timeout=20):
+        import subprocess as _sp
+        return _sp.run([self._price_adb()] + args, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=timeout)
+
+    def _ensure_price_emulator(self):
+        """设备不在线就通过 MuMuManager 拉起对应实例；返回是否就绪。"""
+        import subprocess as _sp
+        serial = self._price_device()
+        out = (self._adb(["devices"]).stdout or "")
+        if serial in out:
+            self._adb(["connect", serial]) if ":" in serial else None
+            return True
+        emu = self._price_cfg().get("emulator") or {}
+        manager = str(emu.get("manager") or "")
+        if manager and Path(manager).is_file():
+            instance = self._price_instance(serial)
+            try:
+                _sp.Popen([manager, "control", "-v", instance, "launch"],
+                          stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                          creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0))
+                self.write_log(f"price_watch: 已请求启动 MuMu 实例 {instance}")
+            except OSError as exc:
+                self.write_log(f"price_watch: 启动 MuMu 失败：{exc}")
+        deadline = time.monotonic() + float(emu.get("wait_seconds", 90))
+        while time.monotonic() < deadline:
+            if ":" in serial:
+                self._adb(["connect", serial], timeout=20)
+            out = (self._adb(["devices"], timeout=20).stdout or "")
+            if serial in out:
+                return True
+            time.sleep(3)
+        return False
+
+    def _start_price_app(self):
+        serial, package = self._price_device(), self._price_package()
+        try:
+            self._adb(["-s", serial, "shell", "monkey", "-p", package, "-c",
+                       "android.intent.category.LAUNCHER", "1"], timeout=30)
+        except Exception as exc:
+            self.write_log(f"price_watch: 打开集换社失败：{exc}")
+
+    def _price_snapshot_fresh(self, since):
+        from datetime import datetime
+        from .price_reservations import DEFAULT_DB
+        path = Path(self._price_cfg().get("db") or DEFAULT_DB)
+        try:
+            import sqlite3
+            with closing(sqlite3.connect(path, timeout=5)) as conn:
+                row = conn.execute("SELECT MAX(captured_at) FROM snapshots").fetchone()
+            if not row or not row[0]:
+                return False
+            return datetime.fromisoformat(row[0]) >= since
+        except Exception:
+            return False
+
+    def _price_cycle(self, cfg, cli, timeout, retries, retry_delay):
+        if not self._ensure_price_emulator():
+            self.write_log("price_watch: 模拟器/设备未就绪，本轮跳过，下一轮再试")
+            return
+        self._start_price_app()
+        for attempt in range(1, retries + 1):
+            started = datetime.now().astimezone().replace(microsecond=0)
+            try:
+                out, code = self._run_price_watch_once(cli, timeout)
+            except Exception as exc:
+                out, code = str(exc), -1
+            if code == 0 and self._price_snapshot_fresh(started):
+                self.write_log(f"price_watch: 第 {attempt} 次检查成功，价格已刷新")
+                return
+            self.write_log(f"price_watch: 第 {attempt}/{retries} 次未刷新（exit={code}）：{out[-300:]}")
+            if attempt < retries:
+                time.sleep(retry_delay)
+        self.write_log("price_watch: 本轮多次未刷新，等待下一轮")
+
+    def _run_price_watch_once(self, cli: str, timeout: float, reservation_id=None):
         import os
         import subprocess as _sp
         # jhs_watch 的汇总里有 "¥"，管道下 Windows 默认 GBK 会 UnicodeEncodeError；
         # 强制子进程用 UTF-8 输出，父进程也按 UTF-8 读。
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         proc = _sp.run(
-            [sys.executable, cli, "once"],
+            [sys.executable, cli, "once"] + (["--reservation-id", str(reservation_id)] if reservation_id else []),
             cwd=str(Path(cli).resolve().parent),
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, env=env,
         )
         out = ((proc.stdout or "") + (proc.stderr or "")).strip()
         self.write_log("price_watch: " + (out[-800:] if out else f"exit={proc.returncode}"))
+        return out, proc.returncode
 
     async def run(self, roles=None) -> None:
         # 多进程共用同一个 SQLite：这里不是单写者；M3 才把 QQ 的写请求收敛到 collector。
         active = self.roles if roles is None else normalize_roles(roles)
-        if "share" in active:
+        if "share" in active and not self.share_external():
             self.share_server.start()
             if self.tunnel is not None:
                 self.tunnel.origin = self.share.local_base()
         for line in self.startup_lines():
             print(line, flush=True)
             self.write_log(line)
-        if "share" in active:
+        if "share" in active and not self.share_external():
             self.write_log(f"分享服务监听 http://{self.share.bind_host}:{self.share.bind_port}/")
+        elif "share" in active and self.share_external():
+            self.write_log("分享服务由独立 share_service 提供（share.mode=process），watch 不再监听 8787。")
         qq_cfg = self.config.get("qq") or {}
         token = str(qq_cfg.get("access_token") or "").strip()
         tasks = []
+        # watch 存活状态：share.mode=process 后 8787 只代表分享进程，launcher/pycharm_link 改读这个文件。
+        # 不单独起任务（否则 run() 的 gather 永远不结束）；启动写一次，之后跟着 on_capture_status 每 10 秒刷新。
+        if "watch" in active:
+            self.write_watch_status()
         # 只按角色裁剪；全开时任务创建顺序与原来完全一致。
         if "qq" in active:
             tasks.append(asyncio.create_task(self.notify_loop()))
@@ -1103,6 +1649,8 @@ class BotService:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if "watch" in active:
+                self.write_watch_status('stopped')
             self.share_server.stop()
             self.store.close()
 

@@ -67,7 +67,7 @@ def ranks_for(players,now):
             try:
                 payload=future.result()
                 if isinstance(payload,list):payload=payload[0] if len(payload)==1 else None
-                if not isinstance(payload,dict) or ('username' in payload and payload['username']!=name):raise ValueError()
+                if not isinstance(payload,dict):raise ValueError()
                 _CACHE[name]=(parse_profile(payload,name,started)['rank'],started)
                 _RETRY[name]=now+120
             except Exception:_CACHE.pop(name,None);_RETRY[name]=now+60
@@ -95,7 +95,7 @@ def ranks_for(players,now):
                 try:
                     payload=future.result()
                     if isinstance(payload,list):payload=payload[0] if len(payload)==1 else None
-                    if not isinstance(payload,dict) or ('username' in payload and payload['username']!=name):raise ValueError()
+                    if not isinstance(payload,dict):raise ValueError()
                     rank=parse_profile(payload,name,started)['rank']
                     if 0<=time.time()-started<120:_CACHE[name]=(rank,started);result[name]=rank
                 except Exception:_RETRY[name]=now+60

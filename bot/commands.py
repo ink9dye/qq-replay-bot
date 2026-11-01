@@ -33,6 +33,14 @@ def parse_scope(text: str) -> Optional[int]:
     return top
 
 
+PRICE_HELP = ("卡价预定（到价私聊）\n"
+              "一个人只能预定一种卡。\n"
+              "预定 卡名 罕贵 日文/简中 预期价，例如：预定 决斗者之力 UTR 日文 160\n"
+              "查看自己的预定：我的预定\n"
+              "取消：取消预定 决斗者之力 UTR 日文\n"
+              "说明：到价后只私聊预定人，不发群。")
+
+
 def parse_command(text: str) -> dict:
     tokens = tokenize(text.strip())
     if not tokens:
@@ -76,12 +84,9 @@ def parse_command(text: str) -> dict:
     if head == "帮助":
         return {"op": "help"}
     if head == "统计":
-        page = rest[0] if rest else ""
-        if len(rest) > 1 or page not in ("", "卡组", "录像", "卡片", "系列"):
-            return {"op": "error", "message": "格式：统计 或 统计 卡组/录像/卡片/系列"}
-        pages = {"": "", "卡组": "statistics/decks", "录像": "statistics/recordings",
-                 "卡片": "statistics/card-table", "系列": "statistics/groups"}
-        return {"op": "stats_page", "page": pages[page]}
+        if rest:
+            return {"op": "error", "message": "直接发送“统计”即可。"}
+        return {"op": "stats_page"}
     if head == "我的订阅":
         return {"op": "list"}
     if head == "订阅":
@@ -109,7 +114,7 @@ def parse_command(text: str) -> dict:
         return {"op": op, "player": player}
     if head == "预定":
         if len(rest) < 2:
-            return {"op": "error", "message": "格式：预定 卡名 罕贵 预期价，例如：预定 决斗者之力 UTR 160"}
+            return {"op": "price_help"}
         try:
             target = float(rest[-1])
         except ValueError:
@@ -117,28 +122,65 @@ def parse_command(text: str) -> dict:
         if target <= 0:
             return {"op": "error", "message": "预期价格要大于 0"}
         args = list(rest[:-1])
+        language = "日文"
+        if args and args[-1] in ("日文", "简中"):
+            language = args[-1]
+            args = args[:-1]
         rarity = ""
         if len(args) >= 2 and re.fullmatch(r"[A-Za-z0-9]{1,12}", args[-1]):
             rarity = args[-1].upper()
             args = args[:-1]
         name = " ".join(args).strip()
         if not name:
-            return {"op": "error", "message": "格式：预定 卡名 罕贵 预期价"}
-        return {"op": "price_reserve", "name": name, "rarity": rarity, "target": target}
+            return {"op": "error", "message": "一个人只能预定一种卡。\n格式：预定 卡名 罕贵 日文/简中 预期价"}
+        return {"op": "price_reserve", "name": name, "rarity": rarity,
+                "language": language, "target": target}
+    if head == "前百饼图":
+        if rest:
+            return {"op": "error", "message": "直接发送“前百饼图”即可。"}
+        return {"op": "top100_pie"}
+    if head == "前百构筑":
+        keyword = " ".join(rest).strip()
+        if not keyword:
+            return {"op": "error", "message": "格式：前百构筑 卡组关键词，或 前百构筑 名次"}
+        if keyword.isdigit():
+            rank = int(keyword)
+            if not 1 <= rank <= 100:
+                return {"op": "error", "message": "名次要在 1–100 之间。"}
+            return {"op": "top100_rank_build", "rank": rank}
+        return {"op": "top100_deck", "keyword": keyword}
+    if head == "查价":
+        if not rest:
+            return {"op": "error", "message": "格式：查价 卡名 [罕贵] [日文/简中]"}
+        args = list(rest)
+        language = "日文"
+        if len(args) >= 2 and args[-1] in ("日文", "简中"):
+            language = args.pop()
+        rarity = ""
+        if len(args) >= 2 and re.fullmatch(r"[A-Za-z0-9]{1,12}", args[-1]):
+            rarity = args.pop().upper()
+        name = " ".join(args).strip()
+        if not name:
+            return {"op": "error", "message": "格式：查价 卡名 [罕贵] [日文/简中]"}
+        return {"op": "price_quote", "name": name, "rarity": rarity, "language": language}
     if head == "我的预定":
         if rest:
             return {"op": "error", "message": "直接发送“我的预定”即可。"}
         return {"op": "price_reservations"}
     if head == "取消预定":
         if not rest:
-            return {"op": "error", "message": "格式：取消预定 卡名 罕贵"}
+            return {"op": "error", "message": "格式：取消预定 卡名 罕贵 日文/简中"}
         args = list(rest)
+        language = ""
+        if args and args[-1] in ("日文", "简中"):
+            language = args[-1]
+            args = args[:-1]
         rarity = ""
         if len(args) >= 2 and re.fullmatch(r"[A-Za-z0-9]{1,12}", args[-1]):
             rarity = args[-1].upper()
             args = args[:-1]
         name = " ".join(args).strip()
         if not name:
-            return {"op": "error", "message": "格式：取消预定 卡名 罕贵"}
-        return {"op": "price_cancel", "name": name, "rarity": rarity}
+            return {"op": "error", "message": "格式：取消预定 卡名 罕贵 日文/简中"}
+        return {"op": "price_cancel", "name": name, "rarity": rarity, "language": language}
     return {"op": "unknown", "text": " ".join(tokens).strip()}

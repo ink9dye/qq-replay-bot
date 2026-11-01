@@ -8,7 +8,7 @@ from contextlib import closing
 from http.cookies import SimpleCookie, CookieError
 from ipaddress import ip_address
 from pathlib import Path
-from urllib.parse import urlsplit,parse_qs
+from urllib.parse import urlsplit,parse_qs,quote as url_quote
 from .card_search import card_name
 
 COOKIE='qqstats_owner'
@@ -69,28 +69,8 @@ class StatisticsPortal:
         if parts==['statistics','build']:
             return self._reply(200,Path(__file__).with_name('statistics_build.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','decks']:
-            return self._reply(200,Path(__file__).with_name('statistics_decks.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
-        if parts==['statistics','api','decks']:
-            from .deck_statistics import usage
-            def run(db):return usage(db,self.replay_root,float(self.clock()))
-            return self._query_reply(run)
-        if parts==['statistics','api','deck']:
-            from .deck_statistics import detail
-            args=parse_qs(parsed.query)
-            if any(len(v)>2000 for v in args.values()):return self._reply(400,'筛选项过多。')
-            deck=args.get('deck',[''])[0];rank=args.get('rank',['carried'])[0];order=args.get('order',['all'])[0]
-            partition=args.get('partition',['main'])[0];parts_threshold=args.get('threshold',['0.01'])
-            if len(parts_threshold)>1:return self._reply(400,json.dumps({'error':'样本占比参数重复。'},ensure_ascii=False),'application/json; charset=utf-8')
-            threshold=parts_threshold[0].strip()
-            from decimal import Decimal,InvalidOperation
-            try:
-                value=Decimal(threshold)
-                if not value.is_finite():raise InvalidOperation
-            except (InvalidOperation,ValueError):return self._reply(400,json.dumps({'error':'样本占比无效。'},ensure_ascii=False),'application/json; charset=utf-8')
-            if value<0 or value>1:return self._reply(400,json.dumps({'error':'样本占比应在0到100%之间。'},ensure_ascii=False),'application/json; charset=utf-8')
-            def run(db):return detail(db,self.replay_root,float(self.clock()),deck,rank,order,threshold,partition)
-            try:return self._query_reply(run)
-            except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
+            # 卡组统计页已下线：旧链接（含 QQ“统计 卡组”）回到玩家排名。
+            return self._reply(302,'',extra={'Location':'/statistics'})
         if parts==['statistics','recordings']:
             return self._reply(200,Path(__file__).with_name('statistics_recordings.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','api','recordings']:
@@ -145,7 +125,7 @@ class StatisticsPortal:
             args=parse_qs(parsed.query);player=args.get('player',[''])[0]
             scope=args.get('scope',['100'])[0];query=args.get('q',[''])[0]
             def run(db):
-                return detail(db,self.database.parent,float(self.clock()),player) if player else list_rows(db,float(self.clock()),scope,query)
+                return detail(db,self.database.parent,float(self.clock()),player,self.replay_root) if player else list_rows(db,float(self.clock()),scope,query,self.replay_root)
             try:return self._query_reply(run)
             except LookupError:return self._reply(404,'没有找到这个玩家的有效构筑或名单记录。')
             except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
@@ -176,10 +156,10 @@ class StatisticsPortal:
             image=picture(self.database.parent,int(parts[2]))
             if image is None:return self._reply(404,'本地暂无卡图。')
             file,mime=image
-            status,kind,_,extra=self._reply(200,'',mime)
+            status,kind,_,extra=self._reply(200,'',mime,{'Cache-Control':'public, max-age=86400'})
             return status,kind,file.read_bytes(),extra
         if parts in (['statistics','api','build-detail'],['statistics','build-ydk']):
-            from .statistics_build_detail import query as build_detail,ydk
+            from .statistics_build_detail import query as build_detail,ydk,ydk_filename
             args=parse_qs(parsed.query);player=args.get('player',[''])[0];digest=args.get('digest',[None])[0];scope=args.get('scope',['build'])[0]
             if digest is not None and (len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest)):return self._reply(400,'来源编号无效。')
             if not player or len(player)>128 or scope not in ('build','player'):return self._reply(400,'玩家或范围无效。')
@@ -193,6 +173,8 @@ class StatisticsPortal:
                     for match in result['matches']:
                         for card in match['changes']['added']+match['changes']['removed']:
                             info=names.get(str(card['code']));card['name']=card_name(info) if info else '卡名暂缺'
+                    from .statistics_local_cards import prefetch
+                    prefetch(self.database.parent,[card['code'] for card in result['cards']+result['inferred_side']['cards']])
                 return result
             if parts[1]=='api':return self._query_reply(run)
             try:
@@ -200,8 +182,16 @@ class StatisticsPortal:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN');result=run(db)
                     if result is None:return self._reply(404,'构筑来源当前不可用。')
                     inferred=args.get('inferred',['0'])[0]=='1'
-                    return self._reply(200,ydk(result,inferred),'text/plain; charset=utf-8',{'Content-Disposition':'attachment; filename="build-'+result['selected']['digest'][:16]+('-inferred' if inferred else '')+'.ydk"'})
-            except ValueError:return self._reply(409,'推测Side候选冲突，不能导出为完整卡组。')
+                    try:
+                        body=ydk(result,inferred)
+                    except ValueError:
+                        if not inferred:raise
+                        # 推测 Side 冲突时不再挡下载：回落到直接记录的 Side。
+                        inferred=False;body=ydk(result,False)
+                    name,fallback=ydk_filename(result,inferred)
+                    header = f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{url_quote(name)}'
+                    return self._reply(200,body,'text/plain; charset=utf-8',{'Content-Disposition':header})
+            except ValueError:return self._reply(409,'构筑导出失败。')
             except (sqlite3.Error,OSError):return self._reply(503,'构筑暂不可用。')
         if parts==['statistics','api','player-investment']:
             from .statistics_investment import query as player_investment
@@ -255,7 +245,7 @@ class StatisticsPortal:
                     metric=args.get('metric',['drawn'])[0],threshold=args.get('threshold',['1'])[0],
                     min_games=args.get('min',['0'])[0],sort=args.get('sort',['people'])[0],
                     partition=args.get('partition',['auto'])[0],limit=args.get('limit',['500'])[0],
-                    exclude=args.get('exclude',[]),phases=args.get('phase',[]))))
+                    exclude=args.get('exclude',[]),phases=args.get('phase',[]),phase_none=args.get('phase_none',['0'])[0]=='1')))
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts in (['statistics','cards'],['statistics','matrix']):
@@ -284,32 +274,42 @@ class StatisticsPortal:
                 snapshot_now=float(self.clock())
                 result=card_query(db,self.replay_root,code,partition,snapshot_now,filters)
                 result['investment']=player_investment(db,self.replay_root,code,snapshot_now,filters.deck_types,filters.series,basis=investment_basis)
-                times={r['digest']:r['recorded_at'] for r in db.execute('SELECT digest,recorded_at FROM stat_games')}
+                digests=sorted({s['digest'] for s in result['samples']})
+                times={}
+                for start in range(0,len(digests),400):
+                    chunk=digests[start:start+400]
+                    marks=','.join('?' for _ in chunk)
+                    times.update({r['digest']:r['recorded_at'] for r in db.execute(
+                    f'SELECT digest,recorded_at FROM stat_games WHERE digest IN ({marks})',chunk)})
                 for row in result['samples']:row['recorded_at']=times[row['digest']]
                 result['generated_at']=snapshot_now;result['samples'].sort(key=lambda s:s['recorded_at'],reverse=True)
                 return result
             return self._query_reply(lambda db:scoped_query(ranges,lambda:run(db)))
         if parts==['statistics','api','matrix']:
             from .statistics_matrix import query as matrix
+            from .statistics_rank_scope import parse_ranges,scoped_query
             args=parse_qs(parsed.query)
             try:
                 row=[json.loads(v) for v in args.get('row',[])];column=[json.loads(v) for v in args.get('column',[])]
                 if len(row)>100 or len(column)>100 or any(v is not None and (not isinstance(v,str) or len(v)>128) for v in row+column):raise ValueError()
                 order=args.get('first',['all'])[0]
                 if order not in ('all','first','second'):raise ValueError()
+                ranges=parse_ranges(args)
             except (ValueError,TypeError):return self._reply(400,'矩阵筛选条件无效。')
-            return self._query_reply(lambda db:matrix(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1'))
+            return self._query_reply(lambda db:scoped_query(ranges,lambda:matrix(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1')))
         if parts==['statistics','api','matrix-cell']:
             from .statistics_matrix_cell import query as matrix_cell
+            from .statistics_rank_scope import parse_ranges,scoped_query
             args=parse_qs(parsed.query)
             try:
                 row=json.loads(args.get('row',['null'])[0]);column=json.loads(args.get('column',['null'])[0])
                 if not (row is None or isinstance(row,str)) or not (column is None or isinstance(column,str)) or len(row or '')>128 or len(column or '')>128:raise ValueError()
                 order=args.get('first',['all'])[0]
                 if order not in ('all','first','second'):raise ValueError()
+                ranges=parse_ranges(args)
             except (ValueError,TypeError):return self._reply(400,'矩阵格子条件无效。')
             try:
-                return self._query_reply(lambda db:matrix_cell(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1',threshold=args.get('threshold',['10'])[0]))
+                return self._query_reply(lambda db:scoped_query(ranges,lambda:matrix_cell(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1',threshold=args.get('threshold',['10'])[0])))
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','api','sample'] or len(parts)==3 and parts[:2]==['statistics','sample']:
@@ -425,14 +425,14 @@ class StatisticsPortal:
         if len(body)>4096:return self._reply(400,'请求内容过大。')
         try:
             payload=json.loads(body.decode('utf-8'))
-            build=payload['build'];deck=payload['deck']
+            build=payload['build'];deck=payload['deck'];naming_player=payload.get('player')
         except (UnicodeDecodeError,ValueError,KeyError,TypeError):
             return self._reply(400,'命名参数无效。')
         from .statistics_deck_naming import apply_name
         try:
             with closing(sqlite3.connect(str(self.database),timeout=10)) as db:
                 db.row_factory=sqlite3.Row;db.execute('PRAGMA busy_timeout=5000')
-                result=apply_name(db,build,deck);db.commit()
+                result=apply_name(db,build,deck,naming_player);db.commit()
         except LookupError:return self._reply(404,'找不到这个构筑，可能已经过期。')
         except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         except sqlite3.Error:return self._reply(409,'统计库正忙，请稍后重试。')
@@ -453,6 +453,6 @@ class StatisticsPortal:
     @staticmethod
     def _reply(status,body,content_type='text/plain; charset=utf-8',extra=None):
         headers={'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff',
-            'Content-Security-Policy':"default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"}
+            'Content-Security-Policy':"default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' https://cdntx.moecube.com https://cdn.233.momobako.com data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"}
         headers.update(extra or {})
         return status,content_type,body.encode('utf8'),headers

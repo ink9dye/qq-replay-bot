@@ -45,7 +45,7 @@ def deck_card_images(main, extra, side, names):
             badge = f'<span class="card-count">×{count}</span>' if count > 1 else ''
             items.append(
                 f'<a class="card-item" href="javascript:void(0)" onclick="openCardModal({code})" title="{e(name)}">'
-                f'<img src="{CARD_IMAGE_URL.format(code=code)}" alt="{e(name)}" loading="lazy">{badge}</a>'
+                f'<img src="{CARD_IMAGE_URL.format(code=code)}" onerror="this.onerror=null;this.src=&quot;https://cdn.233.momobako.com/ygopro/pics/{code}.jpg&quot;" alt="{e(name)}" loading="lazy">{badge}</a>'
             )
         return (f'<div class="deck-col"><h4>{e(title)}</h4><span class="muted">{len(cards)} 张</span>'
                 f'<div class="card-images">{"".join(items)}</div></div>')
@@ -61,7 +61,7 @@ def deck_download_button(filename, main, extra, side, label='下载卡组 .ydk')
     return f'<button class="button" type="button" onclick="downloadYdk(this)" {attrs}>{e(label)}</button>'
 
 
-CARD_IMAGE_URL = 'https://cdn.233.momobako.com/ygopro/pics/{code}.jpg!half'
+CARD_IMAGE_URL = 'https://cdntx.moecube.com/ygopro-super-pre/data/pics/{code}.jpg'
 CARD_DETAIL_URL = 'https://ygocdb.com/card/{code}'
 
 CARD_MODAL = (

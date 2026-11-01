@@ -34,6 +34,38 @@ def release_lines(page):
     return result
 
 
+_IMAGE_CACHE = {}
+_IMAGE_LOCK = None
+
+
+def card_image_url(code):
+    """新卡在 cdntx super-pre，旧卡在 momobako；按卡号探测并缓存。"""
+    import threading
+    global _IMAGE_LOCK
+    if _IMAGE_LOCK is None:
+        _IMAGE_LOCK = threading.Lock()
+    with _IMAGE_LOCK:
+        cached = _IMAGE_CACHE.get(int(code))
+        if cached:
+            return cached
+        candidates = [
+            f"https://cdntx.moecube.com/ygopro-super-pre/data/pics/{int(code)}.jpg",
+            f"https://cdn.233.momobako.com/ygopro/pics/{int(code)}.jpg",
+        ]
+        import urllib.request
+        for url in candidates:
+            try:
+                request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    if response.status == 200:
+                        _IMAGE_CACHE[int(code)] = url
+                        return url
+            except Exception:
+                continue
+        _IMAGE_CACHE[int(code)] = candidates[0]
+        return candidates[0]
+
+
 class CardReply(str):
     def __new__(cls, text, image_url):
         result = super().__new__(cls, text)
@@ -52,6 +84,7 @@ def card_name(card):
 
 class CardSearch:
     def __init__(self, data_dir: Path, fetch=None, clock=None, release_fetch=None, wall_clock=None):
+        self.data_dir = Path(data_dir)
         self.alias_path = Path(data_dir) / "card_aliases.json"
         self.fetch = fetch or self._fetch
         self.clock = clock or time.monotonic
@@ -103,7 +136,7 @@ class CardSearch:
     def _fetch_release(card_id):
         request = Request(f'https://ygocdb.com/card/{int(card_id)}',
                           headers={'User-Agent':'qq-replay-bot/card-search'})
-        with build_opener(ProxyHandler({})).open(request, timeout=3) as response:
+        with build_opener(ProxyHandler({})).open(request, timeout=1.5) as response:
             body = response.read(2*1024*1024+1)
         if len(body)>2*1024*1024:
             raise ValueError('release page too large')
@@ -160,7 +193,11 @@ class CardSearch:
         cached = self.cache.get(path)
         if cached and self.clock() - cached[0] < 3600:
             return cached[1]
-        result = self.fetch(path)
+        try:
+            result = self.fetch(path)
+        except (OSError, ValueError, TimeoutError):
+            time.sleep(1)
+            result = self.fetch(path)
         self.cache[path] = (self.clock(), result)
         self.cache.move_to_end(path)
         while len(self.cache) > 128:
@@ -176,19 +213,41 @@ class CardSearch:
             aliases.update({normalize(k): str(v) for k, v in custom.items()})
         return aliases.get(normalize(query), query)
 
-    @staticmethod
-    def _detail(card):
+    def _detail(self, card):
         card_id = int(card["id"])
         text = card.get("text") or {}
         lines = [card_name(card), f"卡密：{card_id:08d}"]
         for name in (card.get("sc_name") or text.get("sc_name"), card.get("md_name") or text.get("md_name")):
             if name and name not in lines:
                 lines.append(name)
-        for field in ("types", "pdesc", "desc"):
-            if text.get(field):
-                lines.append(str(text[field])[:7000])
+        block = []
+        if text.get("types"):
+            block.append(str(text["types"])[:7000])
+        if text.get("pdesc"):
+            scale = self._pendulum_scale(card_id)
+            if scale:
+                block.append(f"灵摆刻度：{scale[0]} / {scale[1]}")
+            block.append("【灵摆效果】")
+            block.append(str(text["pdesc"])[:7000])
+            if text.get("desc"):
+                block.append("【怪兽效果】")
+                block.append(str(text["desc"])[:7000])
+        elif text.get("desc"):
+            block.append(str(text["desc"])[:7000])
+        if block:
+            lines.append("\n".join(block))
         lines.append(f"百鸽：https://ygocdb.com/card/{card_id}")
-        return CardReply("\n\n".join(lines), f"https://cdn.233.momobako.com/ygopro/pics/{card_id}.jpg")
+        return CardReply("\n\n".join(lines), card_image_url(card_id))
+
+    def _pendulum_scale(self, card_id):
+        """从本地 YGOPro 文本里取灵摆刻度；没有本地库时返回 None。"""
+        try:
+            from .statistics_local_cards import card_details
+            description = card_details(Path(self.data_dir), card_id).get('description') or ''
+            match = re.search(r'←\s*(\d+).*?(\d+)\s*→', description)
+            return (int(match.group(1)), int(match.group(2))) if match else None
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
 
     def has_candidates(self, user, max_age=300, now=None):
         """当前会话是否有查卡候选；max_age 控制"裸数字/next"的快捷接话窗口。"""
@@ -205,8 +264,10 @@ class CardSearch:
         with self.lock:
             try:
                 return self._handle(str(user), action, value)
-            except (OSError, ValueError, KeyError, TypeError):
-                return "查卡暂时失败：请稍后重试。若编辑过 data/card_aliases.json，请检查它是合法的外号到卡名或密码的 JSON 对象。"
+            except OSError:
+                return "查卡接口暂时连不上，请稍后重试。"
+            except (ValueError, KeyError, TypeError):
+                return "查卡暂时失败：数据不是合法 JSON 或格式异常，请稍后重试。"
 
     def _handle(self, user, action, value):
         now = self.clock()
@@ -251,7 +312,7 @@ class CardSearch:
             if len(matches) == 1:
                 self.sessions.pop(user, None)
                 return self._reply_detail(matches[0])
-            if len(rows) == 1 and not result.get("next"):
+            if len(rows) == 1:
                 self.sessions.pop(user, None)
                 return self._reply_detail(rows[0])
         session = {"query": query, "rows": rows[:100], "offset": 0,

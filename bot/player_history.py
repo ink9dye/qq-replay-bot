@@ -159,7 +159,7 @@ class PlayerHistory:
             now = self.now().astimezone(CST)
             key = (player, now.year, now.month)
             cached = self.cache.get(key)
-            if cached and time.monotonic() - cached[0] < 60:
+            if cached and time.monotonic() - cached[0] < 300:
                 self.cache.move_to_end(key)
                 return cached[1]
             deadline = time.monotonic() + 40
@@ -185,19 +185,36 @@ class PlayerHistory:
             pool = ThreadPoolExecutor(max_workers=2)
             history_ok = True
             try:
-                recent_future = pool.submit(request, 'history',
-                                            {'username': player, 'type': 1, 'page_num': 100}, 12, 1)
+                # 接口对 page_num=100 会卡住（实测 30 秒超时）；改成两页 50，0.2 秒返回。
+                first_future = pool.submit(request, 'history',
+                                           {'username': player, 'type': 1, 'page_num': 50}, 10, 1)
+                second_future = pool.submit(request, 'history',
+                                            {'username': player, 'type': 1, 'page_num': 50, 'page': 2}, 10, 1)
                 user_future = pool.submit(request, 'user', {'username': player}, 5, 1)
                 try:
-                    recent = recent_future.result()
+                    first = first_future.result()
                 except Exception:
-                    recent, history_ok = None, False
+                    first, history_ok = None, False
+                try:
+                    second = second_future.result()
+                except Exception:
+                    second = None
                 try:
                     user = user_future.result()
                 except Exception:
                     user = {}
             finally:
                 pool.shutdown(wait=False, cancel_futures=True)
+            if not isinstance(first, dict) or not isinstance(first.get('data'), list):
+                first, history_ok = None, False
+            if isinstance(first, dict) and len(first.get('data') or []) >= 100:
+                second = None
+            merged = []
+            for part in (first, second):
+                if isinstance(part, dict) and isinstance(part.get('data'), list):
+                    merged.extend(part['data'])
+            merged.sort(key=lambda row: row.get('start_time') or '', reverse=True)
+            recent = {'data': merged[:100]} if first is not None else None
             # 一条腿断了不该把整条回复扔出去：历史挂了仍用资料字段作答。
             if not history_ok and not user:
                 raise TimeoutError()
@@ -205,6 +222,15 @@ class PlayerHistory:
             if history_ok and not isinstance(rows, list):
                 raise ValueError('invalid history rows')
             rows = rows if isinstance(rows, list) else []
+            unique, seen_rows = [], set()
+            for row in rows:
+                row_key = (row.get('usernamea'), row.get('usernameb'),
+                           row.get('start_time'), row.get('end_time'))
+                if row_key in seen_rows:
+                    continue
+                seen_rows.add(row_key)
+                unique.append(row)
+            rows = unique
             rows = [row for row in rows
                     if row.get('type') == 'athletic'
                     and player in (row.get('usernamea'), row.get('usernameb'))]
@@ -225,7 +251,7 @@ class PlayerHistory:
             elif history_ok:
                 lines.append('最近 100 局：暂无竞技记录')
             else:
-                lines.append('最近 100 局：暂未取到（接口超时）')
+                lines.append('最近 100 局：暂未取到（接口超时/失败）')
             if total_games:
                 lines.append(f'总场数：{total_games}')
                 lines.append(f'总胜率：{total_wins / total_games * 100:.2f}%')

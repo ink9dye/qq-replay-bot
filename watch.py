@@ -90,10 +90,47 @@ DEFAULT_VERSION = 0x1362
 from retention_policy import RETENTION_SECONDS, next_cleanup_delay
 from bot.join_throttle import DEFAULT_FAIL_THRESHOLD, DEFAULT_PAUSE, JoinGate
 
-# 进场节流（观战侧口径，2026-10-31 用户定）：同时最多观战 8 场、两次进场至少隔 10 秒、
-# 连续 3 次失败暂停 60 秒。bot/join_throttle.py 自己的默认仍是 2/5/3/60，由配置或这里覆盖。
+# 进场节流（观战侧口径，2026-10-31 用户定）：并发上限从 8 起**自动调**（6–8，不再往上），
+# 两次进场至少隔 20 秒、连续 3 次失败暂停 60 秒。bot/join_throttle.py 自己的默认仍是 2/5/3/60，
+# 由配置或这里覆盖。20 秒同时用于"计划进入时刻"的错峰（见 plan_gap_after）。
 JOIN_CONCURRENT_DEFAULT = 8
-JOIN_MIN_INTERVAL_DEFAULT = 10.0
+JOIN_MIN_INTERVAL_DEFAULT = 20.0
+# 自动调并发的边界：不低于 6（失败时退到这里），上限 8（不再自动往上，避免并行太多触发平台限制：
+# 若以后确认安全，再人工把上限调高）；每 3 分钟评估一次，
+# 有排队且同期 0 失败就 +2，被拒或有暂停就 -2（退下来后先冷却两个周期，避免来回抖）。
+JOIN_CONCURRENT_FLOOR = 6
+JOIN_CONCURRENT_CEILING = 8
+JOIN_TUNE_INTERVAL = 180.0
+JOIN_TUNE_STEP = 2
+# 进场间隔加 0–5 秒随机抖动，避免固定 20.0 秒的机器节奏；每小时最多 60 次进场。
+JOIN_INTERVAL_JITTER_DEFAULT = 5.0
+JOIN_MAX_PER_HOUR_DEFAULT = 60
+# 房间从"我们看到开局"到真正进场的最大等待。实测一局通常 ≥15 分钟，所以留到 15 分钟：
+# 超过 15 分钟才判定"多半已到局末"；比 6 分钟能多捞回大量中盘对局。
+JOIN_MAX_ROOM_AGE = 900.0
+# 夜间降档：02:00–07:00 并发 4–6、间隔 30 秒，把累计曲线压平（可配置/可关）。
+NIGHT_START_HOUR = 2
+NIGHT_END_HOUR = 7
+NIGHT_MIN_CONCURRENT = 4
+NIGHT_MAX_CONCURRENT = 6
+NIGHT_MIN_INTERVAL = 30.0
+NIGHT_JITTER = 10.0
+# 重启后追"启动前已在打"的局，最多追这么多；其余放弃（新 IP 刚解封时别一口气全撞）。
+STARTUP_CATCHUP_LIMIT = 20
+# 新 IP 观察期：启动/换网后前 10 分钟 4 路、30 秒；10 分钟内 0 失败才恢复。
+PROBATION_SECONDS = 600.0
+PROBATION_MAX_CONCURRENT = 4
+PROBATION_MIN_INTERVAL = 30.0
+# 出口 IP 被平台限制时的“熔断”：连续多次 0 包静默关闭 → 暂停 15 分钟，别再往上撞。
+SILENT_STREAK_LIMIT = 6
+SYSTEMIC_PAUSE_SECONDS = 900.0
+# 1 小时成功率熔断：低于 50% 且样本 >=10 就停 15 分钟（比等全灭更早刹车）。
+SUCCESS_BREAKER_RATE = 0.5
+SUCCESS_BREAKER_MIN_SAMPLES = 10
+SUCCESS_BREAKER_PAUSE_SECONDS = 900.0
+SUCCESS_BREAKER_CHECK_SECONDS = 300.0
+# 最近 30 分钟的进场/失败/峰值并发，写进 capture-status，用于和“被封前”对照。
+STATS_WINDOW_SECONDS = 1800.0
 # 启动前就在打的对局（积压）：到期窗口 20—40 秒随机错峰，让它们慢慢进，不在启动瞬间一起扑进去。
 PREEXISTING_JOIN_MIN_DEFAULT = 20.0
 PREEXISTING_JOIN_MAX_DEFAULT = 40.0
@@ -109,6 +146,50 @@ SERVICE_PREEXISTING_MAX_FALLBACK = 10.0
 def log(message: str) -> None:
     stamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{stamp}] {message}", flush=True)
+
+
+METRICS_INTERVAL = 60.0
+SUMMARY_INTERVAL = 3600.0
+METRICS_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _append_log_jsonl(name: str, record: dict) -> None:
+    """往 data/logs/<name> 追加一行 JSON；单文件超 5MB 时轮转成 .1（失败不影响观战）。"""
+    try:
+        path = Path(DATA_DIR) / "logs" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file() and path.stat().st_size >= METRICS_MAX_BYTES:
+            try:
+                path.replace(path.with_suffix(path.suffix + ".1"))
+            except OSError:
+                pass
+        record = dict(record, at=time.time(), t=time.strftime("%H:%M:%S"))
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def watch_event(name: str, **fields) -> None:
+    """结构化事件：startup/pause/breaker/shutdown 等，写 data/logs/watch-events.jsonl。"""
+    _append_log_jsonl("watch-events.jsonl", dict(event=name, **fields))
+
+
+def write_metrics(record: dict) -> None:
+    """每分钟一条运行指标，写 data/logs/watch-metrics.jsonl（用于离线复盘）。"""
+    _append_log_jsonl("watch-metrics.jsonl", record)
+
+
+def write_join_diag(record: dict) -> None:
+    """每次进场结束写一行诊断到 data/logs/join-diagnostics.jsonl（失败不影响观战）。"""
+    try:
+        path = Path(DATA_DIR) / "logs" / "join-diagnostics.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = dict(record, at=time.time())
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def load_system_nickname() -> str:
@@ -748,6 +829,9 @@ def room_from_mapping(item: dict, started: Optional[bool] = None) -> Optional[Ro
     title = str(item.get("title") or item.get("roomtitle") or join_id)
     if join_id in ("", "0") or title == "密码错误":
         return None
+    options = item.get("options")
+    if isinstance(options, dict) and options.get("no_watch") is True:
+        return None  # 房主关了观战：进去只会被静默关闭，直接跳过
     seats = seats_from_user_list(item.get("users") or item.get("players") or [])
     for index, key in enumerate(("player1", "player2", "player3", "player4")):
         extra = item.get(key)
@@ -852,6 +936,43 @@ def set_official_rank_snapshot(members, updated_at, stale):
     _official_ranks={m['player']:int(m['rank']) for m in members}
     _official_rank_updated_at=updated_at
     _official_rank_stale=bool(stale)
+
+
+def in_night_window(ts=None, start=NIGHT_START_HOUR, end=NIGHT_END_HOUR) -> bool:
+    """本地时间是否落在夜间降档窗口（支持跨午夜）。"""
+    hour = time.localtime(ts if ts is not None else time.time()).tm_hour
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def default_local_ip() -> str:
+    """当前默认出口的本地 IP（不联网、只做 UDP connect），用于发现换网。"""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        sock.close()
+
+
+def room_rank_sum(room) -> int:
+    """双方排名之和（越小越优先）；未知排名按很大的数排到最后。不联网。"""
+    total = 0
+    for player in (getattr(room, 'players', None) or []):
+        rank = _official_ranks.get(player)
+        if rank is None:
+            observed = _observed_room_ranks.get(player)
+            if observed and 0 <= time.time() - observed[1] < 120:
+                rank = observed[0]
+        if rank is None:
+            rank = _rank_cache.get(player)
+        total += int(rank) if isinstance(rank, int) and rank > 0 else 100000
+    return total
 
 
 def arena_rank_number(name: str) -> Optional[int]:
@@ -1251,11 +1372,54 @@ def sign_in(account: str, password: str) -> tuple[int, str]:
     return secret, username
 
 
+_SECRET_STATE = {
+    "ok_at": 0.0, "source": "", "reused": False,
+    "error": "", "error_at": 0.0, "failures": 0, "refreshes": 0,
+}
+
+
+def secret_status() -> dict:
+    """给 capture-status 用的凭据状态：年龄/来源/是否沿用旧值/最近错误。"""
+    age = round(time.time() - _SECRET_STATE["ok_at"], 1) if _SECRET_STATE["ok_at"] else None
+    return {
+        "mycard_secret_age": age,
+        "mycard_secret_source": _SECRET_STATE["source"],
+        "mycard_secret_reused": bool(_SECRET_STATE["reused"]),
+        "mycard_secret_error": _SECRET_STATE["error"],
+        "mycard_secret_error_at": _SECRET_STATE["error_at"] or None,
+        "mycard_secret_failures": _SECRET_STATE["failures"],
+        "mycard_secret_refreshes": _SECRET_STATE["refreshes"],
+    }
+
+
+def _secret_ok(source: str) -> None:
+    previous = _SECRET_STATE["error"]
+    _SECRET_STATE.update(ok_at=time.time(), source=source, reused=False, error="", error_at=0.0)
+    _SECRET_STATE["refreshes"] += 1
+    if previous:
+        log(f"萌卡凭据刷新恢复（来源 {source}；此前错误：{previous}）")
+
+
+def _secret_failed(exc: BaseException, reused: bool, source: str = "") -> None:
+    _SECRET_STATE.update(error=f"{type(exc).__name__}: {exc}", error_at=time.time(),
+                         reused=reused, source=source)
+    _SECRET_STATE["failures"] += 1
+
+
 def refresh_secret(config: dict) -> None:
     """登录萌卡并刷新 u16Secret。凭证大约每 4 分钟轮换，加入房间前都要重新取。"""
     if config.get("join_mode") == "plain":
         return
+    account = str(config.get("account") or "").strip()
     session = load_session()
+    # config 是账号的唯一来源；session 里是上次登录的显示名，对不上就丢弃旧会话。
+    if account and session.get("username") and str(session["username"]).strip() != account:
+        log(f"萌卡账号已改为 {account}，丢弃旧会话 {session['username']}")
+        session = {}
+        try:
+            SESSION_PATH.unlink()
+        except OSError:
+            pass
     token = session.get("token")
     if token:
         try:
@@ -1266,6 +1430,7 @@ def refresh_secret(config: dict) -> None:
             config["mycard_secret"] = secret
             if session.get("username"):
                 config["nickname"] = session["username"]
+            _secret_ok("token")
             return
         except PermissionError:
             log("萌卡登录已过期，正在重新登录")
@@ -1275,6 +1440,7 @@ def refresh_secret(config: dict) -> None:
                 config["mycard_secret"] = session["u16_secret"]
                 if session.get("username"):
                     config["nickname"] = session["username"]
+                _secret_failed(exc, True, "reused")
                 return
             raise
     account = str(config.get("account") or "").strip()
@@ -1284,8 +1450,10 @@ def refresh_secret(config: dict) -> None:
         config["mycard_secret"] = secret
         config["nickname"] = username
         log(f"已登录萌卡账号 {username}")
+        _secret_ok("sign_in")
         return
     if config.get("mycard_secret") not in (None, "", 0):
+        _secret_ok("config")
         return
     raise RuntimeError("请在 data/watch-config.json 填写萌卡 account 和 password")
 
@@ -1293,6 +1461,17 @@ def refresh_secret(config: dict) -> None:
 _SECRET_LOCK: Optional[asyncio.Lock] = None
 _SECRET_REFRESHED_AT = 0.0
 _SECRET_REFRESH_INTERVAL = 60.0
+
+
+def invalidate_secret_cache() -> None:
+    """下一次进场前必须重新取 u16Secret。
+
+    服务器用 users/<name>.json 里的 u16Secret / u16SecretPrevious 解密我们 8 位口令块；
+    解不开或取用户信息超时时不会下发任何对局数据，直接关连接（客户端只能看到 0 字节 + 连接被重置）。
+    所以"连上即被关"要怀疑手里口令过旧，下次进场前强制刷新，而不是继续用 60 秒缓存。
+    """
+    global _SECRET_REFRESHED_AT
+    _SECRET_REFRESHED_AT = 0.0
 
 
 async def refresh_secret_shared(config: dict) -> None:
@@ -1303,7 +1482,16 @@ async def refresh_secret_shared(config: dict) -> None:
     async with _SECRET_LOCK:
         if time.time() - _SECRET_REFRESHED_AT < _SECRET_REFRESH_INTERVAL and config.get("mycard_secret"):
             return
-        await asyncio.to_thread(refresh_secret, config)
+        try:
+            await asyncio.to_thread(refresh_secret, config)
+        except Exception as exc:
+            _secret_failed(exc, True, "failed")
+            if config.get("mycard_secret") not in (None, "", 0):
+                log(f"萌卡凭据刷新失败（{type(exc).__name__}: {exc}），沿用旧口令；"
+                    "若随后出现 0 包关闭，先查这里")
+                _SECRET_REFRESHED_AT = time.time()
+                return
+            raise
         _SECRET_REFRESHED_AT = time.time()
 
 
@@ -1621,6 +1809,9 @@ class Spectator:
         self.players: list[str] = [self.seats[pos] for pos in sorted(self.seats)] or list(room.players)
         self.duel_started = room.started
         self.duel_ended = False
+        self.room_started_at = known_start
+        self.joined_at = time.time()
+        self.packets_received = 0
         self.replays_saved = 0
         self.observed_games: list[tuple[int, list[tuple[str, list[int], list[int]]]]] = []
         self.observed_sources: list[tuple[int, str]] = []
@@ -1699,6 +1890,7 @@ class Spectator:
                     self._drop_reason = ConnectionError("连接被关掉")
                     return "retry", True
                 self.received_any = True
+                self.packets_received += 1
                 try:
                     result = self.handle(*packet)
                 except OSError as exc:
@@ -2150,16 +2342,93 @@ class AdaptiveConcurrency:
                     fallback_concurrency=self.low, errors_in_window=len(self.errors))
 
 
+class RollingJoinStats:
+    """最近 N 秒的进场统计：次数、成功、0 包静默关闭、峰值并发。"""
+
+    def __init__(self, window=STATS_WINDOW_SECONDS):
+        self.window = float(window)
+        self.events = []   # (t, ok, silent)
+        self.samples = []  # (t, in_flight)
+
+    def _prune(self, now):
+        limit = now - self.window
+        while self.events and self.events[0][0] < limit:
+            self.events.pop(0)
+        while self.samples and self.samples[0][0] < limit:
+            self.samples.pop(0)
+
+    def note_outcome(self, now, ok, silent=False):
+        self.events.append((float(now), bool(ok), bool(silent)))
+        self._prune(float(now))
+
+    def note_in_flight(self, now, value):
+        self.samples.append((float(now), int(value)))
+        self._prune(float(now))
+
+    def success_rate(self, now):
+        self._prune(float(now))
+        total = len(self.events)
+        ok = sum(1 for _, good, _ in self.events if good)
+        return (ok / total if total else 1.0), total
+
+    def snapshot(self, now):
+        self._prune(float(now))
+        return {
+            "join_window": len(self.events),
+            "success_window": sum(1 for _, ok, _ in self.events if ok),
+            "silent_window": sum(1 for _, _, silent in self.events if silent),
+            "peak_in_flight_window": max((value for _, value in self.samples), default=0),
+            "window_seconds": int(self.window),
+        }
+
+
+class SilentWindowTracker:
+    """连续 0 包静默关闭的窗口统计（区分"IP 级静默"与普通房间结束）。"""
+
+    def __init__(self):
+        self.start = None
+        self.total = 0.0
+        self.windows = 0
+        self.day = None
+
+    def _roll_day(self, now):
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        if self.day and day != self.day:
+            self.start = None
+            self.total = 0.0
+            self.windows = 0
+        self.day = day
+
+    def note(self, now, silent):
+        self._roll_day(now)
+        if silent:
+            if self.start is None:
+                self.start = now
+                self.windows += 1
+        elif self.start is not None:
+            self.total += now - self.start
+            self.start = None
+
+    def snapshot(self, now):
+        self._roll_day(now)
+        active = (now - self.start) if self.start is not None else 0.0
+        return dict(silent_ip_windows=self.windows,
+                    silent_ip_seconds=round(self.total + active, 1),
+                    silent_ip_active=bool(self.start is not None))
+
+
 class CaptureMonitor:
     """有界排队、最早发现优先；计数只描述当前进程实际看到的房间。"""
     def __init__(self, limit=200):
         self.limit = max(1, min(2000, int(limit)))
         self.rooms = {}
         self.counts = dict(discovered_rooms=0, joined_observations=0,
-                           disappeared_without_join=0, completed_observations=0, failed_observations=0)
+                           disappeared_without_join=0, completed_observations=0, failed_observations=0,
+                           noreplay_observations=0, gone_silent=0, gone_stale=0)
         self.waiting = self.overflow = self.cooling = 0
 
-    def candidates(self, rooms, matched, active, cooldown, now):
+    def candidates(self, rooms, matched, active, cooldown, now, starts=None):
+        """排队顺序：先按开局时间（更早优先）；同一时刻开局的，按双方排名之和更小优先。"""
         matched = list({room.key:room for room in matched}.values())
         current = {r.key for r in rooms}
         for key in list(self.rooms):
@@ -2175,7 +2444,16 @@ class CaptureMonitor:
         pending = [r for r in matched if r.key not in active]
         self.cooling = sum(cooldown.get(r.key, 0) > now for r in pending)
         pending = [r for r in pending if cooldown.get(r.key, 0) <= now]
-        pending.sort(key=lambda r:self.rooms[r.key]['first_seen'])
+        starts = starts or {}
+
+        def sort_key(room):
+            info = self.rooms.get(room.key) or {}
+            started = starts.get(room.key)
+            if started is None:
+                started = info.get('first_seen')
+            return (round(float(started or now), 3), room_rank_sum(room), room.key)
+
+        pending.sort(key=sort_key)
         self.waiting = len(pending)
         self.pending_keys = {r.key for r in pending}
         self.overflow = max(0, len(pending) - self.limit)
@@ -2188,10 +2466,24 @@ class CaptureMonitor:
         self.overflow = max(0,self.waiting-self.limit)
         self.counts['joined_observations'] += 1
 
-    def finished(self, outcome):
-        if outcome == 'saved':self.counts['completed_observations'] += 1
-        elif outcome in ('retry', 'config', 'unstable'):self.counts['failed_observations'] += 1
-        elif outcome == 'gone':self.counts['unavailable_rooms'] = self.counts.get('unavailable_rooms', 0) + 1
+    def finished(self, outcome, detail=None):
+        """按结果计数。detail 里带进场诊断（收包数、房间是否还在列表等），用于拆 gone 的原因。"""
+        detail = detail or {}
+        if outcome == 'saved':
+            self.counts['completed_observations'] += 1
+        elif outcome in ('retry', 'config', 'unstable'):
+            self.counts['failed_observations'] += 1
+        elif outcome == 'noreplay':
+            # 对局结束但服务器没下发录像：以前完全没计数，现在单列。
+            self.counts['noreplay_observations'] += 1
+        elif outcome == 'gone':
+            self.counts['unavailable_rooms'] = self.counts.get('unavailable_rooms', 0) + 1
+            if detail.get('in_board') is False:
+                # 进场时房间已从列表消失：多半是排期太晚/房间被关（stale）。
+                self.counts['gone_stale'] += 1
+            else:
+                # 房间还在列表里，但连上后 0 包被关：口令/会话/局间状态（silent）。
+                self.counts['gone_silent'] += 1
 
     def snapshot(self, active, writer):
         connected = sum(1 for value in LIVE_LINKS.values() if value)
@@ -2258,6 +2550,8 @@ def join_gate_from_config(config: dict) -> JoinGate:
                           SERVICE_JOIN_INTERVAL_FALLBACK, float),
         fail_threshold=read('join_fail_threshold', DEFAULT_FAIL_THRESHOLD, None, int),
         pause_seconds=read('join_pause_seconds', DEFAULT_PAUSE, None, float),
+        jitter=read('join_interval_jitter_seconds', JOIN_INTERVAL_JITTER_DEFAULT, None, float),
+        max_per_hour=read('max_joins_per_hour', JOIN_MAX_PER_HOUR_DEFAULT, None, int),
     )
     try:
         return JoinGate(**values)
@@ -2291,6 +2585,80 @@ def preexisting_join_window(config: dict) -> tuple[float, float]:
     return low, max(low, high)
 
 
+def plan_gap_after(cursor: list, when: float, gap: float) -> float:
+    """把"计划进入时刻"推到上一次计划之后至少 gap 秒，避免多局排期扎堆。
+
+    cursor 是单元素列表，记录下一次可用的计划时刻（墙钟）；每次真正排期时由这里推进。
+    闸门仍在进入那一刻兜底（allow/started），这里只是让计划和它对同一个节奏。
+    """
+    earliest = cursor[0] if cursor else 0.0
+    if when < earliest:
+        when = earliest
+    if cursor:
+        cursor[0] = when + max(0.0, gap)
+    return when
+
+
+def pause_for_level(base: float, level: int, cap: float = 300.0) -> float:
+    """连续失败时的暂停时长：第 1 次用基础值，之后逐级翻倍，最多 cap 秒。
+
+    平台进入"进房 0 字节被关"的时段时，60 秒一次地反复重试只会白撞；逐级拉长能把压力降下来，
+    中间只要成功一次就回到基础值（见 serve 里的 pause_success_mark）。
+    """
+    if base <= 0:
+        return 0.0
+    return min(base * (2 ** max(0, level - 1)), cap)
+
+
+class JoinConcurrencyTuner:
+    """按"排队是否吃完 + 是否被拒"自动调并发上限：稳就加、被拒就退，自己找到平台能接受的水位。
+
+    只看窗口内的增量（进场数/失败数/暂停数），不做全局统计；改动只落在闸门的 max_concurrent 上，
+    间隔、失败暂停、系统自适应并发都不受影响。
+    """
+
+    def __init__(self, gate, floor=JOIN_CONCURRENT_FLOOR, ceiling=JOIN_CONCURRENT_CEILING,
+                 step=JOIN_TUNE_STEP, interval=JOIN_TUNE_INTERVAL):
+        self.gate = gate
+        self.floor = max(1, min(int(floor), int(ceiling)))
+        self.ceiling = max(self.floor, int(ceiling))
+        self.step = max(1, int(step))
+        self.interval = float(interval)
+        self.last_at = None
+        self.mark = dict(gate.stats)
+        self.cooldown_until = 0.0
+        self.changes: list[tuple] = []
+
+    def observe(self, now: float, waiting: int, in_flight: int):
+        """上限变化时返回一行日志，否则 None。"""
+        if self.last_at is None:
+            self.last_at = now
+            self.mark = dict(self.gate.stats)
+            return None
+        if now - self.last_at < self.interval:
+            return None
+        attempts = self.gate.stats['started'] - self.mark['started']
+        failures = self.gate.stats['failed'] - self.mark['failed']
+        pauses = self.gate.stats['pauses'] - self.mark['pauses']
+        self.mark = dict(self.gate.stats)
+        self.last_at = now
+        current = self.gate.max_concurrent
+        target, reason = current, ''
+        if pauses > 0 or (attempts >= 3 and failures / attempts >= 0.3):
+            target = max(self.floor, current - self.step)
+            reason = f'同期被拒 {failures}/{attempts}、暂停 {pauses} 次'
+            self.cooldown_until = now + 2 * self.interval
+        elif (waiting >= 2 and in_flight >= current and failures == 0
+              and now >= self.cooldown_until):
+            target = min(self.ceiling, current + self.step)
+            reason = f'排队 {waiting} 个、已占用 {in_flight} 场、同期 0 失败'
+        if target == current:
+            return None
+        self.gate.max_concurrent = target
+        self.changes.append((round(now, 1), current, target))
+        return f'进场节流：并发上限 {current} → {target}（{reason}）'
+
+
 async def serve(
     config: dict,
     names: list[str],
@@ -2316,10 +2684,54 @@ async def serve(
     for url in ws_urls:
         tasks.append(asyncio.create_task(websocket_loop(url, board, stop)))
     active: dict[str, asyncio.Task] = {}
+    sessions: dict[str, Spectator] = {}
+    startup_keys: Optional[set[str]] = None  # 首次快照里"启动前就在打"的房间
+    startup_logged: set[str] = set()
+    rolling = RollingJoinStats()
+    silent_streak = 0
+    last_rate_check = 0.0
     monitor = CaptureMonitor(config.get('max_queued_rooms') or 200)
     gate = join_gate_from_config(config)
-    log(f"进场节流：最多同时观战 {gate.max_concurrent} 个，两次进场至少间隔 {gate.min_interval:g} 秒，"
+    log(f"进场节流：并发上限从 {gate.max_concurrent} 起自动调，两次进场至少间隔 {gate.min_interval:g} 秒，"
         f"连续失败 {gate.fail_threshold} 次暂停 {gate.pause_seconds:g} 秒。")
+    concurrency_ceiling = min(JOIN_CONCURRENT_CEILING,
+                              max(gate.max_concurrent, int(config.get('max_concurrent') or JOIN_CONCURRENT_CEILING)))
+    tuner = JoinConcurrencyTuner(gate, ceiling=concurrency_ceiling)
+    log(f"进场节流：并发在 {tuner.floor}—{tuner.ceiling} 之间自动调（每 {tuner.interval / 60:g} 分钟评估一次，"
+        f"有排队且无失败 +{tuner.step}，被拒或暂停 -{tuner.step}）。")
+    last_metrics_at = 0.0
+    last_summary_at = time.time()
+    last_summary_mark = dict(started=0, failed=0, pauses=0, saved=0, silent=0)
+    watch_event("startup", pid=os.getpid(), cap=gate.max_concurrent, interval=gate.min_interval,
+                jitter=gate.jitter, max_per_hour=gate.max_per_hour,
+                fail_threshold=gate.fail_threshold, pause_seconds=gate.pause_seconds,
+                floor=tuner.floor, ceiling=tuner.ceiling)
+    night_enabled = bool(config.get("night_mode_enabled", True)) and gate.min_interval > 0
+    night_start = int(config.get("night_start_hour", NIGHT_START_HOUR))
+    night_end = int(config.get("night_end_hour", NIGHT_END_HOUR))
+    night_floor = int(config.get("night_min_concurrent", NIGHT_MIN_CONCURRENT))
+    night_ceiling = int(config.get("night_max_concurrent", NIGHT_MAX_CONCURRENT))
+    night_interval = float(config.get("night_min_interval_seconds", NIGHT_MIN_INTERVAL))
+    night_jitter = float(config.get("night_jitter_seconds", NIGHT_JITTER))
+    day_jitter = gate.jitter
+    day_interval = gate.min_interval
+    day_cap = gate.max_concurrent
+    night_mode = False
+    catchup_limit = int(config.get("startup_catchup_limit", STARTUP_CATCHUP_LIMIT))
+    catchup_joined = 0
+    catchup_skipped = set()
+    silent_tracker = SilentWindowTracker()
+    probation_enabled = bool(config.get("probation_enabled", True)) and gate.min_interval > 0
+    probation_until = time.monotonic() + PROBATION_SECONDS if probation_enabled else 0.0
+    probation_fail_mark = gate.stats["failed"]
+    if probation_enabled:
+        gate.start_probation(time.monotonic(), PROBATION_SECONDS,
+                             PROBATION_MAX_CONCURRENT, PROBATION_MIN_INTERVAL)
+        log(f"观察期：前 {PROBATION_SECONDS / 60:g} 分钟 {PROBATION_MAX_CONCURRENT} 路、"
+            f"{PROBATION_MIN_INTERVAL:g} 秒；0 失败后恢复。重启后最多追 {catchup_limit} 个旧局。")
+        watch_event("probation_start", seconds=PROBATION_SECONDS, cap=PROBATION_MAX_CONCURRENT,
+                    interval=PROBATION_MIN_INTERVAL, catchup_limit=catchup_limit)
+    last_local_ip = default_local_ip()
     adaptive = AdaptiveConcurrency(config)
     rank_window=None
     if config.get('automatic_rank_limit',100)>100:
@@ -2340,9 +2752,16 @@ async def serve(
     announced_wait: set[str] = set()
     gate_blocked: dict[str, tuple[str, float]] = {}
     gate_pauses = 0
+    pause_level = 0
+    pause_success_mark = 0
+    stale_skipped: set[str] = set()
+    plan_gap = gate.min_interval
+    plan_cursor = [0.0]
     preexisting_min, preexisting_max = preexisting_join_window(config)
     min_delay = float(config.get("join_after_min_seconds") if config.get("join_after_min_seconds") is not None else 120)
     max_delay = float(config.get("join_after_max_seconds") if config.get("join_after_max_seconds") is not None else 240)
+    _max_age = config.get("join_max_room_age_seconds")
+    max_room_age = JOIN_MAX_ROOM_AGE if _max_age is None else float(_max_age)
     log(
         f"进入时间：看到开局的对局，在开局后 {min_delay / 60:g}–{max_delay / 60:g} 分钟内随机进入。"
         "连接前已经开始的对局，只要符合条件就立刻进入。"
@@ -2353,6 +2772,53 @@ async def serve(
     try:
         while True:
             now_wall = time.time()
+            if night_enabled:
+                night = in_night_window(now_wall, night_start, night_end)
+                if night and not night_mode:
+                    night_mode = True
+                    day_interval = gate.min_interval
+                    day_cap = gate.max_concurrent
+                    day_jitter = gate.jitter
+                    gate.min_interval = night_interval
+                    gate.jitter = night_jitter
+                    gate.max_concurrent = min(max(gate.max_concurrent, night_floor), night_ceiling)
+                    log(f"夜间降档（{night_start:02d}:00–{night_end:02d}:00）："
+                        f"并发 {gate.max_concurrent}、间隔 {gate.min_interval:g}–{gate.min_interval + gate.jitter:g} 秒")
+                    watch_event("night_mode", on=True, cap=gate.max_concurrent,
+                                interval=gate.min_interval, jitter=gate.jitter)
+                elif not night and night_mode:
+                    night_mode = False
+                    gate.min_interval = day_interval
+                    gate.jitter = day_jitter
+                    gate.max_concurrent = max(gate.max_concurrent, day_cap)
+                    log(f"夜间降档结束：恢复并发 {gate.max_concurrent}、"
+                        f"间隔 {gate.min_interval:g}–{gate.min_interval + gate.jitter:g} 秒")
+                    watch_event("night_mode", on=False, cap=gate.max_concurrent,
+                                interval=gate.min_interval, jitter=gate.jitter)
+                if night_mode:
+                    gate.max_concurrent = min(max(gate.max_concurrent, night_floor), night_ceiling)
+            ip_now = default_local_ip()
+            if last_local_ip and ip_now and ip_now != last_local_ip:
+                last_local_ip = ip_now
+                if probation_enabled:
+                    probation_until = time.monotonic() + PROBATION_SECONDS
+                    probation_fail_mark = gate.stats["failed"]
+                    gate.start_probation(time.monotonic(), PROBATION_SECONDS,
+                                         PROBATION_MAX_CONCURRENT, PROBATION_MIN_INTERVAL)
+                    log(f"网络变化（本地 IP {ip_now}）：重新进入 {PROBATION_SECONDS / 60:g} 分钟观察期")
+                    watch_event("network_change", local_ip=ip_now, probation_seconds=PROBATION_SECONDS)
+            if probation_until and time.monotonic() >= probation_until:
+                if gate.stats["failed"] <= probation_fail_mark:
+                    probation_until = 0.0
+                    log("观察期结束：10 分钟 0 失败，恢复常规并发/间隔")
+                    watch_event("probation_end", failed=0)
+                else:
+                    probation_fail_mark = gate.stats["failed"]
+                    probation_until = time.monotonic() + PROBATION_SECONDS
+                    gate.start_probation(time.monotonic(), PROBATION_SECONDS,
+                                         PROBATION_MAX_CONCURRENT, PROBATION_MIN_INTERVAL)
+                    log("观察期延长：最近 10 分钟有失败，再观察 10 分钟")
+                    watch_event("probation_extend", failed=gate.stats["failed"])
             if config.get("cleanup_files", True) and now_wall >= next_cleanup:
                 removed = await asyncio.to_thread(cleanup_old_files, Path(config["replay_dir"]),
                                                   Path(config.get("deck_dir") or DATA_DIR / "decks"), now_wall)
@@ -2394,6 +2860,8 @@ async def serve(
             noted.clear()
             noted.update(fresh_notes)
             starts, preexisting = await board.timing()
+            if startup_keys is None:
+                startup_keys = set(preexisting)
             direct_keys = {room.key for room in direct_rooms(config)}
             allow_preexisting = bool(config.get("join_preexisting", True))
             if not allow_preexisting:
@@ -2415,27 +2883,114 @@ async def serve(
             now = time.monotonic()
             for key in done_keys:
                 task = active.pop(key)
+                session = sessions.pop(key, None)
                 try:
                     outcome = task.result()
                 except Exception as exc:
                     log(f"观战任务异常：{exc}")
                     outcome = "retry"
+                detail = {}
+                if session is not None:
+                    try:
+                        room_info = getattr(session, 'room', None)
+                        room_name = (getattr(room_info, 'title', None) or getattr(room_info, 'join_id', None)
+                                     or key)
+                        started_at = getattr(session, 'room_started_at', None)
+                        joined_at = getattr(session, 'joined_at', 0) or 0
+                        age = (joined_at - started_at) if started_at and joined_at else None
+                        detail = dict(key=key, room=room_name,
+                                      packets=int(getattr(session, 'packets_received', 0) or 0),
+                                      saved=int(getattr(session, 'replays_saved', 0) or 0),
+                                      room_age=round(age, 1) if age is not None else None,
+                                      in_board=key in current_keys, outcome=outcome,
+                                      silent_ip=bool(outcome == 'gone' and
+                                                     int(getattr(session, 'packets_received', 0) or 0) == 0),
+                                      drop=str(getattr(session, '_drop_reason', '') or ''))
+                        write_join_diag(detail)
+                    except Exception:
+                        detail = {}
+                    if detail and outcome != 'saved':
+                        log(f"[进场诊断] {detail['room']}｜房龄 {detail['room_age']}s｜收包 {detail['packets']}｜"
+                            f"结果 {outcome}｜{detail['drop']}")
                 pause = {"saved": 12, "noreplay": 20, "leave": 30, "retry": 3, "unstable": 120, "gone": 300, "config": 120}.get(outcome, 5)
-                monitor.finished(outcome)
-                gate.finished(now, outcome)
+                monitor.finished(outcome, detail)
+                silent_room = bool(outcome == 'gone' and (detail.get('packets') or 0) == 0)
+                silent_tracker.note(time.time(), silent_room)
+                rolling.note_outcome(now, outcome == 'saved', silent_room)
+                if outcome == 'saved':
+                    silent_streak = 0
+                elif silent_room:
+                    silent_streak += 1
+                startup_room = bool(startup_keys and key in startup_keys and outcome == 'gone')
+                gate.finished(now, outcome, startup=startup_room)
+                if silent_streak >= SILENT_STREAK_LIMIT:
+                    # 连续 0 包静默关闭：几乎可以确定是出口 IP / 账号会话被平台拒绝，继续撞只会更糟。
+                    silent_streak = 0
+                    blocked_until = now + SYSTEMIC_PAUSE_SECONDS
+                    gate.paused_until = max(gate.paused_until, blocked_until)
+                    message = (f"连续 {SILENT_STREAK_LIMIT} 次 0 包静默关闭（疑似出口 IP 被平台限制或账号被顶），"
+                               f"暂停进场 {SYSTEMIC_PAUSE_SECONDS / 60:g} 分钟；建议换网络或检查同账号是否在别处登录")
+                    log(message)
+                    watch_event("breaker_silent", streak=SILENT_STREAK_LIMIT,
+                                pause_seconds=SYSTEMIC_PAUSE_SECONDS, cap=gate.max_concurrent)
+                if startup_room and key not in startup_logged:
+                    startup_logged.add(key)
+                    log(f"启动前已在打的对局已结束/不可观战：{key}（追中途局，不计失败）")
                 if gate.stats['pauses'] > gate_pauses:
                     gate_pauses = gate.stats['pauses']
-                    log(f"进场节流：连续失败 {gate.fail_threshold} 次，暂停进场 {gate.pause_seconds:g} 秒。")
+                    if gate.stats['succeeded'] > pause_success_mark:
+                        pause_success_mark = gate.stats['succeeded']
+                        pause_level = 0
+                    pause_level += 1
+                    seconds = pause_for_level(gate.pause_seconds, pause_level)
+                    seconds = round(seconds * random.uniform(0.9, 1.1), 1)
+                    gate.paused_until = max(gate.paused_until, now + seconds)
+                    log(f"进场节流：连续失败 {gate.fail_threshold} 次，暂停进场 {seconds:g} 秒"
+                        f"（连续第 {pause_level} 次暂停；成功一次后回到 {gate.pause_seconds:g} 秒）。")
+                    watch_event("pause", seconds=seconds, level=pause_level, cap=gate.max_concurrent)
+                    # 暂停会把所有排期一起推迟：暂停结束后必然超过房龄上限的房间直接放弃，
+                    # 免得一放行就把积压的老房间一起撞进去（那只会"0 字节被关"再来一轮暂停）。
+                    resume_at = max(gate.paused_until, now)
+                    resume_wall = time.time() + (resume_at - now)
+                    dropped = 0
+                    for stale_key, planned in list(join_at.items()):
+                        started_wall = starts.get(stale_key)
+                        if started_wall is None or max_room_age <= 0:
+                            continue
+                        if max(planned, resume_wall) - started_wall > max_room_age:
+                            join_at.pop(stale_key, None)
+                            cooldown_until[stale_key] = resume_at + 600
+                            dropped += 1
+                    if dropped:
+                        log(f"进场节流：暂停期间放弃 {dropped} 个会拖到局末的排期（已开 {max_room_age / 60:g} 分钟以上）。")
                 if outcome == "gone":
                     dead_rooms.add(key)
+                    # 0 字节被关也可能是口令/身份被拒（服务器 u16Secret 解密失败），下次进场重取口令。
+                    invalidate_secret_cache()
                 if outcome in ('retry', 'unstable'):
                     message = adaptive.failed(time.monotonic())
                     if message: log(message)
                 cooldown_until[key] = now + pause
+            # 最近一小时成功率熔断：低于 50% 且样本够，直接停 15 分钟，不等全灭。
+            if time.time() - last_rate_check >= SUCCESS_BREAKER_CHECK_SECONDS:
+                last_rate_check = time.time()
+                rate, seen = rolling.success_rate(last_rate_check)
+                if seen >= SUCCESS_BREAKER_MIN_SAMPLES and rate < SUCCESS_BREAKER_RATE:
+                    gate.paused_until = max(gate.paused_until,
+                                            time.monotonic() + SUCCESS_BREAKER_PAUSE_SECONDS)
+                    log(f"最近 1 小时进场 {seen} 次、成功率 {rate:.0%}（低于 {SUCCESS_BREAKER_RATE:.0%}），"
+                        f"暂停进场 {SUCCESS_BREAKER_PAUSE_SECONDS / 60:g} 分钟；"
+                        "疑似出口 IP 被限流，建议换网络或检查同账号登录")
+                    watch_event("breaker_rate", rate=round(rate, 3), seen=seen,
+                                pause_seconds=SUCCESS_BREAKER_PAUSE_SECONDS, cap=gate.max_concurrent)
             limit = adaptive.value()
+            if night_mode:
+                limit = min(limit, gate.max_concurrent)
+            if probation_until:
+                limit = min(limit, PROBATION_MAX_CONCURRENT)
             current_keys = {room.key for room in rooms}
             dead_rooms.intersection_update(current_keys)
-            matched = monitor.candidates(rooms, matched, active, cooldown_until, time.monotonic())
+            matched = monitor.candidates(rooms, matched, active, cooldown_until, time.monotonic(), starts)
             matched = [room for room in matched if room.key not in dead_rooms]
             now = time.time()
             for room in matched:
@@ -2449,15 +3004,19 @@ async def serve(
                     if join_at[room.key] > now:
                         continue
                 known_start = starts.get(room.key)
+                scheduled_before = join_at.get(room.key)
                 action, when = plan_join(
                     now,
                     known_start,
-                    join_at.get(room.key),
+                    scheduled_before,
                     min_delay,
                     max_delay,
                     random.random(),
                 )
                 if when is not None:
+                    if known_start is not None and scheduled_before is None:
+                        # 第一次给这局定进入时刻：和上一个计划至少隔 plan_gap，计划行不再扎堆。
+                        when = plan_gap_after(plan_cursor, when, plan_gap)
                     join_at[room.key] = when
                 if action == "wait":
                     if room.key not in announced_wait and when is not None:
@@ -2467,6 +3026,18 @@ async def serve(
                         shown = await asyncio.to_thread(room_label_with_ranks, room)
                         log(f"已看到开局，将在 {clock} 进入（约 {waited // 60} 分 {waited % 60} 秒后）：{shown}")
                     continue
+                if known_start is not None and max_room_age > 0:
+                    age = now - known_start
+                    if age > max_room_age:
+                        # 拖太久才排到：多半是暂停把排期推到了局末。放弃这间，不发起连接、不算失败，
+                        # 否则只会"连上即 0 字节被关"，再触发新一轮暂停。
+                        join_at.pop(room.key, None)
+                        cooldown_until[room.key] = time.monotonic() + 600
+                        if room.key not in stale_skipped:
+                            stale_skipped.add(room.key)
+                            log(f"跳过已开 {age / 60:.1f} 分钟的对局（超过 {max_room_age / 60:g} 分钟，多半已到局末）："
+                                f"{room.title or room.join_id or room.key}")
+                        continue
                 gate_now = time.monotonic()
                 allowed, wait_seconds = gate.allow(gate_now)
                 if not allowed:
@@ -2494,19 +3065,72 @@ async def serve(
                     log(f"对局已在进行，开始观战：{shown}；收录依据：{reason}")
                 else:
                     log(f"到达进入时间，开始观战：{shown}；收录依据：{reason}")
+                if (room.key in preexisting and room.key not in direct_keys
+                        and catchup_joined >= catchup_limit):
+                    if room.key not in catchup_skipped:
+                        catchup_skipped.add(room.key)
+                        log(f"追旧局已达上限 {catchup_limit}，放弃积压房间：{room.key}")
+                    continue
                 gate.started(time.monotonic())
+                if room.key in preexisting and room.key not in direct_keys:
+                    catchup_joined += 1
                 session = Spectator(config, room, writer.for_room(room.players), known_start)
+                sessions[room.key] = session
                 active[room.key] = asyncio.create_task(session.run())
                 monitor.joined(room.key)
             message = adaptive.tick(time.monotonic())
             if message: log(message)
+            message = tuner.observe(time.monotonic(), monitor.waiting, len(active))
+            if message: log(message)
+            rolling.note_in_flight(time.time(), len(active))
+            wall_now = time.time()
+            if wall_now - last_metrics_at >= METRICS_INTERVAL:
+                last_metrics_at = wall_now
+                counts = monitor.counts
+                write_metrics(dict(
+                    pid=os.getpid(), cap=gate.max_concurrent, interval=gate.min_interval,
+                    jitter=gate.jitter, block_reason=gate.block_reason,
+                    in_flight=gate.in_flight, active=len(active), waiting=monitor.waiting,
+                    started=gate.stats['started'], failed=gate.stats['failed'],
+                    pauses=gate.stats['pauses'], discovered=counts.get('discovered_rooms'),
+                    joined=counts.get('joined_observations'),
+                    saved=writer._metrics.get('saved_games'),
+                    silent=counts.get('gone_silent'), noreplay=counts.get('noreplay_observations'),
+                    catchup_joined=catchup_joined, catchup_limit=catchup_limit,
+                    probation_left=gate.probation_left(time.monotonic()),
+                    **secret_status(), **rolling.snapshot(wall_now),
+                    **silent_tracker.snapshot(wall_now)))
+            if wall_now - last_summary_at >= SUMMARY_INTERVAL:
+                last_summary_at = wall_now
+                counts = monitor.counts
+                mark = last_summary_mark or {}
+                def delta(key, value):
+                    return int(value or 0) - int(mark.get(key) or 0)
+                started = delta('started', gate.stats['started'])
+                failed = delta('failed', gate.stats['failed'])
+                watch_event(
+                    "hourly", cap=gate.max_concurrent, active=len(active), waiting=monitor.waiting,
+                    started=started, failed=failed,
+                    success_rate=round((started - failed) / started, 3) if started else None,
+                    pauses=delta('pauses', gate.stats['pauses']),
+                    silent=delta('silent', counts.get('gone_silent')),
+                    saved=delta('saved', writer._metrics.get('saved_games')),
+                    peak=rolling.snapshot(wall_now)['peak_in_flight_window'],
+                    silent_ip_seconds=silent_tracker.snapshot(wall_now)['silent_ip_seconds'])
+                last_summary_mark = dict(started=gate.stats['started'], failed=gate.stats['failed'],
+                                         pauses=gate.stats['pauses'],
+                                         saved=writer._metrics.get('saved_games'),
+                                         silent=counts.get('gone_silent'))
             if on_status:
-                try:on_status(dict(monitor.snapshot(len(active), writer), concurrent_limit=limit, join_throttle=gate.state(), **(adaptive.state()), **(rank_window.status() if rank_window else {})))
+                try:on_status(dict(monitor.snapshot(len(active), writer), concurrent_limit=limit, join_throttle=gate.state(), auto_concurrency=dict(floor=tuner.floor, ceiling=tuner.ceiling, changes=len(tuner.changes)), **secret_status(), **rolling.snapshot(time.time()), **(adaptive.state()), **(rank_window.status() if rank_window else {})))
                 except Exception:log('采集状态暂未写入，观战继续')
             await asyncio.sleep(float(config.get("poll_seconds") or 5))
     finally:
         if rank_window is not None:rank_window.close()
         _observed_room_ranks.clear()
+        watch_event("shutdown", pid=os.getpid(), started=gate.stats['started'],
+                    failed=gate.stats['failed'], pauses=gate.stats['pauses'],
+                    saved=writer._metrics.get('saved_games'), cap=gate.max_concurrent)
         stop.set()
         for task in tasks:
             task.cancel()

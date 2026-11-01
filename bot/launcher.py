@@ -182,13 +182,39 @@ def install_close_handler(cleanup) -> bool:
 # collector 是拆分时的备用入口（手工/诊断）；正常拆分由 PyCharm 固定 watch Run 承担观战。
 ROLE_PROCESSES = (
     ('collector', 'bot.collector', 'collector.lock', '观战采集'),
+    ('share', 'bot.share_service', 'share.lock', '分享'),
     ('qq', 'bot.qq_service', 'bot.lock', 'QQ机器人'),
 )
+def qq_lifecycle_mode(config: dict) -> str:
+    """qq.lifecycle_mode：supervisor（默认）或 legacy；其它值按 supervisor。"""
+    raw = str(((config or {}).get("qq") or {}).get("lifecycle_mode") or "supervisor").strip().lower()
+    return "legacy" if raw == "legacy" else "supervisor"
+
+
+def role_processes(config: dict):
+    """按配置选择 QQ 入口；share/collector 不变。"""
+    if qq_lifecycle_mode(config) == "legacy":
+        qq = ("qq", "bot.qq_service", "bot.lock", "QQ机器人")
+    else:
+        qq = ("qq", "bot.qq_supervisor_service", "qq-supervisor.lock", "QQ运行窗口")
+    return (
+        ("collector", "bot.collector", "collector.lock", "观战采集"),
+        ("share", "bot.share_service", "share.lock", "分享"),
+        qq,
+    )
+
+
 _ROLE_PROCESS_HANDLES = []
 
 
 def watch_roles(config: dict):
-    """读 8787 健康检查里的 service_roles；老版本没有这个字段时返回 None。"""
+    """读 watch 角色：优先 data/watch-status.json（share 独立后 8787 只代表分享进程），8787 /health 兼容回退。"""
+    from .watch_status import read as read_watch_status
+    data_dir = Path(str((config or {}).get('data_dir') or (ROOT / 'data')))
+    payload = read_watch_status(data_dir)
+    roles = (payload or {}).get('roles')
+    if isinstance(roles, list) and roles:
+        return frozenset(str(role) for role in roles)
     share = config.get('share') or {}
     host = str(share.get('bind_host') or '127.0.0.1')
     if host in ('0.0.0.0', '::', 'localhost'):
@@ -234,8 +260,17 @@ def ensure_role_processes(root: Path, config: dict | None = None, *, popen=None,
             print('检测到拆分后的观战进程在运行（只含观战/分享），继续补起 QQ 窗口。', flush=True)
     wanted = None if names is None else tuple(names)
     started, failed = [], []
-    for name, module, lock_name, title in ROLE_PROCESSES:
+    for name, module, lock_name, title in role_processes(config):
         if wanted is not None and name not in wanted:
+            continue
+        if name == 'share':
+            share_cfg = (config or {}).get('share') or {}
+            if str(share_cfg.get('mode') or 'inline').strip().lower() != 'process':
+                print('分享服务仍由 watch 进程内联提供（share.mode!=process），不单独启动。', flush=True)
+                continue
+        if name == "qq" and qq_lifecycle_mode(config) == "supervisor" and role_process_running(root, "bot.lock"):
+            print("检测到旧版 QQ 服务仍在运行（bot.lock）；请先关闭旧 QQ 机器人窗口，supervisor 不双开。", flush=True)
+            failed.append("qq")
             continue
         if role_process_running(root, lock_name):
             print(f'{title}服务已运行，跳过。', flush=True)
@@ -257,6 +292,16 @@ def ensure_role_processes(root: Path, config: dict | None = None, *, popen=None,
 def service_split_enabled(config: dict) -> bool:
     """config.json 的 service_mode=split 才拆进程；缺省 unified 保持原行为。"""
     return str((config or {}).get('service_mode') or '').strip().lower() == 'split'
+
+
+def share_process_mode(config: dict) -> bool:
+    """share.mode=process：分享/隧道交给独立 share_service，start-all 要负责补起 share 窗口。"""
+    return str(((config or {}).get('share') or {}).get('mode') or 'inline').strip().lower() == 'process'
+
+
+def split_role_names(config: dict) -> tuple:
+    """拆分模式要补的角色：process 先 share 再 QQ；inline 仍只补 QQ（行为不变）。"""
+    return ('share', 'qq') if share_process_mode(config) else ('qq',)
 
 
 def request_qq_resume(data_dir: Path, expected: str = '') -> str:
@@ -484,7 +529,7 @@ def main() -> None:
             def start_bot():
                 start_called[0] = True
                 # 拆分模式：先补起 QQ 窗口，最后请求 PyCharm 运行固定 watch（观战+分享）。
-                started, failed = ensure_role_processes(ROOT, config, names=('qq',))
+                started, failed = ensure_role_processes(ROOT, config, names=split_role_names(config))
                 role_failures.extend(failed)
                 request_watch()
                 return started
@@ -500,12 +545,28 @@ def main() -> None:
                 return
             web_ready = ensure_statistics_web(ROOT)
             print('统计网页：'+('已就绪。' if web_ready else '未就绪，请检查8788端口和统计资料。'),flush=True)
-            # 顺序：网页 → QQ/NapCat → 最后才拉起观战，避免观战先跑起来空转。
-            ok = asyncio.run(launch_services(ROOT, config, attempt=True, start_bot=start_bot))
-            if split:
+            # 顺序：网页 → share（process）→ supervisor → 最后请求 PyCharm watch。
+            if split and qq_lifecycle_mode(config) == "supervisor":
+                started, failed = ensure_role_processes(ROOT, config, names=split_role_names(config))
+                role_failures.extend(failed)
+                start_called[0] = True
+                ok = not failed
+                if bot_state(config) != "ready":
+                    try:
+                        request_watch()
+                    except (pycharm_link.IDEError, OSError) as exc:
+                        if pycharm_link.watch_status(ROOT):
+                            print(f"watch已在运行，未能打开PyCharm文件：{exc}", flush=True)
+                        else:
+                            watch_error = exc
+                            print(f"未能启动PyCharm观战：{exc}", flush=True)
+                print("supervisor 模式：QQ 运行窗口已按需补起；登录/掉线请查看该窗口，start-all 不代为登录。", flush=True)
+            else:
+                ok = asyncio.run(launch_services(ROOT, config, attempt=True, start_bot=start_bot))
+            if split and qq_lifecycle_mode(config) != "supervisor":
                 if not start_called[0]:
                     # 观战早已在跑时 launch_services 会提前返回：QQ 窗口仍按锁补起（重复启动会被拒）。
-                    _started, failed = ensure_role_processes(ROOT, config, names=('qq',))
+                    _started, failed = ensure_role_processes(ROOT, config, names=split_role_names(config))
                     role_failures.extend(failed)
                 if bot_state(config) != 'ready' and not watch_requested[0]:
                     try:
@@ -548,3 +609,11 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
+
+def qq_lifecycle_candidate(root, *, qq_health="missing", existing_napcat=False, enabled=True):
+    """P14 候选入口：只生成 start-all 计划，不启动/不杀进程；尚未接入 main。"""
+    from .qq_lifecycle import LifecycleState, plan_start
+    state = LifecycleState.load(Path(root) / "data" / "qq-lifecycle.json")
+    return plan_start(root, state, qq_health=qq_health,
+                      existing_napcat=existing_napcat, enabled=enabled)

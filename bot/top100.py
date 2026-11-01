@@ -107,7 +107,7 @@ def snapshot(db,now):
     return state
 
 
-def eligible_views(db,replay_root,now,internal_only=False,scope='default',series_catalog=None,player=None):
+def eligible_views(db,replay_root,now,internal_only=False,scope='default',series_catalog=None,player=None,annotate_series=True):
     """不聚合的动态有效视角：掉榜立即无效，重回恢复未到期事实。"""
     from .share import safe_replay_file
     from .card_series import reference,annotate,SEMANTICS
@@ -146,12 +146,14 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
     if wide_population:sql=sql.replace('JOIN stat_current_top100 m ON m.player=v.player','LEFT JOIN stat_current_top100 m ON m.player=v.player')
     rows=[dict(r) for r in db.execute(sql+'ORDER BY g.recorded_at,v.digest,v.player_index',params)]
     alive={}
+    root_resolved=replay_root.resolve();dir_cache={}
     for row in rows:
         digest=row['digest']
         if digest not in alive:
             paths=db.execute('SELECT r.rel_path FROM replays r JOIN stat_files f ON f.replay_id=r.id WHERE f.digest=?',(digest,)).fetchall()
-            alive[digest]=any(safe_replay_file(replay_root,p['rel_path']) for p in paths)
-    annotate(db,rows,series_catalog)
+            alive[digest]=any(safe_replay_file(replay_root,p['rel_path'],root_resolved,dir_cache) for p in paths)
+    if annotate_series:
+        annotate(db,rows,series_catalog)
     from .statistics_match_identity import inherit_first_game_types
     # Only eligible, source-present first games may supply a later game's identity.
     inherit_first_game_types(db,[r for r in rows if alive[r['digest']]])

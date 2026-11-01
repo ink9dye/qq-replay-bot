@@ -35,14 +35,33 @@ def format_time(stamp: float) -> str:
     return datetime.fromtimestamp(float(stamp)).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def safe_replay_file(root: Path, rel_path: str) -> Optional[Path]:
-    """只允许打开录像根目录里面的普通文件，拒绝绝对路径和越出根目录的路径。"""
+def safe_replay_file(root: Path, rel_path: str, root_resolved: Path = None, dir_cache: dict = None) -> Optional[Path]:
+    """只允许打开录像根目录里面的普通文件，拒绝绝对路径和越出根目录的路径。
+
+    root_resolved/dir_cache 可由同一请求复用，避免每个视角重复解析根目录；
+    父目录仍 resolve 并做包含校验，文件符号链接仍单独 resolve。
+    """
     if not rel_path or Path(rel_path).is_absolute():
         return None
     if rel_path.startswith(("/", "\\")):
         return None
-    root_resolved = root.resolve()
-    candidate = (root_resolved / rel_path).resolve()
+    root_resolved = root_resolved or root.resolve()
+    candidate = root_resolved / rel_path
+    if dir_cache is None:
+        candidate = candidate.resolve()
+    else:
+        parent_key = str(candidate.parent)
+        parent = dir_cache.get(parent_key)
+        if parent is None:
+            parent = candidate.parent.resolve()
+            try:
+                parent.relative_to(root_resolved)
+            except ValueError:
+                return None
+            dir_cache[parent_key] = parent
+        candidate = parent / candidate.name
+        if candidate.is_symlink():
+            candidate = candidate.resolve()
     try:
         candidate.relative_to(root_resolved)
     except ValueError:
@@ -73,6 +92,8 @@ class ShareApp:
         self.link_hours = float(link_hours)
         self.public_url_provider = None
         self.statistics_portal = None
+        # /s/<token>/analysis-refresh 是 GET 触发写（重解析 + sidecar），独立 share 进程必须关掉它。
+        self.allow_analysis_refresh = True
 
     def local_base(self) -> str:
         host = self.bind_host
@@ -151,6 +172,10 @@ class ShareApp:
                        'stale': getattr(score, 'stale', False)}
             return 200, 'application/json; charset=utf-8', json.dumps(payload).encode('utf8')
         if kind in {"file", "analysis", "analysis-json", "analysis-refresh"}:
+            if kind == 'analysis-refresh' and not getattr(self, 'allow_analysis_refresh', True):
+                # 重新解析会读 .yrp、写 analysis/evidence sidecar（GET 触发写），必须留在 watch 进程；
+                # 独立 share 进程只提供读缓存的 analysis/analysis-json。
+                return self._text(409, "重新解析需要观战（watch）进程在线；独立分享服务不提供这个操作。")
             if not ID_RE.fullmatch(replay_id or "") or int(replay_id) not in allowed:
                 return self._text(404, "这个链接不能下载这份录像。")
             replay = self.store.get_replay(int(replay_id))

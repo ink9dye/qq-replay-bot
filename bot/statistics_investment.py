@@ -10,12 +10,14 @@ def summary(values, population):
     absent = sum(copies == 0 and complete for copies, complete in values)
     known_copies = sum(complete for copies, complete in values)
     bins = {str(n): sum(complete and copies == n for copies, complete in values) for n in (0, 1, 2, 3)}
+    bins['4+'] = sum(complete and copies >= 4 for copies, complete in values)
     unknown = population - positive - absent
     return dict(confirmed_players=positive, confirmed_absent_players=absent, unknown_players=unknown,
                 population=population, percentage=100 * positive / population if population else None,
                 lower_bound=unknown > 0, known_copy_players=known_copies,
                 unknown_copy_players=population - known_copies, bins=bins,
-                recorded_bins={str(n): sum(copies == n for copies, complete in values) for n in (1, 2, 3)},
+                recorded_bins={**{str(n): sum(copies == n for copies, complete in values) for n in (1, 2, 3)},
+                               '4+': sum(copies >= 4 for copies, complete in values)},
                 recorded_copies=sum(copies for copies, complete in values),
                 anomalous_copy_players=sum(complete and copies > 3 for copies, complete in values))
 

@@ -132,6 +132,10 @@ def group_command_text(event: dict, allow_commands: bool = False, extra_accept=N
     if allow_commands:
         from .commands import parse_command
         text = event_text(event).strip()
+        head = text.split()[0] if text.split() else ''
+        # 卡价预定只在被@时出现，不参与免@指令，也不在帮助里列出。
+        if head in ('预定', '我的预定', '取消预定'):
+            return None
         if parse_command(text).get('op') not in ('empty', 'unknown'):
             return text
         if extra_accept and extra_accept(event, text):

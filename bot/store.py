@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -35,10 +36,25 @@ def _replay_row(row: sqlite3.Row) -> dict:
 
 
 class Store:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, readonly: bool = False, migrate: bool = True):
+        """readonly=True 只开只读连接（mode=ro + query_only），migrate=False 不跑建表/ALTER。
+
+        非 collector 进程（独立 share、只读统计）用 Store(path, readonly=True, migrate=False)：
+        不产生任何 DDL，schema 由 collector 唯一升级（见 决策与阻塞 D26/D27）。
+        """
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.readonly = bool(readonly)
+        self.migrate = bool(migrate) and not self.readonly
         self._lock = threading.Lock()
+        if self.readonly:
+            uri = self.path.resolve().as_uri() + '?mode=ro'
+            self._db = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=5)
+            self._db.row_factory = sqlite3.Row
+            self._db.execute('PRAGMA query_only=ON')
+            self._db.execute('PRAGMA busy_timeout=5000')
+            self._db.execute('BEGIN')
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute('PRAGMA foreign_keys=ON')
@@ -46,6 +62,9 @@ class Store:
         # WAL 允许读写并行，busy_timeout 让偶发写锁最多等 5 秒；M3 才把 QQ 的写请求收敛到 collector。
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA busy_timeout=5000")
+        if not self.migrate:
+            self._commit()
+            return
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS subscriptions (
@@ -104,7 +123,7 @@ class Store:
         link_columns = {row[1] for row in self._db.execute('PRAGMA table_info(share_links)')}
         if 'deck_replay_ids_json' not in link_columns:
             self._db.execute('ALTER TABLE share_links ADD COLUMN deck_replay_ids_json TEXT')
-        self._db.commit()
+        self._commit()
 
         from .statistics_facts import initialize
         initialize(self._db)
@@ -114,7 +133,45 @@ class Store:
         initialize_classifications(self._db)
         self._db.execute('CREATE INDEX IF NOT EXISTS stat_card_lookup ON stat_card_facts(code,partition,digest,player)')
         self._db.execute('CREATE INDEX IF NOT EXISTS stat_build_card_lookup ON stat_build_cards(code,partition,build)')
+        self._commit()
+
+    def _commit(self) -> None:
+        """写方法统一的提交口：事务内（atomic）只延后，不各自 commit。"""
+        if getattr(self, '_defer_commit', False):
+            return
         self._db.commit()
+
+    @contextmanager
+    def atomic(self):
+        """同一连接上的显式写事务：业务写 + 幂等记录一起提交/回滚（M3 collector 用）。
+
+        只读连接或嵌套调用直接报错；退出时异常→rollback，正常→一次 commit。
+        """
+        if self.readonly:
+            raise RuntimeError('readonly_store')
+        if getattr(self, '_defer_commit', False):
+            raise RuntimeError('nested_atomic')
+        self._db.execute('BEGIN IMMEDIATE')
+        self._defer_commit = True
+        try:
+            yield self
+        except Exception:
+            self._defer_commit = False
+            self._db.rollback()
+            raise
+        else:
+            self._defer_commit = False
+            self._db.commit()
+
+    def schema_version(self) -> int:
+        """schema 版本（PRAGMA user_version）：collector 唯一升级，只读进程用它做版本门。"""
+        return int(self._db.execute('PRAGMA user_version').fetchone()[0])
+
+    def set_schema_version(self, version: int) -> None:
+        if self.readonly:
+            raise RuntimeError('readonly_store')
+        self._db.execute(f'PRAGMA user_version={int(version)}')
+        self._commit()
 
     def card_statistics(self, replay_root, code, partition, now, filters=None):
         from .card_statistics import query
@@ -237,13 +294,13 @@ class Store:
                 chosen = next(iter(known)) if known else session_id
                 self._db.executemany('INSERT OR IGNORE INTO replay_sessions(replay_id,session_id,game_no) VALUES (?,?,?)',
                                      [(replay_id, chosen, number) for replay_id, number, _ in entries])
-            self._db.commit()
+            self._commit()
 
     def recover_session(self, session_id: str, games: list[tuple[int, int]]) -> None:
         with self._lock:
             self._db.executemany('INSERT OR IGNORE INTO replay_sessions(replay_id,session_id,game_no) VALUES (?,?,?)',
                                  [(replay_id, session_id, number) for replay_id, number in games])
-            self._db.commit()
+            self._commit()
 
     def upsert_subscription(
         self,
@@ -264,7 +321,7 @@ class Store:
                 """,
                 (str(user_id), player, rank_top, 1 if notify else 0, float(created_at)),
             )
-            self._db.commit()
+            self._commit()
         return self.get_subscription(user_id, player)
 
     def get_subscription(self, user_id: str, player: str) -> Optional[dict]:
@@ -294,7 +351,7 @@ class Store:
                 "DELETE FROM subscriptions WHERE user_id = ? AND player = ?",
                 (str(user_id), player),
             )
-            self._db.commit()
+            self._commit()
             return cur.rowcount > 0
 
     def set_notify(self, user_id: str, player: str, notify: bool) -> bool:
@@ -303,7 +360,7 @@ class Store:
                 "UPDATE subscriptions SET notify = ? WHERE user_id = ? AND player = ?",
                 (1 if notify else 0, str(user_id), player),
             )
-            self._db.commit()
+            self._commit()
             return cur.rowcount > 0
 
     def add_replay(
@@ -339,7 +396,7 @@ class Store:
                     float(recorded_at if saved_at is None else saved_at),
                 ),
             )
-            self._db.commit()
+            self._commit()
             row = self._db.execute("SELECT * FROM replays WHERE id = ?", (cur.lastrowid,)).fetchone()
         return _replay_row(row), True
 
@@ -373,7 +430,7 @@ class Store:
             self._db.executemany(
                 "UPDATE replays SET saved_at = ? WHERE id = ? AND saved_at IS NULL", rows
             )
-            self._db.commit()
+            self._commit()
 
     def replays_older_than(self, before: float) -> list[dict]:
         with self._lock:
@@ -388,7 +445,7 @@ class Store:
             self._db.execute("DELETE FROM replay_sessions WHERE replay_id = ?", (int(replay_id),))
             self._db.execute("DELETE FROM notifications WHERE replay_id = ?", (int(replay_id),))
             self._db.execute("DELETE FROM replays WHERE id = ?", (int(replay_id),))
-            self._db.commit()
+            self._commit()
 
     def enqueue_notification(self, user_id: str, replay_id: int, player: str) -> bool:
         with self._lock:
@@ -405,7 +462,7 @@ class Store:
                 """,
                 (str(user_id), int(replay_id), player),
             )
-            self._db.commit()
+            self._commit()
             return True
 
     def pending_notifications(self) -> list[dict]:
@@ -430,7 +487,7 @@ class Store:
                 """,
                 (str(user_id), int(replay_id)),
             )
-            self._db.commit()
+            self._commit()
 
     def mark_skipped(self, user_id: str, replay_id: int) -> None:
         with self._lock:
@@ -438,7 +495,7 @@ class Store:
                 "UPDATE notifications SET status = 'skipped' WHERE user_id = ? AND replay_id = ?",
                 (str(user_id), int(replay_id)),
             )
-            self._db.commit()
+            self._commit()
 
     def mark_retry(self, user_id: str, replay_id: int, limit: int = 3) -> str:
         with self._lock:
@@ -455,7 +512,7 @@ class Store:
                 """,
                 (attempts, status, str(user_id), int(replay_id)),
             )
-            self._db.commit()
+            self._commit()
             return status
 
     def notification_status(self, user_id: str, replay_id: int) -> Optional[str]:
@@ -495,7 +552,7 @@ class Store:
                     json.dumps([int(item) for item in (replay_ids if deck_replay_ids is None else deck_replay_ids)]),
                 ),
             )
-            self._db.commit()
+            self._commit()
 
     def get_link(self, token: str) -> Optional[dict]:
         with self._lock:
@@ -523,7 +580,7 @@ class Store:
                 "INSERT INTO stats_links (token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
                 (token, str(user_id), float(created_at), float(expires_at)),
             )
-            self._db.commit()
+            self._commit()
 
     def get_stats_link(self, token: str) -> Optional[dict]:
         with self._lock:
@@ -535,4 +592,4 @@ class Store:
     def purge_stats_links(self, now: float) -> None:
         with self._lock:
             self._db.execute("DELETE FROM stats_links WHERE expires_at<=?", (float(now),))
-            self._db.commit()
+            self._commit()

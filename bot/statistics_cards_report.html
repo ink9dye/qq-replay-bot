@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>卡片统计 · 完整卡片统计</title>
+<link rel="stylesheet" href="/statistics/assets/statistics_ui.css">
+<link rel="stylesheet" href="/statistics/assets/statistics_theme.css">
+<link rel="stylesheet" href="/statistics/assets/statistics_nav.css">
+<link rel="stylesheet" href="/statistics/assets/statistics_cards_report.css">
+</head>
+<body>
+<nav class="main-nav" aria-label="主要功能"><a href="/statistics">玩家排名</a><a href="/statistics/cards-report" aria-current="page">卡片统计</a><a href="/statistics/matrix">卡组胜率</a><a href="/statistics/recordings">录像筛选</a></nav>
+<header>
+<h1>卡片统计</h1>
+<p>选多张卡，同一套条件一次算完；不选卡时按当前条件列出整表。视角单位是玩家—小局，胜率按所选条件下已知胜负平计算，不强制 50%；抽到只含初始／通常／效果抽卡，不含检索回收。点卡名进入单卡详情。</p>
+</header>
+<main class="card-report">
+<form id="form" novalidate>
+  <div class="cards-box">
+    <label for="card-input">卡片（可多选）</label>
+    <p class="hint" id="cards-hint">输入卡名或卡号后从候选选择；不选卡时按下面条件列出整表。已选 0 张。</p>
+    <input id="card-input" type="text" role="combobox" aria-expanded="false" aria-controls="suggest"
+           aria-autocomplete="list" autocomplete="off" maxlength="80" placeholder="例如 灰流丽 或 14558127">
+    <ul id="suggest" role="listbox" aria-label="卡片候选" hidden></ul>
+    <div id="chips" class="chips" aria-live="polite"></div>
+  </div>
+
+  <div class="cards-box">
+    <label for="exclude-input">起手不存在（可多选）</label>
+    <p class="hint" id="exclude-hint">起手不含这些卡；多张时要求全部都不在起手（AND）。起手未知或不完整的小局不计入。已排除 0 张。</p>
+    <input id="exclude-input" type="text" role="combobox" aria-expanded="false" aria-controls="exclude-suggest"
+           aria-autocomplete="list" autocomplete="off" maxlength="80" placeholder="例如 灰流丽 或 14558127">
+    <ul id="exclude-suggest" role="listbox" aria-label="起手排除候选" hidden></ul>
+    <div id="exclude-chips" class="chips" aria-live="polite"></div>
+  </div>
+
+  <div class="grid">
+    <label>我方卡组<input id="deck" list="deck-list" maxlength="128" autocomplete="off" placeholder="全部卡组"></label>
+    <label>对手卡组<input id="opdeck" list="opdeck-list" maxlength="128" autocomplete="off" placeholder="全部卡组"></label>
+    <datalist id="deck-list"></datalist>
+    <datalist id="opdeck-list"></datalist>
+
+    <fieldset class="seat">
+      <legend>局面（可多选）</legend>
+      <label><input type="checkbox" name="phase" value="main_first" checked> 主卡局·先攻</label>
+      <label><input type="checkbox" name="phase" value="main_second" checked> 主卡局·后攻</label>
+      <label><input type="checkbox" name="phase" value="side_first" checked> Side局·先攻</label>
+      <label><input type="checkbox" name="phase" value="side_second" checked> Side局·后攻</label>
+      <span class="phase-actions"><button type="button" id="phaseAll">全选</button><button type="button" id="phaseNone">全不选</button></span>
+    </fieldset>
+
+    <label>统计范围
+      <select id="metric">
+        <option value="drawn">抽到后</option>
+        <option value="carried">投入后（不论是否抽到）</option>
+        <option value="opening" selected>起手中（起手就有，默认）</option>
+      </select>
+    </label>
+
+    <label>我方范围
+      <select id="self_range">
+        <option value="100">前100</option>
+        <option value="200" selected>前200</option>
+        <option value="all">全部</option>
+      </select>
+    </label>
+
+    <label>对手范围
+      <select id="opponent_range">
+        <option value="all">全部</option>
+        <option value="100">前100</option>
+        <option value="200" selected>前200</option>
+      </select>
+    </label>
+
+    <label>样本占比 ≥ <span class="inline"><input id="threshold" type="text" inputmode="decimal" value="1" maxlength="10">%</span></label>
+    <label>最少小局 <input id="min" type="number" min="0" step="1" value="0" maxlength="7"></label>
+
+    <label>排序
+      <select id="sort">
+        <option value="people">玩家数</option>
+        <option value="games">小局数</option>
+        <option value="rate" selected>胜率（默认）</option>
+        <option value="low">区间下限</option>
+        <option value="name">卡名</option>
+      </select>
+    </label>
+
+    <label class="check"><input id="internal" type="checkbox"> 仅双方都在前100（前100内战）</label>
+  </div>
+
+  <div class="actions">
+    <button id="run" type="submit">查询</button>
+    <button id="reset" type="button" class="secondary">重置</button>
+    <button id="export" type="button" class="secondary" disabled>导出当前结果 CSV</button>
+    <span id="status" role="status" class="note">设置条件后点查询。</span>
+  </div>
+</form>
+
+<section id="result" aria-live="polite"></section>
+</main>
+<script src="/statistics/assets/statistics_samples.js"></script>
+<script src="/statistics/assets/statistics_cards_report.js"></script>
+</body>
+</html>

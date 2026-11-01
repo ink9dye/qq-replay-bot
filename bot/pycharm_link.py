@@ -121,8 +121,20 @@ def launch(root=ROOT, *, open_ide=True, client_factory=IDEClient, pause=time.sle
 
 
 def watch_status(root):
+    """watch 是否在跑：优先读 data/watch-status.json（share 独立后 8787 不再代表 watch），8787 /health 作兼容回退。
+
+    没有 config.json（例如空目录/测试临时目录）时直接返回 None，不去猜端口。
+    """
     try:
         config=json.loads((root/'config.json').read_text(encoding='utf-8-sig'))
+    except (OSError,ValueError):
+        return None
+    from .watch_status import read as read_watch_status, as_health
+    data_dir=Path(config.get('data_dir') or (root/'data'))
+    from_file=as_health(read_watch_status(data_dir))
+    if from_file and from_file.get('watch_pid'):
+        return from_file
+    try:
         port=int((config.get('share') or {}).get('bind_port',8787))
         if not 1 <= port <= 65535: return None
         with build_opener(ProxyHandler({})).open('http://127.0.0.1:'+str(port)+'/health',timeout=1) as response:
