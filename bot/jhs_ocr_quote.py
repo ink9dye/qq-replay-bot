@@ -133,6 +133,8 @@ class OcrQuote:
         wanted = self._norm(name)
         for _ in range(10):
             time.sleep(1.2)
+            if "SearchActivity" not in self._focus():
+                raise OcrQuoteError("搜索页已退出")
             rows = self._items()
             text = " ".join(row["text"] for row in rows)
             if "搜索历史" in text:
@@ -216,6 +218,17 @@ class OcrQuote:
         return result
 
     def quote(self, name, rarity="", language="日文"):
+        last = None
+        for attempt in range(2):
+            try:
+                return self._quote_once(name, rarity, language)
+            except Exception as exc:
+                last = exc
+                self.log(f"OCR 第 {attempt + 1} 次失败：{exc}")
+                time.sleep(2)
+        raise last
+
+    def _quote_once(self, name, rarity, language):
         try:
             self._open_search()
             self._search(name)
