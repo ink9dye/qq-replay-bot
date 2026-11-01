@@ -135,10 +135,11 @@ class OcrQuote:
             time.sleep(1.2)
             rows = self._items()
             text = " ".join(row["text"] for row in rows)
-            if any(wanted and wanted in self._norm(row["text"]) for row in rows):
-                return
             if "搜索历史" in text:
                 self.ui.key(66)
+                continue
+            if any(wanted and wanted in self._norm(row["text"]) for row in rows):
+                return
         raise OcrQuoteError("结果页没有出现目标卡名")
 
     def _open_card(self, name):
