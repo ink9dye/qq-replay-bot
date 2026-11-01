@@ -25,3 +25,8 @@ NapCat*/
 .config-*.tmp
 m3-token
 statistics-owner.key
+.env
+.env.*
+*.pem
+*.key
+secrets*
