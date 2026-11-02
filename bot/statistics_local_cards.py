@@ -14,7 +14,8 @@ _lock = threading.RLock()
 _pending = set()
 _failed = {}
 _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='card-image')
-REMOTE = 'https://cdntx.moecube.com/ygopro-super-pre/data/pics/%d.jpg'
+REMOTE = 'https://cdn.233.momobako.com/ygopro/pics/%d.jpg'
+REMOTE_FALLBACK = 'https://cdntx.moecube.com/ygopro-super-pre/data/pics/%d.jpg'
 RETRY_SECONDS = 600
 
 
@@ -98,22 +99,23 @@ def _schedule(data_dir, code, pics):
         try:
             pics.mkdir(parents=True, exist_ok=True)
             for candidate in _image_codes(code):
-                try:
-                    with urllib.request.urlopen(REMOTE % candidate, timeout=60) as response:
-                        blob = response.read(8 * 1024 * 1024 + 1)
-                except OSError:
-                    continue
-                if not blob or len(blob) > 8 * 1024 * 1024:
-                    continue
-                path = (pics / (str(candidate) + '.jpg')).resolve()
-                if not path.is_relative_to(pics):
-                    continue
-                temporary = path.with_suffix('.jpg.tmp')
-                temporary.write_bytes(blob)
-                os.replace(temporary, path)
-                with _lock:
-                    _failed.pop(code, None)
-                return
+                for template in (REMOTE, REMOTE_FALLBACK):
+                    try:
+                        with urllib.request.urlopen(template % candidate, timeout=60) as response:
+                            blob = response.read(8 * 1024 * 1024 + 1)
+                    except OSError:
+                        continue
+                    if not blob or len(blob) > 8 * 1024 * 1024:
+                        continue
+                    path = (pics / (str(candidate) + '.jpg')).resolve()
+                    if not path.is_relative_to(pics):
+                        continue
+                    temporary = path.with_suffix('.jpg.tmp')
+                    temporary.write_bytes(blob)
+                    os.replace(temporary, path)
+                    with _lock:
+                        _failed.pop(code, None)
+                    return
             raise ValueError('no image for card')
         except (OSError, ValueError):
             with _lock:

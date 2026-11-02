@@ -20,9 +20,19 @@ MARGIN = 12
 
 
 def _font(size):
-    for name in ('msyh.ttc', 'msyhbd.ttc', 'simhei.ttf'):
+    candidates = [
+        Path('C:/Windows/Fonts') / 'msyh.ttc',
+        Path('C:/Windows/Fonts') / 'msyhbd.ttc',
+        Path('C:/Windows/Fonts') / 'simhei.ttf',
+        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
+        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'),
+        Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'),
+        Path('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'),
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
+    ]
+    for path in candidates:
         try:
-            return ImageFont.truetype(str(Path('C:/Windows/Fonts') / name), size)
+            return ImageFont.truetype(str(path), size)
         except OSError:
             continue
     return ImageFont.load_default()
