@@ -69,6 +69,16 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(codes, [100, 101, 200])
         self.assertTrue(detail['builds'])
 
+    def test_delete_group_hides_it_from_list_and_names(self):
+        self.save(dict(op='create', name='烙印', sources=['烙印']))
+        self.save(dict(op='delete', name='烙印'))
+        result = admin.list_groups(self.db, self.data, 1000.0)
+        self.assertNotIn('烙印', [row['name'] for row in result['rows']])
+        with self.assertRaises(LookupError):
+            admin.group_detail(self.db, self.data, 1000.0, '烙印')
+        raw = json.loads((self.data / 'series-naming.json').read_text(encoding='utf-8'))
+        self.assertIn('烙印', raw.get('ignore_fields') or [])
+
     def test_move_card_between_required_and_optional(self):
         self.save(dict(op='create', name='烙印', sources=['烙印']))
         self.save(dict(op='move_card', name='烙印', card=100, to='optional'))

@@ -154,6 +154,7 @@ def list_groups(db, data_dir, now, query='', limit=50, offset=0):
         if needle and needle not in name.lower():
             continue
         rows.append(row)
+    rows = [item for item in rows if not item.get('ignored')]
     rows.sort(key=lambda item: (not item['enabled'], -item['used_builds'], -item['cards_total'], item['name']))
     total = len(rows)
     limit = max(1, min(int(limit or 50), 200))
@@ -169,6 +170,8 @@ def group_detail(db, data_dir, now, name):
     if not name or len(name) > 60:
         raise ValueError('组名无效。')
     config = series_naming.load_config(data_dir)
+    if name in config['ignore_fields']:
+        raise LookupError('group_missing')
     catalog = _catalog(data_dir)
     names = _names(data_dir)
     registry = series_naming.build_registry(catalog, config, names)
@@ -275,6 +278,26 @@ def update_group(db, data_dir, now, payload):
         backup = save_raw(data_dir, raw)
         return dict(changed=True, backup=str(backup) if backup else None,
                     config=config_summary(config))
+    if op == 'delete':
+        name = (payload.get('name') or '').strip()
+        if not name or len(name) > 60:
+            raise ValueError('组名无效。')
+        kind, index = _find_group(raw, name)
+        if kind is not None:
+            raw[kind].pop(index)
+        for key in ('groups', 'exceptions'):
+            for item in raw.get(key) or []:
+                if isinstance(item, dict) and isinstance(item.get('includes'), list):
+                    item['includes'] = [child for child in item['includes'] if child != name]
+        raw['exception_order'] = [value for value in (raw.get('exception_order') or []) if value != name]
+        ignored = [value for value in (raw.get('ignore_fields') or []) if value != name]
+        ignored.append(name)
+        raw['ignore_fields'] = sorted(set(ignored))
+        config = series_naming.normalize_config(raw)
+        _validate(config, catalog, names)
+        backup = save_raw(data_dir, raw)
+        return dict(changed=True, name=name, deleted=True,
+                    backup=str(backup) if backup else None, config=config_summary(config))
     name = (payload.get('name') or '').strip()
     if not name or len(name) > 60:
         raise ValueError('组名无效。')
