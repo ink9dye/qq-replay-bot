@@ -934,7 +934,9 @@ def plan(db, now, config, catalog=None, names=None, builds=None, scope='top100',
             stale = (config['clear_stale_auto']
                      and (info['classification_source'] == 'auto_series'
                           or (info['classification_source'] == 'manual'
-                              and not config['respect_manual']))
+                              and not config['respect_manual'])
+                          or (info['classification_source'] == 'reference'
+                              and config['overwrite_reference']))
                      and info['deck_type'])
             item['action'] = 'clear' if stale else 'skip'
         elif proposal['name'] == info['deck_type'] and info['classification_source'] == 'auto_series':
