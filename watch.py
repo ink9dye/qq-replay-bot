@@ -1852,6 +1852,7 @@ class Spectator:
         self._allow_complete_start = not room.started
         self._previous_game = None
         self.is_host = False
+        self.fixed_password: Optional[str] = None  # 远程端由服务器下发入房口令，免登录
         self.reader: Optional[asyncio.StreamReader] = None
         self.writer: Optional[asyncio.StreamWriter] = None
 
@@ -1943,15 +1944,20 @@ class Spectator:
         connect_failures = 0
         drop_failures = 0
         while True:
-            try:
-                await refresh_secret_shared(self.config)
-                # 登录/续期可能校正账号名；入房名称必须与本次凭证使用同一身份。
+            if self.fixed_password:
+                # 远程观战端：服务器已经算好口令，本地不保存账号凭据。
                 nickname = str(self.config.get("nickname") or "Spectator")
-                password = build_join_password(self.config, self.room)
-            except RuntimeError as exc:
-                log(str(exc))
-                outcome = "config"
-                break
+                password = self.fixed_password
+            else:
+                try:
+                    await refresh_secret_shared(self.config)
+                    # 登录/续期可能校正账号名；入房名称必须与本次凭证使用同一身份。
+                    nickname = str(self.config.get("nickname") or "Spectator")
+                    password = build_join_password(self.config, self.room)
+                except RuntimeError as exc:
+                    log(str(exc))
+                    outcome = "config"
+                    break
             if not await self._connect(host, port, nickname, password):
                 connect_failures += 1
                 if connect_failures >= 3:
@@ -2696,6 +2702,45 @@ class JoinConcurrencyTuner:
         return f'进场节流：并发上限 {current} → {target}（{reason}）'
 
 
+def remote_payload(config: dict, room: RoomInfo, writer: ReplayWriter,
+                   known_start, reason: str) -> dict:
+    """把房间整理成远程端可直接使用的任务。口令由服务器算好，远程端不碰账号凭据。"""
+    password = build_join_password(config, room)
+    focus = replay_folders(room.players, writer.targets, writer.mode)
+    return dict(
+        room=dict(key=room.key, title=room.title, join_id=room.join_id,
+                  players=list(room.players),
+                  seats={str(pos): name for pos, name in room.seats.items()},
+                  started=bool(room.started)),
+        server=dict(host=str(config["host"]), port=int(config["port"]),
+                    version=int(parse_version(config.get("version") or DEFAULT_VERSION))),
+        password=password,
+        nickname=str(config.get("nickname") or "Spectator"),
+        focus=focus,
+        started_at=known_start,
+        reason=reason,
+    )
+
+
+async def dispatch_remote(pool: dict, config: dict, room: RoomInfo, writer: ReplayWriter,
+                          known_start, shown: str, reason: str) -> str:
+    """把房间交给远程观战端；返回认领者名字（空串表示没人接，转本地观战）。"""
+    try:
+        payload = remote_payload(config, room, writer, known_start, reason)
+    except RuntimeError as exc:
+        log(f"远程派发跳过：{exc}")
+        return ""
+    try:
+        worker = await asyncio.get_running_loop().run_in_executor(
+            None, pool["jobs"].offer_sync, payload, float(pool.get("wait") or 3.0))
+    except Exception as exc:  # 远程通道异常不能影响本地观战
+        log(f"远程派发失败：{exc}")
+        return ""
+    if worker:
+        log(f"已派发远程观战：{shown} → {worker}")
+    return worker
+
+
 async def serve(
     config: dict,
     names: list[str],
@@ -2712,6 +2757,19 @@ async def serve(
     )
     writer.on_saved = on_saved
     writer.on_session = on_session
+    remote = None
+    remote_cfg = config.get("remote") if isinstance(config.get("remote"), dict) else {}
+    if remote_cfg.get("enabled"):
+        from bot.watch_jobs import RemoteJobs
+        from bot.watch_api import WatchApiServer
+        jobs = RemoteJobs(lease=float(remote_cfg.get("lease_seconds") or 120),
+                          job_ttl=float(remote_cfg.get("job_ttl_seconds") or 180))
+        api = WatchApiServer(jobs, Path(config["replay_dir"]), str(remote_cfg.get("token") or ""),
+                             log=log, bind=(str(remote_cfg.get("bind_host") or "127.0.0.1"),
+                                            int(remote_cfg.get("bind_port") or 8791)))
+        if api.start():
+            remote = dict(jobs=jobs, api=api, wait=float(remote_cfg.get("claim_wait_seconds") or 3.0))
+            log(f"远程观战：已启用，等待间隔 {remote['wait']:g} 秒，任务租期 {jobs.lease:g} 秒")
     board = RoomBoard()
     stop = asyncio.Event()
     http_urls, ws_urls = candidate_sources(config)
@@ -2758,6 +2816,8 @@ async def serve(
     catchup_joined = 0
     catchup_skipped = set()
     retry_zero = {}
+    remote_dispatched = 0
+    remote_reported = 0
     silent_tracker = SilentWindowTracker()
     probation_enabled = config_flag(config, "probation_enabled", True) and gate.min_interval > 0
     probation_until = time.monotonic() + PROBATION_SECONDS if probation_enabled else 0.0
@@ -3122,6 +3182,13 @@ async def serve(
                         catchup_skipped.add(room.key)
                         log(f"追旧局已达上限 {catchup_limit}，放弃积压房间：{room.key}")
                     continue
+                if remote is not None and remote["jobs"].online_workers() > 0:
+                    # 远程端有在线且有余量时优先派发；派不出去再走本地观战。
+                    worker = await dispatch_remote(remote, config, room, writer, known_start, shown, reason)
+                    if worker:
+                        remote_dispatched += 1
+                        monitor.joined(room.key)
+                        continue
                 gate.started(time.monotonic())
                 if room.key in preexisting and room.key not in direct_keys:
                     catchup_joined += 1
@@ -3134,6 +3201,21 @@ async def serve(
             message = tuner.observe(time.monotonic(), monitor.waiting, len(active))
             if message: log(message)
             rolling.note_in_flight(time.time(), len(active))
+            if remote is not None:
+                for item in remote["jobs"].drain_ingest():
+                    if writer.on_saved:
+                        try:
+                            writer.on_saved([Path(item["path"])], list(item["players"]),
+                                            datetime.fromtimestamp(float(item["recorded_at"])),
+                                            str(item["digest"]))
+                        except Exception as exc:
+                            log(f"远程录像入库失败：{exc}")
+                for report in remote["jobs"].drain_reports():
+                    remote_reported += 1
+                    detail = report.get("detail") or {}
+                    extra = f"，录像 {detail.get('saved')} 个" if detail.get("saved") else ""
+                    log(f"远程观战结束：{report.get('room') or report.get('job')} ← "
+                        f"{report.get('worker')}：{report.get('outcome') or 'unknown'}{extra}")
             wall_now = time.time()
             if wall_now - last_metrics_at >= METRICS_INTERVAL:
                 last_metrics_at = wall_now
@@ -3148,6 +3230,8 @@ async def serve(
                     saved=writer._metrics.get('saved_games'),
                     silent=counts.get('gone_silent'), noreplay=counts.get('noreplay_observations'),
                     catchup_joined=catchup_joined, catchup_limit=catchup_limit,
+                    remote_workers=(remote["jobs"].online_workers() if remote is not None else 0),
+                    remote_dispatched=remote_dispatched, remote_reported=remote_reported,
                     probation_left=gate.probation_left(time.monotonic()),
                     **secret_status(), **rolling.snapshot(wall_now),
                     **silent_tracker.snapshot(wall_now)))
@@ -3177,6 +3261,8 @@ async def serve(
                 except Exception:log('采集状态暂未写入，观战继续')
             await asyncio.sleep(float(config.get("poll_seconds") or 5))
     finally:
+        if remote is not None:
+            remote["api"].stop()
         if rank_window is not None:rank_window.close()
         _observed_room_ranks.clear()
         watch_event("shutdown", pid=os.getpid(), started=gate.stats['started'],
