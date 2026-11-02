@@ -1,0 +1,18 @@
+/* 行内组合设定，不遮住页面 */
+.combo-editor{margin:12px 0 4px;padding:14px 16px;border:1px solid #dfe8db;border-radius:12px;background:#f7faf4}
+.combo-editor[hidden]{display:none}
+.combo-editor-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.combo-editor-head strong{color:#244d35}
+.combo-editor-head span{font-size:13px;color:var(--p10-muted)}
+.combo-editor label{display:block;font-weight:600;margin-bottom:4px}
+.combo-editor .hint{margin:0 0 8px;color:var(--p10-muted);font-size:13px}
+.combo-editor #combo-input{width:100%;box-sizing:border-box}
+#combo-suggest{position:static;z-index:auto;margin:4px 0 0;padding:4px;list-style:none;background:var(--p10-surface);border:1px solid var(--p10-line);border-radius:10px;max-height:220px;overflow:auto}
+#combo-suggest[hidden]{display:none}
+.combo-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px}
+.combo-defs{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.combo-defs:empty{display:none}
+.combo-defs .combo-chip{display:inline-flex;align-items:center;gap:8px;border:1px solid #b9cbb2;border-radius:999px;padding:4px 10px;background:#edf5e8;color:#244d35;font-size:13px;cursor:default;max-width:100%;white-space:normal;line-height:1.5}
+.combo-defs .combo-chip button{border:0;background:transparent;padding:0;font-size:15px;line-height:1;cursor:pointer;color:#65776b}
+.combo-table-note{display:block;margin-top:2px;font-size:12px;color:var(--p10-muted);font-weight:400}
+tr.combo-row td{background:#f6faf2}

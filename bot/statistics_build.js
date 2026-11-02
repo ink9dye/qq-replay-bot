@@ -20,7 +20,7 @@ function renderHistory(){
     swap.append(el('b','对比第'+change.from_game_no+'局的换卡'));
     for(const [key,label] of [['added','换入'],['removed','换出']]){const cards=change[key]||[];swap.append(el('p',label+'：'+(cards.map(c=>`${c.name} #${c.code} ×${c.copies}（${c.partition==='main'?'主卡':'额外'}）`).join('、')||'已知分区无变化')))}
     if(change.status==='partial')swap.append(el('p','部分分区卡表不完整，仅展示可确认的差异。'));
-   }else swap.append(el('p',({first_game:'首局，无上一局可比较。',missing_previous_game:'上一局无有效来源，换入／换出未知。',ambiguous_sequence:'局次关联有冲突，换入／换出未知。',unassociated:'场次未可靠关联，换入／换出未知。'})[change.status]||'换入／换出未知。'));
+   }else swap.append(el('p',({first_game:'首局，无上一局可比较。',missing_first_game:'第一局无有效来源，换入／换出未知。',missing_previous_game:'上一局无有效来源，换入／换出未知。',ambiguous_sequence:'局次关联有冲突，换入／换出未知。',unassociated:'场次未可靠关联，换入／换出未知。'})[change.status]||'换入／换出未知。'));
    left.append(swap);const replay=el('a','下载第'+(m.game_no||'?')+'局录像'),build=el('a','查看当场构筑');replay.className='download';replay.href='/statistics/sample/'+m.digest+'?player='+encodeURIComponent(player);build.className='download';build.href='/statistics/build?'+new URLSearchParams({player,digest:m.digest});right.append(replay,build);row.append(left,right);section.append(row);
   }
   container.append(section);

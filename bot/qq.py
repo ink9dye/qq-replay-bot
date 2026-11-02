@@ -129,6 +129,9 @@ def group_command_text(event: dict, allow_commands: bool = False, extra_accept=N
             return at.sub("", message).strip() or "帮助"
         if at.search(message):
             return None
+    text_value = event_text(event).strip()
+    if text_value.isascii() and text_value.isdigit() and extra_accept and extra_accept(event, text_value):
+        return text_value
     if allow_commands:
         from .commands import parse_command
         text = event_text(event).strip()

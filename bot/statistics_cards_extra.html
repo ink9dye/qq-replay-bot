@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>额外卡统计 · 前100观察</title>
+<style>
+main{max-width:1280px;margin:auto;padding:24px}.panel{background:#fff;border:1px solid #e2e9df;border-radius:14px;padding:18px;margin-bottom:18px}
+header{padding:26px max(20px,calc((100vw - 1280px)/2));background:#f5f8f4;border-bottom:1px solid #e2e9df}
+header h1{margin:0 0 8px;font-size:24px}header p{margin:0;color:#5d7163;line-height:1.7}
+.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;align-items:end}
+.filters label{display:flex;flex-direction:column;gap:5px;font-size:14px;color:#43574a}
+select,input[type=checkbox]{font-size:14px;padding:7px 8px;border:1px solid #cfdccc;border-radius:8px;background:#fff}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+button{border:0;border-radius:9px;padding:9px 16px;background:#275f45;color:#fff;font-size:14px;cursor:pointer}
+button.secondary{background:#edf2e8;color:#34563e}
+.seat{border:1px solid #dce6d8;border-radius:10px;padding:8px 11px;display:flex;flex-wrap:wrap;gap:8px 15px;margin:0}
+.seat legend{padding:0 5px;font-size:13px;color:#65776b}.seat label{flex-direction:row;align-items:center;gap:5px;font-size:13px;white-space:nowrap}
+.phase-actions{display:flex;gap:6px;margin-left:auto}.phase-actions button{padding:3px 9px;font-size:12px;border-radius:999px;background:#fff;color:#22322b;border:1px solid #dce6d8}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:9px 8px;border-bottom:1px solid #edf1ea;text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left;white-space:normal}th{color:#5d7163;font-weight:600;background:#f8faf6;position:sticky;top:0}
+td .sub{display:block;color:#7b8d80;font-size:12px;margin-top:2px}.wrap{overflow:auto;max-height:70vh}
+.note{color:#65776b;line-height:1.7;font-size:13px}@media(max-width:640px){main{padding:14px}.panel{padding:12px}th,td{padding:7px 5px;font-size:12.5px}.seat{grid-column:1/-1}}
+</style>
+<link rel="stylesheet" href="/statistics/assets/statistics_nav.css">
+<link rel="stylesheet" href="/statistics/assets/statistics_theme.css">
+</head>
+<body>
+<nav class="main-nav" aria-label="主要功能"><a href="/statistics">玩家排名</a><a href="/statistics/cards-report">卡片统计</a><a href="/statistics/cards-extra" aria-current="page">额外卡</a><a href="/statistics/matrix">卡组胜率</a><a href="/statistics/recordings">录像筛选</a></nav>
+<header><h1>额外卡统计</h1><p>只看额外卡组的携带与出场。携带率按当前选中玩家小局视角计算；出场率、出场胜率只在“额外带了这张卡”的视角里计算。</p></header>
+<main>
+<section class="panel">
+<div class="filters">
+<label>我方范围<select id="selfRange"><option value="100">前100</option><option value="200">前200</option><option value="all">全部</option></select></label>
+<label>对手范围<select id="opponentRange"><option value="all">全部</option><option value="100">前100</option><option value="200">前200</option></select></label>
+<label>实际先后攻<select id="first"><option value="all">总体</option><option value="first">先攻</option><option value="second">后攻</option></select></label>
+<label>排序<select id="sort"><option value="carry" selected>携带率</option><option value="players">携带人数</option><option value="appearance">出场率</option><option value="win">出场胜率</option><option value="code">卡号</option></select></label>
+<label>我方卡组<input id="deck" list="deck-list" maxlength="128" autocomplete="off" placeholder="全部卡组"><datalist id="deck-list"></datalist></label>
+<label>对手卡组<input id="opdeck" list="opdeck-list" maxlength="128" autocomplete="off" placeholder="全部卡组"><datalist id="opdeck-list"></datalist></label>
+<fieldset class="seat"><legend>局面（可多选）</legend>
+<label><input type="checkbox" name="phase" value="main_first" checked> 主卡局·先攻</label>
+<label><input type="checkbox" name="phase" value="main_second" checked> 主卡局·后攻</label>
+<label><input type="checkbox" name="phase" value="side_first" checked> Side局·先攻</label>
+<label><input type="checkbox" name="phase" value="side_second" checked> Side局·后攻</label>
+<span class="phase-actions"><button type="button" id="phaseAll">全选</button><button type="button" id="phaseNone">全不选</button></span>
+</fieldset>
+</div>
+<div class="actions"><button id="run">查询</button><span id="status" class="note" role="status">设置条件后点查询。</span></div>
+</section>
+<section class="panel">
+<h2>额外卡</h2>
+<p class="note">携带率 = 带该额外卡的玩家小局视角 / 本次选中视角；出场率 = 实际出场的小局 / 带该卡的小局；出场胜率只看出场小局；出场战绩 = 胜-负，平局不展示。</p>
+<div class="wrap"><table><thead><tr><th>卡名</th><th>卡号</th><th>携带人数</th><th>携带率</th><th>出场率</th><th>出场胜率</th><th>出场战绩</th></tr></thead><tbody id="rows"></tbody></table></div>
+<p id="empty" class="note" hidden>当前条件下没有额外卡数据。</p>
+</section>
+</main>
+<script src="/statistics/assets/statistics_samples.js"></script>
+<script>
+const SS=window.StatisticsSamples,$=id=>document.getElementById(id),el=SS.el;
+const phases=[...document.querySelectorAll('input[name="phase"]')];
+function pct(value){return value===null||value===undefined?'—':Number(value).toFixed(1)+'%'}
+function syncPhases(){/* no hidden select; API reads checked directly */}
+$('phaseAll').onclick=()=>{for(const box of phases)box.checked=true};
+$('phaseNone').onclick=()=>{for(const box of phases)box.checked=false};
+async function run(){
+  const q=new URLSearchParams({self_range:$('selfRange').value,opponent_range:$('opponentRange').value,seat:$('first').value,sort:$('sort').value});
+  if($('deck').value.trim())q.set('deck',JSON.stringify($('deck').value.trim()));
+  if($('opdeck').value.trim())q.set('opponent',JSON.stringify($('opdeck').value.trim()));
+  const selected=phases.filter(box=>box.checked).map(box=>box.value);
+  if(selected.length)for(const value of selected)q.append('phase',value);else q.set('phase_none','1');
+  $('status').textContent='读取额外卡统计中…';$('run').disabled=true;
+  try{
+    const r=await SS.api('cards-extra?'+q);
+    $('status').textContent=`选中 ${r.base.games} 个小局视角 / ${r.base.players} 名玩家 · ${r.total} 张额外卡`;
+    const body=$('rows');body.replaceChildren();
+    for(const row of r.rows){
+      const tr=el('tr');
+      tr.append(el('td',row.name));
+      tr.append(el('td',String(row.code)));
+      tr.append(el('td',String(row.carry_players)));
+      tr.append(el('td',pct(row.carry_rate)));
+      tr.append(el('td',pct(row.appearance_rate)));
+      tr.append(el('td',pct(row.win_rate)));
+      const record=el('td',`${row.wins}-${row.losses}`);
+      record.title=`胜-负 · 出场 ${row.appear_games} 局 · 携带 ${row.carry_games} 局`;
+      tr.append(record);body.append(tr);
+    }
+    $('empty').hidden=r.rows.length>0;
+  }catch(error){$('status').textContent=error.message}
+  finally{$('run').disabled=false}
+}
+function fillDeckList(listId, names){const list=$(listId);list.replaceChildren();for(const name of names){if(!name)continue;const option=el('option');option.value=name;list.append(option)}}
+SS.api('roster').then(r=>{const names=[...new Set((r.people||[]).filter(p=>p.observed&&p.deck_type).map(p=>p.deck_type))].sort((a,b)=>a.localeCompare(b,'zh-CN'));fillDeckList('deck-list',names);fillDeckList('opdeck-list',names)}).catch(()=>{});
+$('run').onclick=run;
+run();
+</script>
+</body>
+</html>

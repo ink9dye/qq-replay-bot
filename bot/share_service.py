@@ -108,6 +108,9 @@ def build_tunnel(config: dict, app):
         return None
     data_dir = Path(str(config.get('data_dir') or (ROOT / 'data')))
     mode = str(share_cfg.get('tunnel_mode') or 'ssh').strip().lower()
+    if mode == 'tailscale':
+        from .tailscale_tunnel import TailscaleTunnel
+        return TailscaleTunnel(ROOT, data_dir, app.local_base(), share_cfg)
     if mode == 'cloudflare':
         from .cloudflare_tunnel import CloudflareTunnel
         return CloudflareTunnel(ROOT, data_dir, app.local_base(), share_cfg)

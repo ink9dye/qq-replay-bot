@@ -285,6 +285,26 @@ class CardSearch:
         self.sessions[str(user)] = {"query": value, "rows": cards, "offset": 0, "next": 0, "time": self.clock()}
         return "\n".join(lines)
 
+    def api_has_exact_name(self, query):
+        """百鸽 API 中是否存在与 query 归一化后完全同名的卡。"""
+        wanted = normalize(query)
+        if not wanted:
+            return False
+        try:
+            result = self._request("?" + urlencode({"search": query, "start": 0}))
+        except (OSError, ValueError, TypeError, TimeoutError):
+            return False
+        rows = result.get("result") if isinstance(result, dict) else None
+        if not isinstance(rows, list):
+            return False
+        keys = ("id", "cid", "cn_name", "sc_name", "md_name", "nwbbs_n", "cnocg_n", "jp_name", "en_name")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if any(normalize(str(row.get(key) or "")) == wanted for key in keys):
+                return True
+        return False
+
     def _alias(self, query):
         aliases = {"灰": "灰流丽", "泡影": "无限泡影", "g": "增殖的G"}
         if self.alias_path.exists():

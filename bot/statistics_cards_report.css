@@ -17,6 +17,14 @@
 .suggest-item.active,.suggest-item:hover{background:var(--p10-accent-soft)}
 
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.preset-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;margin-top:10px}
+.preset-button{border:1px solid #cfdacb;background:#fff;color:#4b5f50;border-radius:999px;padding:6px 13px;
+  font-size:13px;cursor:pointer}
+.preset-button:hover{background:#f3f6ef;border-color:#9fae9a}
+.preset-clear{border:1px solid #cfdacb;background:#fff;color:#4b5f50;border-radius:999px;padding:6px 13px;
+  font-size:13px;cursor:pointer}
+.preset-clear:hover{background:#f3f6ef;border-color:#9fae9a}
+.preset-note{color:var(--p10-muted);font-size:12px}
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--p10-accent-soft);border:1px solid #cfdacb;
   border-radius:999px;padding:4px 6px 4px 12px;font-size:13px;max-width:100%;overflow-wrap:anywhere}
 .chip-x{border:none;background:transparent;color:#2f4a3a;font-size:15px;line-height:1;padding:2px 6px;cursor:pointer}
@@ -63,14 +71,17 @@
 .cards-table td.name-cell a{color:inherit;text-decoration:underline;text-underline-offset:2px}
 .cards-table td.code-cell{color:var(--p10-muted);font-size:13px}
 .cards-table td.rate{font-weight:600}
+.cards-table td.rate.higher{color:#2e7d4f}
+.cards-table td.rate.lower{color:#b23a2a}
+.cards-table td.rate.uncertain{color:#173529}
 .cards-table tbody tr:hover{background:#f7f9f4}
 
 .interval-cell{min-width:170px}
 .interval-text{display:block;font-variant-numeric:tabular-nums;font-size:13px;color:var(--p10-muted)}
 .interval-track{position:relative;display:block;height:8px;margin-top:6px;background:#eef1ea;border-radius:4px}
 .interval-band{position:absolute;top:0;bottom:0;background:#a9c7b6;border-radius:4px}
-.interval-point{position:absolute;top:-2px;width:2px;height:12px;background:#275f45}
-.interval-base{position:absolute;top:-2px;width:1px;height:12px;background:#b0722f}
+.interval-point{position:absolute;top:-3px;width:2px;height:14px;background:#275f45;box-shadow:0 0 0 1px #fff;z-index:2}
+.interval-base{position:absolute;top:-4px;width:2px;height:16px;background:#3d4a41;box-shadow:0 0 0 1px #fff;z-index:3}
 
 @media (max-width:1024px){
   .card-report{padding:0 16px 32px}

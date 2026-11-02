@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="/statistics/assets/statistics_theme.css">
 <link rel="stylesheet" href="/statistics/assets/statistics_nav.css">
 <link rel="stylesheet" href="/statistics/assets/statistics_cards_report.css">
+<link rel="stylesheet" href="/statistics/assets/statistics_cards_report_combo.css">
 </head>
 <body>
 <nav class="main-nav" aria-label="主要功能"><a href="/statistics">玩家排名</a><a href="/statistics/cards-report" aria-current="page">卡片统计</a><a href="/statistics/cards-extra">额外卡</a><a href="/statistics/matrix">卡组胜率</a><a href="/statistics/recordings">录像筛选</a></nav>
@@ -23,6 +24,17 @@
     <input id="card-input" type="text" role="combobox" aria-expanded="false" aria-controls="suggest"
            aria-autocomplete="list" autocomplete="off" maxlength="80" placeholder="例如 灰流丽 或 14558127">
     <ul id="suggest" role="listbox" aria-label="卡片候选" hidden></ul>
+    <div class="preset-row"><button id="handtrap-preset" type="button" class="preset-button" title="一键加入屋敷童、灰流丽、尼比鲁、遮蒙者、泡影、G、欢聚友伴三张、圣枪两张、朔夜时雨、骷髅大王、灾祸的根绝者">手坑套餐</button><button id="nibiru-combo-preset" type="button" class="preset-button" title="加入组合：无限泡影+原始生命态 尼比鲁、效果遮蒙者+原始生命态 尼比鲁">泡陨套餐</button><button id="board-breaker-preset" type="button" class="preset-button" title="一键加入决斗者之力、大义贼、宇宙性飓风、超融合、圣冠、怠慢之壶、落胤与圣女、心灵防护罩、颉颃胜负、羽毛扫、撒旦老人、球体形、熔岩魔神">解牌套餐</button><button id="combo-open" type="button" class="preset-button">设定组合</button><button id="handtrap-clear" type="button" class="preset-clear">清空</button></div>
+    <div id="combo-editor" class="combo-editor" hidden>
+      <div class="combo-editor-head"><strong>设定组合</strong><span>AND：组合内每张卡都要在初始手牌中</span></div>
+      <label for="combo-input">组合卡片（至少 2 张）</label>
+      <p class="hint" id="combo-hint">输入卡名或卡号，从下方候选选择。已选 0 张。</p>
+      <input id="combo-input" type="text" role="combobox" aria-expanded="false" aria-controls="combo-suggest" autocomplete="off" maxlength="80" placeholder="例如 灰流丽 或 14558127">
+      <ul id="combo-suggest" role="listbox" aria-label="组合卡片候选" hidden></ul>
+      <div id="combo-chips" class="chips" aria-live="polite"></div>
+      <div class="combo-actions"><button id="combo-run" type="button" class="preset-button">确认组合</button><button id="combo-cancel" type="button" class="preset-clear">取消</button><span id="combo-status" class="note"></span></div>
+    </div>
+    <div id="combo-defs" class="combo-defs" aria-live="polite"></div>
     <div id="chips" class="chips" aria-live="polite"></div>
   </div>
 
@@ -87,8 +99,7 @@
       </select>
     </label>
 
-    <label class="check"><input id="internal" type="checkbox"> 仅双方都在前100（前100内战）</label>
-  </div>
+      </div>
 
   <div class="actions">
     <button id="run" type="submit">查询</button>
@@ -100,6 +111,7 @@
 
 <section id="result" aria-live="polite"></section>
 </main>
+
 <script src="/statistics/assets/statistics_samples.js"></script>
 <script src="/statistics/assets/statistics_cards_report.js"></script>
 </body>

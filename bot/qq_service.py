@@ -24,6 +24,14 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     fault = (log_dir / 'qq-faulthandler.log').open('a', encoding='utf-8')
     faulthandler.enable(file=fault, all_threads=True)
+    import sys as _sys
+    import threading as _threading
+    import traceback as _traceback
+    def _excepthook(exc_type, exc, tb):
+        _traceback.print_exception(exc_type, exc, tb, file=_sys.stderr)
+    _sys.excepthook = _excepthook
+    _threading.excepthook = lambda args: _traceback.print_exception(
+        args.exc_type, args.exc_value, args.exc_traceback, file=_sys.stderr)
     set_console_title("QQ机器人 - bot.qq_service")
     lock = StartupLock(ROOT, LOCK_FILE)
     if not lock.acquire():

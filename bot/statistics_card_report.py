@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .card_search import card_name
 from .card_statistics import Filters, win_rate
-from .card_identity import facts as identity_facts, identity
+from .card_identity import facts as identity_facts, identity, reference as identity_reference
 from .card_series import annotate, reference as series_reference
 from .statistics_card_names import index
 from .top100 import eligible_views
@@ -70,6 +70,23 @@ def parse_codes(values):
     if len(unique) > MAX_CARDS:
         raise ValueError('一次最多比较 %d 张卡。' % MAX_CARDS)
     return tuple(unique)
+
+
+def parse_combos(values):
+    combos = []
+    for value in values or ():
+        parts = [part.strip() for part in str(value).split(',') if part.strip()]
+        if len(parts) < 2 or len(parts) > 8:
+            raise ValueError('组合需要 2—8 张卡。')
+        codes = []
+        for part in parts:
+            if not part.isdigit() or len(part) > 10 or not 0 < int(part) <= 4294967295:
+                raise ValueError('组合卡号无效。')
+            codes.append(int(part))
+        combos.append(tuple(dict.fromkeys(codes)))
+    if len(combos) > 4:
+        raise ValueError('一次最多设置 4 个组合。')
+    return tuple(combos)
 
 
 def parse_metric(value):
@@ -213,9 +230,11 @@ def _merge_fact_rows(rows, partition):
 
 
 def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshold='1',
-          min_games=0, sort='people', partition='auto', limit=MAX_ROWS, exclude=(), phases=(), phase_none=False):
+          min_games=0, sort='people', partition='auto', limit=MAX_ROWS, exclude=(), phases=(), phase_none=False,
+          combos=()):
     codes = parse_codes(codes)
     exclude = parse_codes(exclude)
+    combos = parse_combos(combos)
     phases = parse_phases(phases)
     metric = parse_metric(metric)
     sort_key = parse_sort(sort)
@@ -236,11 +255,18 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     db.executemany('INSERT OR IGNORE INTO _report_selected(digest,player) VALUES(?,?)',
                    [(row['digest'],row['player']) for row in selected])
     names = index(Path(db.execute('PRAGMA database_list').fetchone()[2]).parent)
+    ident_index, ident_version, ident_status = identity_reference(db)
+
+    def identify(code):
+        canonical, codes = ident_index.get(code, (code, [code]))
+        return dict(requested_card=code, canonical_card=canonical, codes=codes,
+                    status=ident_status if code in ident_index or ident_status == 'invalid_reference_exact_only' else 'exact',
+                    reference_version=ident_version)
     # 起手不存在：先筛出可确证"共同没有这些牌"的小局，再在筛选后的小局上算各卡分母。
     # 未知/不完整起手不算不存在；没取到事实也按未知处理，不走"整局没抽到"的替代口径。
     opening = {}
     for code in exclude:
-        ident = identity(db, code)
+        ident = identify(code)
         marks = ','.join('?' for _ in ident['codes'])
         parts = {row[0] for row in db.execute(
             'SELECT DISTINCT partition FROM stat_build_cards WHERE code IN (%s)' % marks, list(ident['codes']))}
@@ -267,7 +293,7 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     roster = {key: value for key, value in basis['roster'].items() if key != 'members'}
     roster['member_count'] = len(basis['roster']['members'])
 
-    if codes:
+    if codes or combos:
         targets = codes
     else:
         seen = set()
@@ -275,7 +301,7 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
             seen.update(_build_codes(db, row['build']))
         targets = sorted(seen)
 
-    idents = {code: identity(db, code) for code in targets}
+    idents = {code: identify(code) for code in targets}
     parts = {code: _partition_for(code, names, wanted_partition) for code in targets}
     # 一次取本次选中构筑的卡表（连接内临时表），避免每张卡查一次 stat_build_cards。
     db.execute('DROP TABLE IF EXISTS temp._report_builds')
@@ -354,6 +380,84 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
             interval=interval(rate['wins'], games),
             sample_percentage=100 * games / base['denominator'] if base['denominator'] else None,
         ))
+
+    # 组合行：所有组合卡都在初始手牌中（AND）；组合卡不在卡组按已知 0 处理。
+    combo_rows = []
+    for combo_index, combo in enumerate(combos, 1):
+        groups = []
+        seen_groups = set()
+        for code in combo:
+            canonical, members = ident_index.get(code, (code, [code]))
+            if canonical in seen_groups:
+                continue
+            seen_groups.add(canonical)
+            groups.append((canonical, tuple(sorted(set(members)))))
+        group_builds = []
+        initial_maps = []
+        for canonical, members in groups:
+            build_copies = {}
+            for member in members:
+                for build, copies in copies_lookup.get((member, 'main'), {}).items():
+                    if copies > 0:
+                        build_copies[build] = 1
+            group_builds.append(build_copies)
+            values = {}
+            for member in members:
+                for fact in facts_by_code.get((member, 'main'), ()):
+                    if fact.get('initial_count') is None:
+                        continue
+                    key = (fact['digest'], fact['player'])
+                    values[key] = max(values.get(key, 0), int(fact['initial_count']))
+            initial_maps.append(values)
+        hits = []
+        denominator = 0
+        unknown = 0
+        for row in selected:
+            key = (row['digest'], row['player'])
+            values = []
+            known = True
+            for position, _ in enumerate(groups):
+                if row['build'] not in group_builds[position]:
+                    values.append(0)
+                    continue
+                value = initial_maps[position].get(key)
+                if value is None:
+                    known = False
+                    break
+                values.append(value)
+            if not known:
+                unknown += 1
+                continue
+            denominator += 1
+            if all(value > 0 for value in values):
+                hits.append(row)
+        rate = win_rate(hits)
+        games = rate['denominator']
+        members = [ident_index.get(code, (code, [code]))[0] for code in combo]
+        labels = []
+        for code in combo:
+            info = names.get(str(code))
+            labels.append(dict(code=code, name=card_name(info) if info else '卡名暂缺'))
+        combo_rows.append(dict(
+            code=-combo_index,
+            name='组合%d' % combo_index,
+            partition='combo',
+            is_combo=True,
+            combo_members=labels,
+            people=len({row['player'] for row in hits}),
+            games=games,
+            wins=rate['wins'],
+            losses=rate['losses'],
+            draws=rate['draws'],
+            unknown=unknown,
+            rate=rate['percentage'],
+            interval=interval(rate['wins'], games),
+            sample_percentage=100 * games / base['denominator'] if base['denominator'] else None,
+            opening_hits=len(hits),
+            opening_denominator=denominator,
+            opening_rate=100 * len(hits) / denominator if denominator else None,
+        ))
+    rows.extend(combo_rows)
 
     # 同名异画只保留卡号最小的那一行；统计已按 identity 合并，直接去重即可。
     by_name = {}

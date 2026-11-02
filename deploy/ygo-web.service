@@ -1,0 +1,17 @@
+[Unit]
+Description=YGO statistics web
+After=network-online.target ygo-collector.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ygo
+WorkingDirectory=/opt/ygobot
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m bot.statistics_server --root /opt/ygobot --port 8788
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

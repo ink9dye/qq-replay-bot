@@ -4,6 +4,8 @@ import hmac
 import json
 import secrets
 import sqlite3
+import threading
+import time
 from contextlib import closing
 from http.cookies import SimpleCookie, CookieError
 from ipaddress import ip_address
@@ -29,6 +31,8 @@ def owner_secret(path):
 class StatisticsPortal:
     def __init__(self, database, replay_root, clock, secret):
         self.database=Path(database);self.replay_root=Path(replay_root);self.clock=clock;self.secret=secret
+        self._query_cache={}
+        self._query_cache_lock=threading.Lock()
         from .player_history import PlayerHistory
         self.player_history=PlayerHistory()
         from .statistics_pt import InteractiveHistory
@@ -61,7 +65,7 @@ class StatisticsPortal:
             target='/statistics/deck-naming' if parse_qs(parsed.query).get('next')==['/statistics/deck-naming'] else '/statistics'
             return self._reply(303,'',extra={'Location':target,'Set-Cookie':f'{COOKIE}={value}; Path=/statistics; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}'})
         if not self._authenticated(headers.get('Cookie')):return self._reply(403,'请使用本机“打开统计页面”入口。')
-        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js'):
+        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
             return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
         if parts==['statistics']:
@@ -80,7 +84,7 @@ class StatisticsPortal:
             def run(db):
                 return recordings(db,self.replay_root,float(self.clock()),args)
             try:
-                return self._query_reply(run)
+                return self._cached_query_reply(('recordings',parsed.query),run)
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','recording-zip']:
@@ -253,6 +257,28 @@ class StatisticsPortal:
                     db,self.replay_root,float(self.clock()),filters=filters,phases=phases,phase_none=phase_none,sort=sort)))
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
+        if parts==['statistics','api','card-combo']:
+            from .statistics_card_report import Filters
+            from .statistics_combo_report import query as combo_report
+            args=parse_qs(parsed.query,keep_blank_values=True)
+            try:
+                from .statistics_rank_scope import parse_ranges,scoped_query
+                ranges=parse_ranges(args)
+                values=[[json.loads(v) for v in args.get(k,[])] for k in ('deck','opponent','series','opponent_series')]
+                if any(len(v)>100 or any(s is not None and (not isinstance(s,str) or not s.strip() or len(s)>128) for s in v) for v in values):
+                    raise ValueError()
+                seat=args.get('seat',['all'])[0]
+                if seat not in ('all','first','second'):raise ValueError()
+                combo=args.get('combo',[])
+            except (ValueError,TypeError):
+                return self._reply(400,json.dumps({'error':'组合筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1')
+            try:
+                return self._cached_query_reply(('card-combo',parsed.query),lambda db:scoped_query(ranges,lambda:combo_report(
+                    db,self.replay_root,float(self.clock()),combo,filters=filters,
+                    phases=args.get('phase',[]),phase_none=args.get('phase_none',['0'])[0]=='1')))
+            except ValueError as exc:
+                return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','api','card-report']:
             from .card_statistics import Filters
             from .statistics_card_report import query as card_report
@@ -269,12 +295,13 @@ class StatisticsPortal:
                 return self._reply(400,json.dumps({'error':'筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
             filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1')
             try:
-                return self._query_reply(lambda db:scoped_query(ranges,lambda:card_report(
+                return self._cached_query_reply(('card-report',parsed.query),lambda db:scoped_query(ranges,lambda:card_report(
                     db,self.replay_root,float(self.clock()),codes=codes,filters=filters,
                     metric=args.get('metric',['drawn'])[0],threshold=args.get('threshold',['1'])[0],
                     min_games=args.get('min',['0'])[0],sort=args.get('sort',['people'])[0],
                     partition=args.get('partition',['auto'])[0],limit=args.get('limit',['500'])[0],
-                    exclude=args.get('exclude',[]),phases=args.get('phase',[]),phase_none=args.get('phase_none',['0'])[0]=='1')))
+                    exclude=args.get('exclude',[]),phases=args.get('phase',[]),phase_none=args.get('phase_none',['0'])[0]=='1',
+                    combos=args.get('combo',[]))))
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts in (['statistics','cards'],['statistics','matrix']):
@@ -427,6 +454,26 @@ class StatisticsPortal:
                 return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
             except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')
         return self._reply(404,'找不到此统计页面。')
+
+    def _cached_query_reply(self,key,callback,ttl=10.0):
+        """相同条件 + 相同数据库文件版本时复用完整响应；DB 一写就失效。"""
+        try:
+            stat=self.database.stat();stamp=(stat.st_mtime_ns,stat.st_size)
+        except OSError:
+            return self._query_reply(callback)
+        now=time.monotonic()
+        with self._query_cache_lock:
+            hit=self._query_cache.get(key)
+            if hit and hit[0]==stamp and now-hit[1]<=ttl:
+                return hit[2]
+        result=self._query_reply(callback)
+        if result[0]==200:
+            with self._query_cache_lock:
+                self._query_cache[key]=(stamp,now,result)
+                if len(self._query_cache)>32:
+                    oldest=min(self._query_cache,key=lambda k:self._query_cache[k][1])
+                    self._query_cache.pop(oldest,None)
+        return result
 
     def _query_reply(self,callback):
         try:

@@ -154,6 +154,137 @@ const excludes = createPicker({
   hintText: '起手不含这些卡；多张时要求全部都不在起手（AND）。起手未知或不完整的小局不计入。已排除 {n} 张。',
 });
 
+/* 常用手坑/圣枪套餐：与截图清单一致，按卡号加入，已选不会重复。 */
+const HAND_TRAP_PRESET = [
+  { code: 73642296, name: '屋敷童' },
+  { code: 14558127, name: '灰流丽' },
+  { code: 27204311, name: '原始生命态 尼比鲁' },
+  { code: 97268402, name: '效果遮蒙者' },
+  { code: 10045474, name: '无限泡影' },
+  { code: 23434538, name: '增殖的G' },
+  { code: 42141493, name: '欢聚友伴·茸茸长尾山雀' },
+  { code: 84192580, name: '欢聚友伴·抖抖海月水母' },
+  { code: 34267821, name: '古遗物-圣枪' },
+  { code: 87126721, name: '欢聚友伴·喵喵豹猫' },
+  { code: 27243130, name: '禁忌的圣枪' },
+  { code: 52038441, name: '朔夜时雨' },
+  { code: 67750322, name: '骷髅大王' },
+  { code: 101307021, name: '灾祸的根绝者' },
+];
+const presetButton = $('handtrap-preset');
+if (presetButton) {
+  presetButton.addEventListener('click', () => {
+    for (const card of HAND_TRAP_PRESET) targets.add(card);
+  });
+}
+const NIBIRU_COMBO_PRESET = [
+  [{ code: 10045474, name: '无限泡影' }, { code: 27204311, name: '原始生命态 尼比鲁' }],
+  [{ code: 97268402, name: '效果遮蒙者' }, { code: 27204311, name: '原始生命态 尼比鲁' }],
+];
+const BOARD_BREAKER_PRESET = [
+  { code: 101307067, name: '决斗者之力' },
+  { code: 24203749, name: '天下独步之大义贼' },
+  { code: 2729965, name: '宇宙性飓风' },
+  { code: 48130397, name: '超融合' },
+  { code: 98829635, name: '禁忌的圣冠' },
+  { code: 98476659, name: '怠慢之壶' },
+  { code: 30271097, name: '落胤与圣女' },
+  { code: 66247039, name: '神圣心灵防护罩 -心灵之力-' },
+  { code: 15693423, name: '颉颃胜负' },
+  { code: 18144506, name: '鹰身女妖的羽毛扫' },
+  { code: 46565218, name: '撒旦老人' },
+  { code: 10000080, name: '拉之翼神龙-球体形' },
+  { code: 102380, name: '熔岩魔神' },
+];
+const boardPresetButton = $('board-breaker-preset');
+if (boardPresetButton) {
+  boardPresetButton.addEventListener('click', () => {
+    for (const card of BOARD_BREAKER_PRESET) targets.add(card);
+  });
+}
+const clearButton = $('handtrap-clear');
+if (clearButton) clearButton.addEventListener('click', () => {
+  targets.reset();
+  comboDefs.length = 0;
+  renderComboDefs();
+});
+
+const comboPicker = createPicker({
+  input: 'combo-input', list: 'combo-suggest', chips: 'combo-chips', hint: 'combo-hint',
+  hintText: '至少选 2 张，起手必须同时抓到（AND）。已选 {n} 张。',
+});
+const comboDefs = [];
+
+function renderComboDefs() {
+  const box = $('combo-defs');
+  box.replaceChildren();
+  comboDefs.forEach((combo, index) => {
+    const chip = el('span', undefined, 'combo-chip');
+    const names = combo.cards.map(card => card.name || ('#' + card.code)).join(' + ');
+    chip.title = names;
+    chip.append(el('span', '组合' + (index + 1) + '：' + names));
+    const remove = el('button', '×');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', '移除组合' + (index + 1));
+    remove.onclick = () => {
+      comboDefs.splice(index, 1);
+      renderComboDefs();
+    };
+    chip.append(remove);
+    box.append(chip);
+  });
+}
+
+$('combo-open').onclick = () => {
+  const editor = $('combo-editor');
+  editor.hidden = !editor.hidden;
+  if (!editor.hidden) $('combo-input').focus();
+};
+$('combo-cancel').onclick = () => {
+  $('combo-editor').hidden = true;
+  $('combo-status').textContent = '';
+};
+$('combo-run').onclick = () => {
+  const codes = comboPicker.codes();
+  if (codes.length < 2) {
+    $('combo-status').textContent = '组合至少需要 2 张卡。';
+    return;
+  }
+  if (comboDefs.length >= 4) {
+    $('combo-status').textContent = '最多设置 4 个组合。';
+    return;
+  }
+  comboDefs.push({
+    codes: [...codes],
+    cards: [...comboPicker.cards].map(([code, name]) => ({ code, name })),
+  });
+  renderComboDefs();
+  comboPicker.reset();
+  $('combo-status').textContent = '';
+  $('combo-editor').hidden = true;
+};
+
+function addComboCards(cards) {
+  const codes = cards.map(card => card.code);
+  if (comboDefs.some(combo => combo.codes.join(',') === codes.join(','))) return false;
+  if (comboDefs.length >= 4) return null;
+  comboDefs.push({ codes: [...codes], cards: cards.map(card => ({ ...card })) });
+  return true;
+}
+$('nibiru-combo-preset').onclick = () => {
+  let added = 0;
+  for (const pair of NIBIRU_COMBO_PRESET) {
+    const result = addComboCards(pair);
+    if (result === null) {
+      $('combo-status').textContent = '最多设置 4 个组合。';
+      break;
+    }
+    if (result) added += 1;
+  }
+  renderComboDefs();
+  if (added) $('combo-status').textContent = `已加入 ${added} 个组合，点“查询”查看。`;
+};
+
 /* ---------- 条件收集与还原 ---------- */
 
 function phaseValues() {
@@ -164,6 +295,7 @@ function collect() {
   const p = new URLSearchParams();
   for (const code of targets.codes()) p.append('code', String(code));
   for (const code of excludes.codes()) p.append('exclude', String(code));
+  for (const combo of comboDefs) p.append('combo', combo.codes.join(','));
   const deck = $('deck').value.trim();
   const opdeck = $('opdeck').value.trim();
   if (deck) p.append('deck', JSON.stringify(deck));
@@ -178,7 +310,6 @@ function collect() {
   p.append('sort', $('sort').value);
   p.append('self_range', $('self_range').value);
   p.append('opponent_range', $('opponent_range').value);
-  if ($('internal').checked) p.append('internal', '1');
   return p;
 }
 
@@ -268,6 +399,7 @@ function intervalCell(row, baseRate) {
       const base = el('b', undefined, 'interval-base');
       base.style.left = baseRate.toFixed(2) + '%';
       track.append(base);
+      cell.title = `95% 区间 ${(value[0] * 100).toFixed(1)}–${(value[1] * 100).toFixed(1)}%；点估计 ${typeof row.rate === 'number' ? row.rate.toFixed(1) : '—'}%；基准 ${baseRate.toFixed(1)}%`;
     }
     cell.append(track);
   }
@@ -324,20 +456,38 @@ function render(data) {
   for (const row of data.rows) {
     const tr = el('tr');
     const nameCell = rowCell('', 'name-cell');
-    const link = el('a', row.name);
-    const params = new URLSearchParams({
-      code: String(row.code), partition: row.partition || 'main',
-      first: (data.filters && data.filters.seat) || 'all',
-      self_range: scope.self_range || '100', opponent_range: scope.opponent_range || 'all',
-    });
-    const decks = (data.filters && data.filters.deck) || [];
-    if (decks.length === 1) params.set('deck', decks[0]);
-    link.href = '/statistics/cards?' + params.toString();
-    nameCell.append(link);
-    tr.append(nameCell, rowCell('#' + row.code, 'code-cell'),
+    if (row.is_combo) {
+      tr.classList.add('combo-row');
+      const memberNames = (row.combo_members || []).map(card => card.name).join(' + ');
+      const title = el('div', row.name + (memberNames ? '：' + memberNames : ''));
+      title.title = memberNames;
+      const rateText = row.opening_rate === null || row.opening_rate === undefined
+        ? '起手率 —' : `起手率 ${row.opening_rate.toFixed(1)}%（${row.opening_hits} / ${row.opening_denominator}）`;
+      nameCell.append(title, el('span', rateText + (row.unknown ? `，未知 ${row.unknown}` : ''), 'combo-table-note'));
+    } else {
+      const link = el('a', row.name);
+      const params = new URLSearchParams({
+        code: String(row.code), partition: row.partition || 'main',
+        first: (data.filters && data.filters.seat) || 'all',
+        self_range: scope.self_range || '100', opponent_range: scope.opponent_range || 'all',
+      });
+      const decks = (data.filters && data.filters.deck) || [];
+      if (decks.length === 1) params.set('deck', decks[0]);
+      link.href = '/statistics/cards?' + params.toString();
+      nameCell.append(link);
+    }
+    const rateCell = rowCell(percent(row.rate), 'num rate');
+    const interval = Array.isArray(row.interval) ? row.interval : null;
+    if (baseRate !== null && interval && interval.length === 2) {
+      const low = interval[0] * 100, high = interval[1] * 100;
+      rateCell.classList.add(low > baseRate ? 'higher' : high < baseRate ? 'lower' : 'uncertain');
+    } else {
+      rateCell.classList.add('uncertain');
+    }
+    tr.append(nameCell, rowCell(row.is_combo ? '组合' : '#' + row.code, 'code-cell'),
       rowCell(String(row.people), 'num'), rowCell(String(row.games), 'num'),
       rowCell(row.wins + ' / ' + row.losses + ' / ' + row.draws, 'num'),
-      rowCell(percent(row.rate), 'num rate'),
+      rateCell,
       intervalCell(row, baseRate),
       rowCell(row.sample_percentage === null ? '—' : row.sample_percentage.toFixed(2) + '%', 'num'));
     body.append(tr);
@@ -345,7 +495,8 @@ function render(data) {
   table.append(body);
   wrap.append(table);
   panel.append(wrap);
-  panel.append(el('p', '区间为 Wilson 95%，只描述抽样不确定性；样本占比 = 该卡小局数 / 本次基准小局数。', 'note'));
+  panel.append(el('p', '区间为 Wilson 95% 置信区间；样本占比 = 该卡小局数 / 本次基准小局数。胜率颜色：绿 = 区间整体高于基准，红 = 区间整体低于基准，黑 = 区间跨基准或无数据；区间条中竖线为胜率，灰线为基准。', 'note'));
+  panel.append(el('p', '组合行：起手率 = 同时抓到组合 / 有完整初始手牌记录的视角；胜率 = 组合起手后的小局胜率。', 'note'));
   box.append(panel);
   $('export').disabled = false;
   $('status').textContent = '查询完成：' + data.rows.length + ' 行（共 ' + data.total + ' 行达到门槛）。';
@@ -445,7 +596,6 @@ function resetFields() {
   $('threshold').value = '1';
   $('min').value = '0';
   $('sort').value = 'rate';
-  $('internal').checked = false;
   for (const box of document.querySelectorAll('input[name="phase"]')) box.checked = true;
   for (const button of document.querySelectorAll('.tag[aria-pressed="true"]')) button.setAttribute('aria-pressed', 'false');
 }
@@ -492,7 +642,6 @@ async function restore() {
   if (params.get('threshold') !== null) $('threshold').value = params.get('threshold');
   if (params.get('min') !== null) $('min').value = params.get('min');
   if (params.get('sort')) $('sort').value = params.get('sort');
-  $('internal').checked = params.get('internal') === '1';
   await run({ push: false });
   // 用响应里的卡名补全标签，避免一直显示"卡号 xxx"。
   if (state.result && state.result.rows) {
@@ -519,7 +668,7 @@ window.addEventListener('hashchange', () => {
 });
 $('phaseAll').onclick = () => { for (const box of document.querySelectorAll('input[name="phase"]')) box.checked = true; $('status').textContent = '已全选局面，点查询生效。'; };
 $('phaseNone').onclick = () => { for (const box of document.querySelectorAll('input[name="phase"]')) box.checked = false; $('status').textContent = '已取消全部局面（查询将没有结果），点查询生效。'; };
-for (const id of ['deck', 'opdeck', 'metric', 'self_range', 'opponent_range', 'threshold', 'min', 'sort', 'internal']) {
+for (const id of ['deck', 'opdeck', 'metric', 'self_range', 'opponent_range', 'threshold', 'min', 'sort']) {
   $(id).addEventListener('change', () => { $('status').textContent = '条件已改，点查询生效。'; });
 }
 

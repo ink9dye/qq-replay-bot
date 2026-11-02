@@ -123,6 +123,11 @@ class Store:
         link_columns = {row[1] for row in self._db.execute('PRAGMA table_info(share_links)')}
         if 'deck_replay_ids_json' not in link_columns:
             self._db.execute('ALTER TABLE share_links ADD COLUMN deck_replay_ids_json TEXT')
+        if 'revoked_at' not in link_columns:
+            self._db.execute('ALTER TABLE share_links ADD COLUMN revoked_at REAL')
+        stats_columns = {row[1] for row in self._db.execute('PRAGMA table_info(stats_links)')}
+        if 'revoked_at' not in stats_columns:
+            self._db.execute('ALTER TABLE stats_links ADD COLUMN revoked_at REAL')
         self._commit()
 
         from .statistics_facts import initialize
@@ -579,7 +584,66 @@ class Store:
             "deck_replay_ids": json.loads(row['deck_replay_ids_json'] if row['deck_replay_ids_json'] is not None
                                           else row['replay_ids_json']),
             "range_start": row["range_start"],
+            "revoked_at": row["revoked_at"] if "revoked_at" in row.keys() else None,
         }
+
+    def find_reusable_link(self, user_id: str, player: str, replay_ids: list[int],
+                           range_start: float, deck_replay_ids: list[int],
+                           min_expires_at: float) -> Optional[dict]:
+        """复用同一用户/同一分享范围且剩余有效期足够的链接。"""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM share_links WHERE user_id=? AND player=? AND revoked_at IS NULL "
+                "AND expires_at>=? ORDER BY created_at DESC LIMIT 20",
+                (str(user_id), player, float(min_expires_at))).fetchall()
+        wanted = json.dumps([int(item) for item in replay_ids])
+        wanted_deck = json.dumps([int(item) for item in deck_replay_ids])
+        for row in rows:
+            try:
+                if (row['replay_ids_json'] == wanted
+                        and (row['deck_replay_ids_json'] or row['replay_ids_json']) == wanted_deck
+                        and float(row['range_start']) == float(range_start)):
+                    return {
+                        "token": row['token'], "user_id": row['user_id'], "player": row['player'],
+                        "created_at": row['created_at'], "expires_at": row['expires_at'],
+                        "replay_ids": json.loads(row['replay_ids_json']),
+                        "deck_replay_ids": json.loads(row['deck_replay_ids_json'] or row['replay_ids_json']),
+                        "range_start": row['range_start'],
+                        "revoked_at": row['revoked_at'],
+                    }
+            except (KeyError, ValueError, TypeError):
+                continue
+        return None
+
+    def find_reusable_stats_link(self, user_id: str, min_expires_at: float) -> Optional[dict]:
+        with self._lock:
+            if self.readonly:
+                try:
+                    self._db.execute('COMMIT')
+                except sqlite3.OperationalError:
+                    pass
+                self._db.execute('BEGIN')
+            row = self._db.execute(
+                "SELECT * FROM stats_links WHERE user_id=? AND revoked_at IS NULL "
+                "AND expires_at>=? ORDER BY created_at DESC LIMIT 1",
+                (str(user_id), float(min_expires_at))).fetchone()
+        return dict(row) if row else None
+
+    def revoke_link(self, token: str, revoked_at: float) -> bool:
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE share_links SET revoked_at=? WHERE token=? AND revoked_at IS NULL",
+                (float(revoked_at), token))
+            self._commit()
+        return cursor.rowcount > 0
+
+    def revoke_stats_link(self, token: str, revoked_at: float) -> bool:
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE stats_links SET revoked_at=? WHERE token=? AND revoked_at IS NULL",
+                (float(revoked_at), token))
+            self._commit()
+        return cursor.rowcount > 0
 
     def insert_stats_link(self, token: str, user_id: str, created_at: float, expires_at: float) -> None:
         with self._lock:
@@ -591,6 +655,13 @@ class Store:
 
     def get_stats_link(self, token: str) -> Optional[dict]:
         with self._lock:
+            if self.readonly:
+                # 与 get_link 同理：QQ 进程刚写入的统计链接必须刷新只读快照才可见。
+                try:
+                    self._db.execute('COMMIT')
+                except sqlite3.OperationalError:
+                    pass
+                self._db.execute('BEGIN')
             row = self._db.execute("SELECT * FROM stats_links WHERE token=?", (token,)).fetchone()
         if not row:
             return None

@@ -4,8 +4,8 @@ import json
 import time
 from collections import Counter
 
-THRESHOLD = 0.75
-MARGIN = 0.05
+THRESHOLD = 0.85
+MARGIN = 0.08
 TABLE = 'stat_manual_decks'
 
 
@@ -139,6 +139,11 @@ def labels_for_builds(db, builds):
     for start in range(0, len(builds), 200):
         chunk = builds[start:start + 200]
         marks = ','.join('?' for _ in chunk)
+        # 只有主卡/额外都完整的构筑才允许用“相似”命名；
+        # 缺卡时两张卡也可能相似度 1.0，曾导致把半套卡直接命名。
+        complete = {row['fingerprint'] for row in db.execute(
+            'SELECT fingerprint FROM stat_builds WHERE fingerprint IN (%s) '
+            'AND main_complete=1 AND extra_complete=1' % marks, chunk)}
         cards = {}
         for row in db.execute('SELECT build,code,copies,partition FROM stat_build_cards '
                               'WHERE build IN (%s) AND copies>0' % marks, chunk):
@@ -146,6 +151,8 @@ def labels_for_builds(db, builds):
             part = 0 if row['partition'] == 'main' else 1
             cards[row['build']][part].append((int(row['code']), int(row['copies'])))
         for build in chunk:
+            if build not in complete:
+                continue
             main, extra = cards.get(build, ([], []))
             if not main:
                 continue

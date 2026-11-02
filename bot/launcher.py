@@ -254,6 +254,46 @@ def watch_roles(config: dict):
     return frozenset(str(role) for role in roles)
 
 
+def pid_alive(pid) -> bool:
+    """进程是否还在（Windows 用 OpenProcess，避免 os.kill(pid,0) 误杀）。"""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == 'nt':
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def watch_runtime_ok(data_dir) -> bool:
+    """watch 是否真的在跑：watch-status 新鲜 + pid 存活（只读，不发启动请求）。"""
+    from .watch_status import read as read_watch_status
+    payload = read_watch_status(Path(data_dir))
+    return bool(payload) and pid_alive(payload.get('pid'))
+
+
+def wait_watch_runtime(data_dir, timeout=20.0, pause=1.0) -> bool:
+    """等 watch 在 Run 后写出状态；只轮询，不启动、不重启。"""
+    deadline = time.time() + max(0.0, float(timeout))
+    while True:
+        if watch_runtime_ok(data_dir):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(pause)
+
+
 def role_process_running(root: Path, filename: str) -> bool:
     """角色锁已被占用就说明对应服务在跑；探测后立刻释放，不抢锁。"""
     probe = StartupLock(root, filename)
@@ -650,6 +690,18 @@ def main() -> None:
                         print('未完成 PyCharm 自动运行授权，请手动在 PyCharm 运行 watch.py。', flush=True)
         if role_failures:
             print('部分服务窗口未能打开：' + '、'.join(role_failures), flush=True)
+        # 兜底：PyCharm 可能"打开了 IDE 但没真正 Run"；start-all 结束时再确认一次 watch 是否在跑。
+        data_dir = Path(str(config.get('data_dir') or (ROOT / 'data')))
+        watch_timeout = 20.0 if (start_called[0] or watch_requested[0]) else 3.0
+        watch_ok = wait_watch_runtime(data_dir, timeout=watch_timeout, pause=1.0)
+        if not watch_ok:
+            print('=' * 64, flush=True)
+            print('【注意】watch（观战）没有在运行。', flush=True)
+            print('请打开 PyCharm，Run 固定配置「watch · 全部观战」（唯一入口）。', flush=True)
+            print('Run 起来后再关闭本窗口；start-all 不会在后台另起 watch。', flush=True)
+            print('=' * 64, flush=True)
+        else:
+            print('watch 已确认在运行（watch-status 新鲜、pid 存活）。', flush=True)
         if not ok:print('启动未全部完成。请按上方提示处理；窗口会保留。',flush=True)
         if job is not None:
             print('运行窗口保持中：关闭本窗口会停止 QQ/NapCat、share 和 8788，只保留 watch。', flush=True)
@@ -666,7 +718,7 @@ def main() -> None:
                 except OSError:
                     pass
                 raise SystemExit(0) from None
-        raise SystemExit(0 if ok and web_ready and not role_failures and watch_error is None else 1)
+        raise SystemExit(0 if ok and web_ready and not role_failures and watch_error is None and watch_ok else 1)
     except pycharm_link.IDEError as exc:
         # PyCharm 自动运行失败：网页、NapCat 等已经起来的服务不回滚、不杀进程。
         print(f'未能启动PyCharm观战：{exc}', flush=True)

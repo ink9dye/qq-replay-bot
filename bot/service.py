@@ -127,7 +127,7 @@ _PRIVATE_HOST_PREFIXES = ("192.168.", "10.", "127.", "172.16.", "172.17.", "172.
 def valid_public_https(base) -> str:
     """只接受"非本机/非内网的 https 地址"；其它一律返回空串（调用方回退）。"""
     text = str(base or "").strip().rstrip("/")
-    if not text.startswith("https://"):
+    if not text.startswith(("https://", "http://")):
         return ""
     try:
         host = (urlsplit(text).hostname or "").lower()
@@ -241,6 +241,7 @@ class BotService:
         self._price_quote_tasks = set()
         self._history_tasks = set()
         self._deck_cache = {}
+        self._top100_deck_candidates = {}
         self._deck_tasks = set()
         self._known_replays_at = 0.0
         self._known_replays = set()
@@ -254,6 +255,14 @@ class BotService:
     def authorized(self, user_id) -> bool:
         text = str(user_id)
         return (self.allow_all_users and text.isdigit() and int(text) > 0) or text in self.admins or text in self.users
+
+    def _statistics_allowed(self, user_id, conversation: str = "") -> bool:
+        cfg = self.config.get("statistics") or {}
+        group = conversation.split(":", 1)[1] if conversation.startswith("group:") else ""
+        if group:
+            return group in {str(x) for x in (cfg.get("allowed_groups") or [])}
+        owners = {str(x) for x in (cfg.get("private_users") or ["1278389701"])}
+        return str(user_id) in owners
 
     def default_query_rule_line(self) -> str:
         """启动时确认“未订阅默认对手前100”落在当前榜单上；名单缺失时明确说明不把未知当上榜。
@@ -486,13 +495,21 @@ class BotService:
     def handle_text(self, user_id, text: str, conversation: str = "") -> str:
         user = str(user_id)
         command = parse_command(text)
+        op = command.get("op")
+        if op == "stats_page" and not self._statistics_allowed(user, conversation):
+            return None
         if not self.authorized(user):
             if command.get("op") == "help":
-                return HELP + "\n\n你还没有使用权限，不能订阅或查看录像。"
+                text = HELP
+                if not self._statistics_allowed(user, conversation):
+                    text = "\n".join(line for line in text.splitlines() if not line.startswith("统计："))
+                return text + "\n\n你还没有使用权限，不能订阅或查看录像。"
             return "你没有使用权限，不能订阅或查看录像。"
-        op = command.get("op")
         if op == "help":
-            return HELP
+            text = HELP
+            if not self._statistics_allowed(user, conversation):
+                text = "\n".join(line for line in text.splitlines() if not line.startswith("统计："))
+            return text
         if op == "empty":
             return "请发送“帮助”查看用法。"
         if op == "error":
@@ -506,7 +523,7 @@ class BotService:
         if op == "top100_rank_build":
             return self._top100_rank_build_text(user, command["rank"])
         if op == "top100_deck":
-            return self._top100_deck_text(user, command["keyword"])
+            return self._top100_deck_text(user, command["keyword"], conversation)
         if op == "top100_pie":
             return self._top100_pie_reply()
         if op == "card_usage":
@@ -520,9 +537,10 @@ class BotService:
             return PRICE_HELP
         if op == "price_reserve":
             try:
+                source_group = conversation.split(":", 1)[1] if conversation.startswith("group:") else None
                 reservation_id = self.price_reservations.add(
                     user, command["name"], command["rarity"],
-                    command["target"], command.get("language") or "日文")
+                    command["target"], command.get("language") or "日文", source_group)
                 marked = str(user) in {str(item) for item in
                                        (self._price_cfg().get("marked_users") or [])}
                 if not marked:
@@ -554,6 +572,8 @@ class BotService:
                 return f"已取消 {count} 条卡价预定：{label}。"
             return f"没有找到这条预定：{label}。"
         if op == "stats_page":
+            if not self._statistics_allowed(user, conversation):
+                return None
             return self._stats_text(user)
         if op == "list":
             return self._list_text(user)
@@ -582,6 +602,13 @@ class BotService:
             return self._deck_build_text(user, command["player"])
         if op == "unknown":
             answer = command.get('text') or ''
+            pending_key = (conversation + ":" + user) if conversation else user
+            pending = self._top100_deck_candidates.get(pending_key)
+            if (pending and answer.isascii() and answer.isdigit()
+                    and int(answer) in pending['players']
+                    and self.clock() - pending['time'] <= 300):
+                player = pending['players'][int(answer)]
+                return self._deck_build_text(user, player)
             if self.card_extras.is_guess_answer(conversation or user, answer):
                 return self.card_extras.handle(conversation or user, 'guess_answer', answer)
             # 有查卡候选时：裸数字=选卡，next=下一页；没有候选就不抢这两句。
@@ -612,7 +639,10 @@ class BotService:
         """统计网页只读入口：2 小时 token，群里所有人可点。"""
         if not self._wait_public_url():
             return "统计页已就绪，公网分享暂未连接。请稍后再发送“统计”。"
-        link = self.share.create_stats_link(user_id, hours=2)
+        try:
+            link = self.share.create_stats_link(user_id, hours=2)
+        except Exception:
+            return "统计链接暂时生成失败，请稍后再试。"
         note = "" if link["public"] else "\n还没有配置公网地址，这个链接只能在本机打开。"
         return f"统计网页（2 小时内有效）：{link['url']}" + note
 
@@ -651,8 +681,7 @@ class BotService:
         self.index_player_replays(player)
         from .match_history import recover_sessions_from_prefix
         recover_sessions_from_prefix(self.store, self.replay_root, player)
-        if not self._wait_public_url():
-            return "构筑已保留在本机，公网分享暂未连接。请稍后再发送“构筑 玩家名”。"
+        public_ready = bool(self.share.public_base())
         now = float(self.clock())
         rows = [row for row in (self.visible_replays(user_id, player) or [])
                 if safe_replay_file(self.replay_root, row['rel_path'])]
@@ -661,12 +690,15 @@ class BotService:
                     and safe_replay_file(self.replay_root, replay['rel_path'])]
         if not deck_ids:
             return f"没有找到 {player} 最近14天的有效录像，暂时没有构筑图。"
-        link = self.share.create_link(
-            user_id, player, [row['id'] for row in rows], now - REPLAY_WINDOW_SECONDS,
-            deck_replay_ids=deck_ids,
-        )
-        if not link['public']:
-            return "还没有配置公网地址，构筑图和 YDK 链接只能在运行机器人的这台电脑上使用。"
+        try:
+            link = self.share.create_link(
+                user_id, player, [row['id'] for row in rows], now - REPLAY_WINDOW_SECONDS,
+                deck_replay_ids=deck_ids,
+            )
+        except Exception:
+            return "分享链接暂时生成失败，请稍后再试。"
+        if not link.get('public'):
+            public_ready = False
         from .statistics_build_detail import query as build_query
         with closing(sqlite3.connect(self.store.path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as db:
             db.row_factory = sqlite3.Row
@@ -676,19 +708,21 @@ class BotService:
             return f"没有找到 {player} 的有效构筑（最近14天没有可用录像）。"
         inferred = result.get('inferred_side') or {}
         include_inferred = bool(inferred.get('cards')) and not inferred.get('conflict')
-        ydk_url = link['url'].rstrip('/') + '/build-ydk' + ('?inferred=1' if include_inferred else '')
+        ydk_url = link['url'].rstrip('/') + '/build-ydk' + ('?inferred=1' if include_inferred else '') if link.get('url') else ''
         if not inferred.get('cards'):
             ydk_note = ''
         elif include_inferred:
             ydk_note = '（含推测 Side）'
         else:
             ydk_note = '（推测 Side 有冲突，未并入）'
+        ydk_line = (f"YDK：{ydk_url}{ydk_note}" if public_ready and ydk_url
+                    else "YDK：公网暂未连接，链接暂不可用（构筑图仍见下）")
         from .statistics_local_cards import picture, wait_for
         from . import deck_image
 
         image_codes = [int(card.get('code') or 0) for card in
                        (result.get('cards') or []) + ((result.get('inferred_side') or {}).get('cards') or [])]
-        wait_for(self.data_dir, image_codes, timeout=4)
+        wait_for(self.data_dir, image_codes, timeout=12)
 
         def load(code):
             found = picture(self.data_dir, code)
@@ -708,8 +742,10 @@ class BotService:
                 f"{rank_line}"
                 f"卡组：{person.get('deck_type') or '未识别'}\n"
                 f"观测小局：{format_time(recorded) if recorded else '时间未知'}\n"
-                f"YDK：{ydk_url}{ydk_note}\n"
-                f"链接最晚到期：{format_time(link['expires_at'])}（最长 {self.link_hours:g} 小时；构筑图见下）")
+                f"{ydk_line}\n"
+                f"链接最晚到期：{format_time(link['expires_at'])}（最长 {self.link_hours:g} 小时；构筑图见下）"
+                if link.get('expires_at') else
+                f"{ydk_line}\n构筑图见下")
         reply = CardReply(text, image_url)
         self._deck_cache[cache_key] = (time.monotonic(), reply)
         while len(self._deck_cache) > 32:
@@ -766,14 +802,17 @@ class BotService:
             rows = self.visible_replays(user_id, player) or []
         # 只把文件真的还在的录像算进消息和链接；清空 replays 后旧记录会自动落选。
         rows = [row for row in rows if safe_replay_file(self.replay_root, row['rel_path'])]
-        link = self.share.create_link(
-            user_id,
-            player,
-            [row["id"] for row in rows],
-            float(self.clock()) - REPLAY_WINDOW_SECONDS,
-            deck_replay_ids=[replay['id'] for replay in self.store.replays_for_player(player)
-                             if replay_in_window(replay, float(self.clock()))],
-        )
+        try:
+            link = self.share.create_link(
+                user_id,
+                player,
+                [row["id"] for row in rows],
+                float(self.clock()) - REPLAY_WINDOW_SECONDS,
+                deck_replay_ids=[replay['id'] for replay in self.store.replays_for_player(player)
+                                 if replay_in_window(replay, float(self.clock()))],
+            )
+        except Exception:
+            return "" if for_delivery else "分享链接暂时生成失败，请稍后再试。"
         note = ""
         if self.tunnel is not None and not link["public"]:
             return "" if for_delivery else "录像已保留在本机，公网分享暂未连接。请稍后再发送“录像 玩家名”查询。"
@@ -1079,8 +1118,22 @@ class BotService:
             return False
         return self.card_search.has_candidates('group:' + group + ':' + user, max_age=120)
 
+    def accept_group_top100_number(self, event, text):
+        answer = str(text or "").strip()
+        if not (answer.isascii() and answer.isdigit()):
+            return False
+        user = str(event.get("user_id") or "")
+        group = str(event.get("group_id") or "")
+        if not user or not group:
+            return False
+        key = "group:" + group + ":" + user
+        pending = self._top100_deck_candidates.get(key)
+        return bool(pending and int(answer) in pending.get("players", {}))
+
     def accept_group_extra(self, event, text):
-        return self.accept_group_guess(event, text) or self.accept_group_card_shortcut(event, text)
+        return (self.accept_group_top100_number(event, text)
+                or self.accept_group_guess(event, text)
+                or self.accept_group_card_shortcut(event, text))
 
     async def on_qq_event(self, event: dict) -> None:
         if self.qq is None:
@@ -1122,9 +1175,13 @@ class BotService:
         if parsed_command.get('op') == 'help':
             # 帮助是一条分组清单，直接发文字，不再走合并转发。
             reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+            if reply is None:
+                return
             ok = await send(receiver, reply)
         else:
             reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+            if reply is None:
+                return
             pages = getattr(reply, 'forward_cards', None)
             if pages:
                 ok = await forward(receiver, pages, event.get('self_id'))
@@ -1216,6 +1273,13 @@ class BotService:
         self.write_log(f"price_watch: 已启用，按预定逐张错峰；每张 {low/60:.0f}-{high/60:.0f} 分钟随机，"
                        f"两张之间至少隔 {float(cfg.get('min_gap_seconds', 300))/60:.0f}-"
                        f"{float(cfg.get('min_gap_max_seconds', 600))/60:.0f} 分钟")
+        emu = cfg.get('emulator') or {}
+        if emu.get('enabled') is True:
+            self.write_log("price_watch: 启动时预热 MuMu 模拟器")
+            try:
+                await asyncio.to_thread(self._ensure_price_emulator)
+            except Exception as exc:
+                self.write_log(f"price_watch: 模拟器预热失败：{exc}")
         await asyncio.sleep(delay)
         while True:
             try:
@@ -1232,7 +1296,8 @@ class BotService:
                     continue
                 self.write_log(f"price_watch: 检查预定 #{due['id']} {due['name']} {due['rarity']}".strip())
                 await asyncio.to_thread(self._price_cycle_one, cfg, cli, timeout, retries, retry_delay, due)
-                self._price_mark_checked(due["id"], low, high)
+                for group_id in self._price_group_ids(due):
+                    self._price_mark_checked(group_id, low, high)
                 self._price_next_allowed = time.monotonic() + random.uniform(
                     max(60.0, float(cfg.get("min_gap_seconds", 300))),
                     max(120.0, float(cfg.get("min_gap_max_seconds", 600))))
@@ -1289,6 +1354,19 @@ class BotService:
             return dict(row) if row else None
         except (OSError, sqlite3.Error):
             return None
+
+    def _price_group_ids(self, due):
+        """同名、同罕贵、同语言的所有 active 预定共用一次查询。"""
+        import sqlite3
+        try:
+            with closing(self._price_schedule_conn()) as conn:
+                rows = conn.execute(
+                    "SELECT id FROM reservations WHERE active=1 AND name=? AND rarity=? AND COALESCE(language,'日文')=? ORDER BY id",
+                    (due["name"], due["rarity"], due.get("language") or "日文")).fetchall()
+            ids = [int(row["id"]) for row in rows]
+            return ids or [int(due["id"])]
+        except (OSError, sqlite3.Error):
+            return [int(due["id"])]
 
     def _price_mark_checked(self, reservation_id, low, high):
         import random
@@ -1365,7 +1443,7 @@ class BotService:
                 f"已识别 {len(data['items'])} 类）")
         return CardReply(text, image_url)
 
-    def _top100_deck_text(self, user: str, keyword: str) -> str:
+    def _top100_deck_text(self, user: str, keyword: str, conversation: str = "") -> str:
         from . import deck_naming
         with closing(deck_naming.connect(self.store.path, readonly=True)) as db:
             roster = deck_naming.roster(db)
@@ -1376,18 +1454,60 @@ class BotService:
             deck = (views.get(row["player"]) or {}).get("deck_type") or "未识别"
             if wanted in str(deck).lower():
                 hits.append((row["rank"], row["player"], deck))
+        key = (conversation + ":" + user) if conversation else user
+        self._top100_deck_candidates.pop(key, None)
         if not hits:
             return f"前100里没有卡组名包含「{keyword}」的玩家。"
         if len(hits) == 1:
             return self._deck_build_text(user, hits[0][1])
+        self._top100_deck_candidates[key] = {
+            "players": {int(rank): player for rank, player, _ in hits},
+            "time": self.clock(),
+        }
         lines = [f"前100中卡组名包含「{keyword}」的玩家（{len(hits)} 人）："]
         for rank, player, deck in hits:
             lines.append(f"#{rank} {player} · {deck}")
         return "\n".join(lines)
 
+    def _card_name_known(self, name):
+        """查价前确认本地卡库有明确卡名，避免把“沉默”等词当卡名去翻页面。"""
+        try:
+            from .statistics_card_names import index
+            from .card_usage_pie import normalize
+            if not hasattr(self, "_card_name_lookup"):
+                lookup = set()
+                for info in index(self.data_dir).values():
+                    for key in ("cn_name", "sc_name", "md_name", "nwbbs_n", "cnocg_n"):
+                        if info.get(key):
+                            lookup.add(normalize(info[key]))
+                self._card_name_lookup = lookup
+            wanted = normalize(name)
+            if wanted.isdigit() and len(wanted) >= 5:
+                return any(str(info.get("id")) == wanted for info in index(self.data_dir).values())
+            if wanted in self._card_name_lookup:
+                return True
+            # 本地没有时再用百鸽精确匹配；API 不可用就按未知处理。
+            cache = getattr(self, "_card_name_api_cache", None)
+            if cache is None:
+                cache = self._card_name_api_cache = {}
+            if name in cache:
+                return cache[name]
+            answer = bool(self.card_search.api_has_exact_name(name))
+            cache[name] = answer
+            while len(cache) > 256:
+                cache.pop(next(iter(cache)))
+            return answer
+        except Exception:
+            return True
+
     def _price_quote_blocking(self, command):
         from .price_quote import PriceQuote, format_quote
         from .price_shipping import ShippingCache
+        if not self._card_name_known(command.get("name") or ""):
+            return (f"没有识别到明确卡名「{command.get('name') or ''}」。请写完整卡名，"
+                    "例如：查价 灰流丽 日文；简体中文可写 简体中文/简中。")
+        if not self._ensure_price_emulator():
+            return "模拟器未就绪：已尝试启动 MuMu，但 90 秒内没有连上设备。请检查 MuMu 是否被关闭或 adb 端口是否变化。"
         if not self._price_ui_lock.acquire(timeout=180):
             return "前面还有查价在跑，请稍后再试。"
         try:
@@ -1466,6 +1586,9 @@ class BotService:
             self._price_ui_lock.release()
 
     def _price_cycle_one_unlocked(self, cfg, cli, timeout, retries, retry_delay, due):
+        group_ids = self._price_group_ids(due)
+        if len(group_ids) > 1:
+            self.write_log(f"price_watch: 预定 #{due['id']} 同卡合并检查 {len(group_ids)} 条")
         if not self._ensure_price_emulator():
             self.write_log("price_watch: 模拟器/设备未就绪，本轮跳过，下一轮再试")
             return
@@ -1473,7 +1596,7 @@ class BotService:
         for attempt in range(1, retries + 1):
             started = datetime.now().astimezone().replace(microsecond=0)
             try:
-                out, code = self._run_price_watch_once(cli, timeout, due["id"])
+                out, code = self._run_price_watch_once(cli, timeout, due["id"], group_ids)
             except Exception as exc:
                 out, code = str(exc), -1
             if code == 0 and self._price_snapshot_fresh(started):
@@ -1615,14 +1738,16 @@ class BotService:
                 time.sleep(retry_delay)
         self.write_log("price_watch: 本轮多次未刷新，等待下一轮")
 
-    def _run_price_watch_once(self, cli: str, timeout: float, reservation_id=None):
+    def _run_price_watch_once(self, cli: str, timeout: float, reservation_id=None, reservation_ids=None):
         import os
         import subprocess as _sp
         # jhs_watch 的汇总里有 "¥"，管道下 Windows 默认 GBK 会 UnicodeEncodeError；
         # 强制子进程用 UTF-8 输出，父进程也按 UTF-8 读。
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         proc = _sp.run(
-            [sys.executable, cli, "once"] + (["--reservation-id", str(reservation_id)] if reservation_id else []),
+            [sys.executable, cli, "once"] + (["--reservation-ids", ",".join(str(x) for x in reservation_ids)]
+                                               if reservation_ids else
+                                               (["--reservation-id", str(reservation_id)] if reservation_id else [])),
             cwd=str(Path(cli).resolve().parent),
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, env=env,

@@ -11,6 +11,7 @@ import secrets
 import socket
 import sys
 import threading
+import time
 import zipfile
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,6 +72,10 @@ def safe_replay_file(root: Path, rel_path: str, root_resolved: Path = None, dir_
     return candidate
 
 
+class ShareLinkUnavailable(RuntimeError):
+    """链接生成失败（数据库错误/重试上限）；上层应明确报错而不是发死链。"""
+
+
 class ShareApp:
     def __init__(
         self,
@@ -92,6 +97,10 @@ class ShareApp:
         self.link_hours = float(link_hours)
         self.public_url_provider = None
         self.statistics_portal = None
+        # 同一分享范围优先复用未过期链接；失败有限重试，避免把死链发出去。
+        self.link_reuse_margin_seconds = 600.0
+        self.link_attempts = 3
+        self._link_lock = threading.Lock()
         # /s/<token>/analysis-refresh 是 GET 触发写（重解析 + sidecar），独立 share 进程必须关掉它。
         self.allow_analysis_refresh = True
 
@@ -116,37 +125,70 @@ class ShareApp:
             return public + "/s/" + token, True
         return self.local_base() + "/s/" + token, False
 
+    def _link_payload(self, link: dict) -> dict:
+        url, public = self.url_for(link['token'])
+        return {
+            "token": link['token'], "url": url, "public": public,
+            "created_at": link['created_at'], "expires_at": link['expires_at'],
+            "range_start": float(link['range_start']), "replay_ids": list(link['replay_ids']),
+            "reused": bool(link.get('reused')),
+        }
+
     def create_link(self, user_id: str, player: str, replay_ids: list[int], range_start: float,
                     *, deck_replay_ids: Optional[list[int]] = None) -> dict:
+        ids = list(replay_ids)
+        deck_ids = list(ids if deck_replay_ids is None else deck_replay_ids)
         now = float(self.clock())
-        token = secrets.token_urlsafe(32)
-        expires = now + self.link_hours * 3600
-        self.store.insert_link(token, user_id, player, now, expires, list(replay_ids), range_start, deck_replay_ids)
-        url, public = self.url_for(token)
-        return {
-            "token": token,
-            "url": url,
-            "public": public,
-            "created_at": now,
-            "expires_at": expires,
-            "range_start": float(range_start),
-            "replay_ids": list(replay_ids),
-        }
+        with self._link_lock:
+            reusable = self.store.find_reusable_link(
+                user_id, player, ids, float(range_start), deck_ids,
+                now + self.link_reuse_margin_seconds)
+            if reusable:
+                reusable['reused'] = True
+                return self._link_payload(reusable)
+            last_error = None
+            for attempt in range(self.link_attempts):
+                token = secrets.token_urlsafe(32)
+                expires = now + self.link_hours * 3600
+                try:
+                    self.store.insert_link(token, user_id, player, now, expires, ids, range_start, deck_ids)
+                    return self._link_payload({
+                        "token": token, "created_at": now, "expires_at": expires,
+                        "range_start": range_start, "replay_ids": ids, "reused": False})
+                except Exception as exc:
+                    last_error = exc
+                    if attempt + 1 < self.link_attempts:
+                        time.sleep(0.05 * (attempt + 1))
+            raise ShareLinkUnavailable('分享链接生成失败，请稍后再试。') from last_error
 
     def create_stats_link(self, user_id: str, hours: float = 2) -> dict:
         """只读统计页的临时入口；与录像链接分开表和有效期。"""
         now = float(self.clock())
-        token = secrets.token_urlsafe(32)
-        expires = now + max(0.1, float(hours)) * 3600
-        self.store.insert_stats_link(token, user_id, now, expires)
-        try:
-            self.store.purge_stats_links(now)
-        except Exception:
-            pass
-        public = self.public_base()
-        base = public or self.local_base()
-        return {"token": token, "url": base + "/stats/" + token,
-                "public": bool(public), "created_at": now, "expires_at": expires}
+        with self._link_lock:
+            reusable = self.store.find_reusable_stats_link(user_id, now + self.link_reuse_margin_seconds)
+            if reusable:
+                public = self.public_base()
+                base = public or self.local_base()
+                return {"token": reusable['token'], "url": base + "/stats/" + reusable['token'],
+                        "public": bool(public), "created_at": reusable['created_at'],
+                        "expires_at": reusable['expires_at'], "reused": True}
+            last_error = None
+            for attempt in range(self.link_attempts):
+                token = secrets.token_urlsafe(32)
+                expires = now + max(0.1, float(hours)) * 3600
+                try:
+                    self.store.insert_stats_link(token, user_id, now, expires)
+                    self.store.purge_stats_links(now)
+                    public = self.public_base()
+                    base = public or self.local_base()
+                    return {"token": token, "url": base + "/stats/" + token,
+                            "public": bool(public), "created_at": now, "expires_at": expires,
+                            "reused": False}
+                except Exception as exc:
+                    last_error = exc
+                    if attempt + 1 < self.link_attempts:
+                        time.sleep(0.05 * (attempt + 1))
+            raise ShareLinkUnavailable('统计链接生成失败，请稍后再试。') from last_error
 
     def page(self, token: str, kind: str, replay_id: str = "") -> tuple[int, str, bytes]:
         if not TOKEN_RE.fullmatch(token or ""):
@@ -154,6 +196,9 @@ class ShareApp:
         link = self.store.get_link(token)
         if link is None:
             return self._text(404, "找不到这个分享链接。")
+        if link.get("revoked_at"):
+            return self._html(410, "链接已撤销", "<h1>分享链接已被撤销</h1>"
+                                     "<p>这条链接不能再访问；请向分享者重新要一条。</p>")
         if float(self.clock()) >= float(link["expires_at"]):
             return self._html(
                 410,
@@ -350,6 +395,21 @@ def make_handler(app: ShareApp):
                 return app.page(parts[1], "file", parts[3])
             if len(parts) == 4 and parts[0] == "s" and parts[2] in {'analysis', 'analysis-json', 'analysis-refresh'}:
                 return app.page(parts[1], parts[2], parts[3])
+            if not parts:
+                return app._html(
+                    200,
+                    "分享服务",
+                    "<h1>这是分享服务入口</h1>"
+                    "<p>根路径本身没有分享数据。请打开机器人消息里的完整链接，通常形如：</p>"
+                    "<p><code>https://你的域名/s/&lt;token&gt;</code></p>"
+                    "<p>或统计页：<code>https://你的域名/stats/&lt;token&gt;</code></p>",
+                )
+            if parts == ['s'] or parts == ['stats']:
+                return app._html(
+                    200,
+                    "分享服务",
+                    "<h1>缺少分享 token</h1><p>请从机器人消息里复制完整链接，不要只打开 /s/ 或 /stats/。</p>",
+                )
             return app._text(404, "找不到这个分享链接。")
 
         def log_message(self, fmt: str, *args) -> None:

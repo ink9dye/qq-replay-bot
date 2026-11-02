@@ -12,7 +12,7 @@ def _chunks(values, size=400):
 
 
 def snapshot(db,root,now,include_opponents=False,annotate_series=True):
-    basis=eligible_views(db,root,now)
+    basis=eligible_views(db,root,now,annotate_series=False)
     rows=basis['views']; ids={(r['digest'],r['player']):r for r in rows}
     if include_opponents:
         digests={r['digest'] for r in rows}

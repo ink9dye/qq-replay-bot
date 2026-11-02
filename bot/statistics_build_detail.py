@@ -1,5 +1,6 @@
 """Private build page facts and explicitly inferred Side, from eligible original sources."""
 from collections import Counter
+import math
 import hashlib
 from .statistics_dashboard import population
 from .player_statistics import capture_metadata
@@ -92,12 +93,13 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
             change=dict(status='unassociated',added=[],removed=[])
             if game['session_id']:
                 if number==1:change['status']='first_game'
-                elif len(by_no.get(number,[]))!=1 or len(by_no.get(number-1,[]))>1:change['status']='ambiguous_sequence'
-                elif number-1 not in by_no:change['status']='missing_previous_game'
+                elif len(by_no.get(number,[]))!=1 or len(by_no.get(1,[]))>1:change['status']='ambiguous_sequence'
+                elif 1 not in by_no:change['status']='missing_first_game'
                 else:
-                    previous=by_no[number-1][0]
+                    # 所有换边局都对比第一局的基础主卡/额外，而不是逐局链式对比。
+                    previous=by_no[1][0]
                     change=swap_changes(rows_by_digest[previous['digest']],rows_by_digest[game['digest']],cards,mapping)
-                    change.update(from_game_no=number-1,to_game_no=number,previous_digest=previous['digest'])
+                    change.update(from_game_no=1,to_game_no=number,previous_digest=previous['digest'])
             game['changes']=change
         numbers=set(by_no)
         missing=[n for n in range(1,max(numbers)+1) if n not in numbers] if numbers and max(numbers)<=20 else []
@@ -107,6 +109,14 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
     match_groups.sort(key=lambda g:g['recorded_at'],reverse=True)
     from .statistics_recording_names import decorate
     decorate(db,matches)
+    view_deck_types = {}
+    for item in db.execute('SELECT v.digest, v.player, b.deck_type FROM stat_views v '
+                           'JOIN stat_builds b ON b.fingerprint=v.build'):
+        view_deck_types[(item['digest'], item['player'])] = item['deck_type']
+    for row in rows:
+        others = [p for p in row['_pair'] if p != row['player']]
+        row['_opponent_deck_type'] = (view_deck_types.get((row['digest'], others[0]))
+                                      if len(others) == 1 else None)
     inferred = infer_side(rows, selected, cards, metadata, mapping)
     contexts = {}
     for games in groups.values():
@@ -205,6 +215,7 @@ def infer_side(rows, selected, cards, metadata, mapping=None):
     own_first = [r for r in own if metadata[r['digest']][1] == 1]
     anchor = own_first[0] if len(own_first) == 1 else selected
     inferred = Counter(); sources = []; per_card = {}
+    session_sets = {}
     for session, group in sessions.items():
         by_no = {}
         for row in group:
@@ -218,7 +229,8 @@ def infer_side(rows, selected, cards, metadata, mapping=None):
         pool = Counter()
         for row in group:
             pool |= combined(row)
-        candidate = pool - combined(selected)
+        # 以 game1（未换 side 的基准）为减数，而不是 selected（可能是第 2/3 局、已换过 side）。
+        candidate = pool - combined(anchor)
         if not candidate:
             continue
         kind = 'same_match' if session == chosen_session else 'historical_same_build'
@@ -227,12 +239,83 @@ def infer_side(rows, selected, cards, metadata, mapping=None):
         for code, count in candidate.items():
             inferred[code] = max(inferred[code], count)
             per_card.setdefault(code, []).append(dict(kind=kind, evidence=evidence))
+        session_sets[session] = dict(cards=dict(candidate),
+                                     time=max(r['recorded_at'] for r in group),
+                                     tag=first.get('_opponent_deck_type'),
+                                     turn=first.get('first_player'))
+
+    def weighted_score():
+        """记忆检索：按时间衰减 + 对手 tag 一致性给每张卡打分。
+
+        目标不是"最近窗口"，而是"当前 15 张 side deck 里最可能的卡"：
+        - 时间衰减让旧配置降权，但保留为 latent；
+        - 一张卡只在某个 tag 下出现，取该 tag 的加权和（×1.5），避免被全局频率埋没。
+        """
+        newest = max((info['time'] for info in session_sets.values()), default=0.0)
+        tau = 30 * 86400.0
+        total = Counter()
+        tag_support = {}
+        last_seen = {}
+        for info in session_sets.values():
+            weight = math.exp(-max(0.0, newest - info['time']) / tau)
+            tag = info.get('tag')
+            for code in info['cards']:
+                total[code] += weight
+                last_seen[code] = max(last_seen.get(code, 0.0), info['time'])
+                if tag:
+                    bucket = tag_support.setdefault(code, {})
+                    bucket[tag] = bucket.get(tag, 0.0) + weight
+        score = {}
+        for code, weight in total.items():
+            tag_max = max(tag_support.get(code, {}).values(), default=0.0)
+            score[code] = max(weight, 1.5 * tag_max)
+        return score, last_seen
+
+    score, last_seen = weighted_score()
+    observed_copies = sum(inferred.values())
+    if observed_copies <= 15:
+        # 观测并集还没超过 15，直接全保留；不足 15 也不猜。
+        chosen = Counter(inferred)
+        basis = 'full_union'
+        used = list(session_sets)
+    else:
+        chosen = Counter()
+        for code, _ in sorted(score.items(), key=lambda kv: (-kv[1], -inferred[kv[0]], kv[0])):
+            room = 15 - sum(chosen.values())
+            if room <= 0:
+                break
+            take = min(int(inferred[code]), room)
+            if take > 0:
+                chosen[code] = take
+        basis = 'support'
+        used = [s for s, info in session_sets.items() if set(info['cards']) & set(chosen)]
+    omitted = sorted(set(inferred) - set(chosen))
+    latent = [dict(code=code, copies=inferred[code], score=round(score.get(code, 0.0), 4),
+                   last_seen=last_seen.get(code), observed_sessions=len(per_card[code]))
+              for code in omitted]
     direct = Counter()
     for c in cards[selected['build']]:
         if c['partition']=='side': direct[mapping.get(c['code'],(c['code'],None))[0]] += c['copies']
-    return dict(cards=[dict(code=code, copies=count, sources=per_card[code]) for code, count in sorted(inferred.items())],
-                sources=sources, complete=False, conflict=sum((inferred | direct).values()) > 15,
-                reason='observed_maximum_pool_minus_selected_main_and_extra_not_full_side')
+    observed_overflow = observed_copies > 15
+    return dict(cards=[dict(code=code, copies=count, sources=per_card[code],
+                            observed_sessions=len(per_card[code]),
+                            score=round(score.get(code, 0.0), 4),
+                            confidence=round(score.get(code, 0.0) / (score.get(code, 0.0) + 1), 3))
+                       for code, count in sorted(chosen.items())],
+                observed_cards=[dict(code=code, copies=count,
+                                     observed_sessions=len(per_card[code]),
+                                     score=round(score.get(code, 0.0), 4))
+                                for code, count in sorted(inferred.items())],
+                latent_cards=latent,
+                omitted_codes=omitted,
+                sources=sources, complete=False,
+                conflict=sum((chosen | direct).values()) > 15,
+                observed_overflow=observed_overflow,
+                selection_basis=basis,
+                selected_sessions=len(used), observed_sessions=len(session_sets),
+                basis='game1_delta', anchor_digest=anchor['digest'],
+                score_tau_days=30,
+                reason='observed_game1_delta_support_with_latent_not_full_side')
 
 
 def _filename_part(value, fallback):

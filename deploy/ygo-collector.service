@@ -1,0 +1,18 @@
+[Unit]
+Description=YGO collector (watch + share)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ygo
+WorkingDirectory=/opt/ygobot
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+ExecStart=/usr/bin/python3 /opt/ygobot/linux_boot.py collector
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

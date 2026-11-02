@@ -1,0 +1,18 @@
+[Unit]
+Description=YGO QQ service
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ygo
+WorkingDirectory=/opt/ygobot
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+ExecStart=/usr/bin/python3 /opt/ygobot/linux_boot.py qq
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

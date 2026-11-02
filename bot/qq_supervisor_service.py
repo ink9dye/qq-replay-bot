@@ -157,7 +157,8 @@ def main() -> int:
             state.save(STATE_PATH)
             install_close_handler(lambda: _cleanup(supervisor, Ownership(True, 'close'), pids))
             log('运行中：关闭本窗口将先关 Job，再写日志；QQ 41520 不会被旧路径误杀。')
-            qq_process.wait()
+            exit_code = qq_process.wait()
+            log(f'QQ 服务退出 exit={exit_code}')
             _cleanup(supervisor, Ownership(True, 'qq_exit'), pids)
             return 0
         except Exception as exc:

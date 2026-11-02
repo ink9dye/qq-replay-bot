@@ -108,6 +108,8 @@ JOIN_MAX_PER_HOUR_DEFAULT = 60
 # 房间从"我们看到开局"到真正进场的最大等待。实测一局通常 ≥15 分钟，所以留到 15 分钟：
 # 超过 15 分钟才判定"多半已到局末"；比 6 分钟能多捞回大量中盘对局。
 JOIN_MAX_ROOM_AGE = 900.0
+# 排名和优先只在开始时间差 ≤5 分钟的对局之间生效；超过则先看开始时间更早的。
+JOIN_PRIORITY_WINDOW_SECONDS = 300.0
 # 夜间降档：02:00–07:00 并发 4–6、间隔 30 秒，把累计曲线压平（可配置/可关）。
 NIGHT_START_HOUR = 2
 NIGHT_END_HOUR = 7
@@ -2447,7 +2449,7 @@ class CaptureMonitor:
         self.waiting = self.overflow = self.cooling = 0
 
     def candidates(self, rooms, matched, active, cooldown, now, starts=None):
-        """排队顺序：先按开局时间（更早优先）；同一时刻开局的，按双方排名之和更小优先。"""
+        """排队顺序：先按开局时间早的分组；同一 5 分钟窗口内的，按双方排名之和更小优先。"""
         matched = list({room.key:room for room in matched}.values())
         current = {r.key for r in rooms}
         for key in list(self.rooms):
@@ -2465,14 +2467,28 @@ class CaptureMonitor:
         pending = [r for r in pending if cooldown.get(r.key, 0) <= now]
         starts = starts or {}
 
-        def sort_key(room):
+        def start_of(room):
             info = self.rooms.get(room.key) or {}
             started = starts.get(room.key)
             if started is None:
                 started = info.get('first_seen')
-            return (round(float(started or now), 3), room_rank_sum(room), room.key)
+            return float(started or now)
 
-        pending.sort(key=sort_key)
+        # 开局时间差 ≤5 分钟视为同一批：批内按排名和；
+        # 跨批按开始时间早优先（先按时间排，再按 5 分钟窗口切组）。
+        pending.sort(key=lambda r: (start_of(r), r.key))
+        ordered = []
+        index = 0
+        while index < len(pending):
+            base = start_of(pending[index])
+            end = index + 1
+            while end < len(pending) and start_of(pending[end]) - base <= JOIN_PRIORITY_WINDOW_SECONDS:
+                end += 1
+            group = pending[index:end]
+            group.sort(key=lambda r: (room_rank_sum(r), start_of(r), r.key))
+            ordered.extend(group)
+            index = end
+        pending = ordered
         self.waiting = len(pending)
         self.pending_keys = {r.key for r in pending}
         self.overflow = max(0, len(pending) - self.limit)

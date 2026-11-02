@@ -62,7 +62,7 @@ def rules(reference_path,overrides_path=None):
     cfg=json.loads(extra.decode('utf-8-sig'))
     if not isinstance(cfg,dict) or not isinstance(refs,list) or not isinstance(cfg.get('references',[]),list):
         raise ValueError('invalid_rule_document')
-    threshold=float(cfg.get('minimum_similarity',0.80));margin=float(cfg.get('minimum_margin',0.08))
+    threshold=float(cfg.get('minimum_similarity',0.85));margin=float(cfg.get('minimum_margin',0.08))
     if not 0.6<=threshold<=1 or not 0<=margin<=1:raise ValueError('invalid_classification_threshold')
     refs=refs+cfg.get('references',[])
     parsed={}
@@ -77,7 +77,7 @@ def rules(reference_path,overrides_path=None):
         priority=ref.get('name_priority',0)
         if type(priority)is not int or not 0<=priority<=99999999:raise ValueError('invalid_name_priority')
         parsed[(label.strip(),tuple(sorted(cards.items())))]=dict(label=label.strip(),cards=cards,series=sorted(set(series)),name_priority=priority)
-    version='reference-v5:'+hashlib.sha256(raw+b'\0'+extra).hexdigest()
+    version='reference-v7:'+hashlib.sha256(raw+b'\0'+extra).hexdigest()
     return list(parsed.values()),threshold,margin,version
 
 
@@ -117,8 +117,11 @@ def apply_rules(db,parsed,threshold,margin,version):
             observed[normalize(row['code'])]+=row['copies']
         if build['main_complete'] and build['extra_complete']:
             for ref in normalized:
-                total=sum(observed.values())+sum(ref['cards'].values())
-                score=2*sum((observed&ref['cards']).values())/total if total else 0
+                # 与 statistics_deck_labels 一致：加权 Jaccard，不用 Dice。
+                # Dice 0.80 约等于 Jaccard 0.67，会把只是共享泛用卡的卡组也命名。
+                intersection=sum((observed&ref['cards']).values())
+                union=sum(observed.values())+sum(ref['cards'].values())-intersection
+                score=intersection/union if union else 0
                 old=candidates.get(ref['label'])
                 priority=ref.get('name_priority',0)
                 if old is None or score>old[0]or score==old[0]and priority>old[2]:candidates[ref['label']]=(score,ref['series'],priority)

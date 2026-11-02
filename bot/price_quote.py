@@ -322,6 +322,12 @@ class PriceQuote:
             ui.start_app()
             data = ui.collect_card({'name': name, 'rarity': rarity}, restart=True)
         actual_language = data.get('language') or ''
+        try:
+            from .commands import parse_language
+            actual_language = parse_language(actual_language) or actual_language
+            language = parse_language(language) or language
+        except Exception:
+            pass
         if language and actual_language and actual_language != language:
             raise PriceQuoteError(f"页面语言是{actual_language}，不是{language}")
         sellers = data.get('sellers') or []

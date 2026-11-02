@@ -8,6 +8,16 @@ from typing import Optional
 
 from .help import HELP
 
+_LANGUAGE_ALIASES = {
+    "日文": "日文", "日语": "日文", "日版": "日文",
+    "简中": "简中", "简体中文": "简中", "简体": "简中", "中文": "简中",
+}
+
+
+def parse_language(value):
+    return _LANGUAGE_ALIASES.get(str(value or "").strip())
+
+
 _TOKEN = re.compile(r'"([^"]*)"|(\S+)')
 _SCOPE = re.compile(r"前(\d+)$")
 
@@ -123,8 +133,13 @@ def parse_command(text: str) -> dict:
             return {"op": "error", "message": "预期价格要大于 0"}
         args = list(rest[:-1])
         language = "日文"
-        if args and args[-1] in ("日文", "简中"):
-            language = args[-1]
+        parsed_language = parse_language(args[0]) if args else None
+        if parsed_language:
+            language = parsed_language
+            args = args[1:]
+        parsed_language = parse_language(args[-1]) if args else None
+        if parsed_language:
+            language = parsed_language
             args = args[:-1]
         rarity = ""
         if len(args) >= 2 and re.fullmatch(r"[A-Za-z0-9]{1,12}", args[-1]):
@@ -164,8 +179,14 @@ def parse_command(text: str) -> dict:
             return {"op": "error", "message": "格式：查价 卡名 [罕贵] [日文/简中]"}
         args = list(rest)
         language = "日文"
-        if len(args) >= 2 and args[-1] in ("日文", "简中"):
-            language = args.pop()
+        parsed_language = parse_language(args[0]) if args else None
+        if parsed_language:
+            language = parsed_language
+            args.pop(0)
+        parsed_language = parse_language(args[-1]) if len(args) >= 2 else None
+        if parsed_language:
+            language = parsed_language
+            args.pop()
         rarity = ""
         if len(args) >= 2 and re.fullmatch(r"[A-Za-z0-9]{1,12}", args[-1]):
             rarity = args.pop().upper()

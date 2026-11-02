@@ -33,6 +33,10 @@ def route(app, path, parts):
     now = float(app.clock())
     if link is None:
         return 404, "text/plain; charset=utf-8", "统计链接不存在。".encode()
+    if link.get("revoked_at"):
+        return 410, "text/html; charset=utf-8", (
+            "<meta charset='utf-8'><h1>统计链接已撤销</h1>"
+            "<p>请向分享者重新要一条。</p>").encode()
     if float(link["expires_at"]) <= now:
         return 410, "text/html; charset=utf-8", (
             "<meta charset='utf-8'><h1>统计链接已过期</h1>"

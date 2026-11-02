@@ -69,6 +69,23 @@ def card_details(data_dir, code):
                 allowed_partitions=['extra', 'side'] if extra else ['main', 'side'] if extra is not None else ['main', 'side', 'extra'])
 
 
+def _image_codes(code):
+    """卡图文件名候选：本体号、100/101 前缀特殊编号。"""
+    code = int(code)
+    values = [code]
+    if code >= 101_000_000:
+        values.append(code - 101_000_000)
+    if code >= 100_000_000:
+        values.append(code - 100_000_000)
+    if code < 100_000_000:
+        values.extend([code + 100_000_000, code + 101_000_000])
+    result = []
+    for value in values:
+        if 0 < value <= 4294967295 and value not in result:
+            result.append(value)
+    return result
+
+
 def _schedule(data_dir, code, pics):
     now = time.time()
     with _lock:
@@ -80,18 +97,24 @@ def _schedule(data_dir, code, pics):
     def work():
         try:
             pics.mkdir(parents=True, exist_ok=True)
-            with urllib.request.urlopen(REMOTE % code, timeout=60) as response:
-                blob = response.read(8 * 1024 * 1024 + 1)
-            if not blob or len(blob) > 8 * 1024 * 1024:
-                raise ValueError('bad image size')
-            path = (pics / (str(code) + '.jpg')).resolve()
-            if not path.is_relative_to(pics):
-                raise ValueError('bad path')
-            temporary = path.with_suffix('.jpg.tmp')
-            temporary.write_bytes(blob)
-            os.replace(temporary, path)
-            with _lock:
-                _failed.pop(code, None)
+            for candidate in _image_codes(code):
+                try:
+                    with urllib.request.urlopen(REMOTE % candidate, timeout=60) as response:
+                        blob = response.read(8 * 1024 * 1024 + 1)
+                except OSError:
+                    continue
+                if not blob or len(blob) > 8 * 1024 * 1024:
+                    continue
+                path = (pics / (str(candidate) + '.jpg')).resolve()
+                if not path.is_relative_to(pics):
+                    continue
+                temporary = path.with_suffix('.jpg.tmp')
+                temporary.write_bytes(blob)
+                os.replace(temporary, path)
+                with _lock:
+                    _failed.pop(code, None)
+                return
+            raise ValueError('no image for card')
         except (OSError, ValueError):
             with _lock:
                 _failed[code] = time.time()
@@ -112,7 +135,8 @@ def prefetch(data_dir, codes):
     for code in {int(c) for c in codes if type(c) is int or str(c).isdigit()}:
         if not 0 < code <= 4294967295:
             continue
-        if any((pics / (str(code) + suffix)).is_file() for suffix in ('.jpg', '.png', '.webp')):
+        if any((pics / (str(candidate) + suffix)).is_file()
+               for candidate in _image_codes(code) for suffix in ('.jpg', '.png', '.webp')):
             continue
         _schedule(data_dir, code, pics)
 
@@ -128,7 +152,8 @@ def wait_for(data_dir, codes, timeout=30):
     wanted = {int(c) for c in codes if str(c).isdigit()}
     deadline = time.time() + max(0, timeout)
     while time.time() < deadline:
-        remaining = [c for c in wanted if not any((pics / (str(c) + suffix)).is_file()
+        remaining = [c for c in wanted if not any((pics / (str(candidate) + suffix)).is_file()
+                                                  for candidate in _image_codes(c)
                                                   for suffix in ('.jpg', '.png', '.webp'))]
         with _lock:
             pending = [c for c in remaining if c in _pending]
@@ -146,10 +171,11 @@ def picture(data_dir, code):
     pics = (root / 'pics').resolve()
     if not pics.is_relative_to(root):
         return None
-    for suffix, mime in (('.jpg', 'image/jpeg'), ('.png', 'image/png'), ('.webp', 'image/webp')):
-        path = (pics / (str(code) + suffix)).resolve()
-        if path.is_relative_to(pics) and path.is_file() and path.stat().st_size <= 8 * 1024 * 1024:
-            return path, mime
-    # 新卡只在百鸽新 CDN：后台缓存，当前请求立即返回；前端用重试/远程兜底。
+    for candidate in _image_codes(code):
+        for suffix, mime in (('.jpg', 'image/jpeg'), ('.png', 'image/png'), ('.webp', 'image/webp')):
+            path = (pics / (str(candidate) + suffix)).resolve()
+            if path.is_relative_to(pics) and path.is_file() and path.stat().st_size <= 8 * 1024 * 1024:
+                return path, mime
+    # 卡号可能是本体号，实际卡图存在 100xxxxxx 异画编号；后台缓存，当前请求立即返回。
     _schedule(data_dir, code, pics)
     return None

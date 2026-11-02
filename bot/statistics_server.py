@@ -1,9 +1,49 @@
 """本机统计网页服务：不启动观战、QQ或数据库迁移。"""
-import argparse,json,os,sys,time
+import argparse,json,os,sys,threading,time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler
 from .share import ReplayHTTPServer
 from .statistics_portal import StatisticsPortal,owner_secret
+
+
+
+_access_lock=threading.Lock()
+
+
+def _visitor_ip(handler):
+    for name in ('CF-Connecting-IP','True-Client-IP','X-Real-IP'):
+        value=(handler.headers.get(name) or '').strip()
+        if value:return value[:64]
+    forwarded=(handler.headers.get('X-Forwarded-For') or '').strip()
+    if forwarded:return forwarded.split(',',1)[0].strip()[:64]
+    return (handler.client_address[0] if handler.client_address else '')[:64]
+
+
+def _safe_path(path):
+    raw=str(path or '').split('?',1)[0]
+    if raw.startswith('/s/'):return '/s/<redacted>'
+    if raw.startswith('/stats/'):return '/stats/<redacted>'
+    return raw[:300]
+
+
+def _log_access(handler,portal,status,kind):
+    raw=str(handler.path or '').split('?',1)[0]
+    if raw in ('/health','/favicon.ico'):
+        return
+    try:
+        record=dict(at=time.strftime('%Y-%m-%dT%H:%M:%S%z'),ip=_visitor_ip(handler),
+                    method=handler.command,path=_safe_path(handler.path),status=int(status),
+                    kind=str(kind or '')[:80],country=(handler.headers.get('CF-IPCountry') or '')[:8],
+                    ua=(handler.headers.get('User-Agent') or '')[:300],
+                    ref=(handler.headers.get('Referer') or '')[:300])
+        log=portal.database.parent/'logs'/'web-access.jsonl'
+        line=json.dumps(record,ensure_ascii=False,separators=(',',':'))+'\n'
+        with _access_lock:
+            log.parent.mkdir(parents=True,exist_ok=True)
+            with log.open('a',encoding='utf-8') as handle:
+                handle.write(line)
+    except OSError:
+        pass
 
 
 def make_handler(portal):
@@ -41,6 +81,7 @@ def make_handler(portal):
             self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
             for key,value in headers.items():self.send_header(key,value)
             self.end_headers();self.wfile.write(body)
+            _log_access(self,portal,status,kind)
         def log_message(self,*args):pass
         def do_POST(self):
             self.close_connection=True
@@ -59,6 +100,7 @@ def make_handler(portal):
             self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
             for key,value in headers.items():self.send_header(key,value)
             self.end_headers();self.wfile.write(body)
+            _log_access(self,portal,status,kind)
     return Handler
 
 

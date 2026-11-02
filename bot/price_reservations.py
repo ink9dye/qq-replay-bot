@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS reservations (
     created_at  TEXT NOT NULL,
     notified_at TEXT,
     last_price  REAL,
+    group_id    TEXT,
     UNIQUE(user_id, name, rarity, language)
 );
 """
@@ -48,6 +49,8 @@ class PriceReservations:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(reservations)")}
             if "language" not in columns:
                 conn.execute("ALTER TABLE reservations ADD COLUMN language TEXT NOT NULL DEFAULT '日文'")
+            if "group_id" not in columns:
+                conn.execute("ALTER TABLE reservations ADD COLUMN group_id TEXT")
             conn.commit()
 
     def _conn(self):
@@ -55,7 +58,7 @@ class PriceReservations:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def add(self, user_id, name: str, rarity: str, target, language: str = "日文") -> int:
+    def add(self, user_id, name: str, rarity: str, target, language: str = "日文", group_id=None) -> int:
         user_id = str(user_id).strip()
         name = (name or "").strip()
         rarity = (rarity or "").strip().upper()
@@ -74,6 +77,9 @@ class PriceReservations:
             raise ValueError("预期价格要写数字，例如 160")
         if not (0 < target <= 10000000):
             raise ValueError("预期价格要在 0 到 1000 万之间")
+        group_id = str(group_id).strip() if group_id not in (None, "") else None
+        if group_id is not None and not group_id.isdigit():
+            group_id = None
         with closing(self._conn()) as conn:
             row = conn.execute(
                 "SELECT id FROM reservations WHERE user_id=? AND name=? AND rarity=? AND language=?",
@@ -82,15 +88,15 @@ class PriceReservations:
             if row:
                 conn.execute(
                     "UPDATE reservations SET target=?, active=1, notified_at=NULL,"
-                    " last_price=NULL WHERE id=?",
-                    (target, row["id"]),
+                    " last_price=NULL, group_id=COALESCE(?, group_id) WHERE id=?",
+                    (target, group_id, row["id"]),
                 )
                 conn.commit()
                 return int(row["id"])
             cur = conn.execute(
                 "INSERT INTO reservations (user_id, name, rarity, language, target, active,"
-                " created_at) VALUES (?,?,?,?,?,1,?)",
-                (user_id, name, rarity, language, target, _now()),
+                " created_at, group_id) VALUES (?,?,?,?,?,1,?,?)",
+                (user_id, name, rarity, language, target, _now(), group_id),
             )
             conn.commit()
             return int(cur.lastrowid)
