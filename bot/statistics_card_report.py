@@ -293,25 +293,24 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     roster = {key: value for key, value in basis['roster'].items() if key != 'members'}
     roster['member_count'] = len(basis['roster']['members'])
 
-    if codes or combos:
-        targets = codes
-    else:
-        seen = set()
-        for row in selected:
-            seen.update(_build_codes(db, row['build']))
-        targets = sorted(seen)
-
-    idents = {code: identify(code) for code in targets}
-    parts = {code: _partition_for(code, names, wanted_partition) for code in targets}
-    # 一次取本次选中构筑的卡表（连接内临时表），避免每张卡查一次 stat_build_cards。
+    # 本次选中构筑先落连接内临时表：卡表、facts 都只查一遍，不再逐构筑/逐卡查询。
     db.execute('DROP TABLE IF EXISTS temp._report_builds')
     db.execute('CREATE TEMP TABLE _report_builds(build TEXT PRIMARY KEY)')
     db.executemany('INSERT OR IGNORE INTO _report_builds(build) VALUES(?)',
                    [(row['build'],) for row in selected])
+    if codes or combos:
+        targets = codes
+    else:
+        targets = sorted({row['code'] for row in db.execute(
+            'SELECT DISTINCT code FROM stat_build_cards '
+            'WHERE build IN (SELECT build FROM _report_builds)')})
+
+    idents = {code: identify(code) for code in targets}
+    parts = {code: _partition_for(code, names, wanted_partition) for code in targets}
     copies_lookup = {}
-    for card in db.execute('SELECT c.build,c.partition,c.code,SUM(c.copies) copies '
-                           'FROM stat_build_cards c JOIN _report_builds b ON b.build=c.build '
-                           'GROUP BY c.build,c.partition,c.code'):
+    for card in db.execute('SELECT build,partition,code,SUM(copies) copies FROM stat_build_cards '
+                           'WHERE build IN (SELECT build FROM _report_builds) '
+                           'GROUP BY build,partition,code'):
         copies_lookup.setdefault((card['code'], card['partition']), {})[card['build']] = card['copies']
     rows_by_build = {}
     for row in selected:
@@ -321,8 +320,8 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     for fact in db.execute(
             'SELECT f.code,f.digest,f.player,f.partition,f.drawn,f.used,f.used_after_draw,f.appeared,'
             'f.draw_count,f.initial_count,f.use_count,f.appearance_count '
-            'FROM stat_card_facts f JOIN _report_selected s '
-            'ON s.digest=f.digest AND s.player=f.player'):
+            'FROM stat_card_facts f WHERE (f.digest,f.player) IN '
+            '(SELECT digest,player FROM _report_selected)'):
         facts_by_code.setdefault((fact['code'], fact['partition']), []).append(dict(fact))
     view_by_key = {(row['digest'], row['player']): row for row in selected}
     fact_cache = {}

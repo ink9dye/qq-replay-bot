@@ -57,8 +57,15 @@ def catalog_many(db, players):
         rows_by_player.setdefault(r['player'], []).append(dict(r))
         digests.add(r['digest'])
     meta = capture_metadata(db, digests)
-    explicit = {r['digest'] for r in db.execute(
-        "SELECT digest FROM stat_evidence WHERE payload_json LIKE '%session_id%' OR payload_json LIKE '%game_no%'")}
+    explicit = set()
+    digest_values = list(digests)
+    for start in range(0, len(digest_values), 400):
+        digest_chunk = digest_values[start:start + 400]
+        digest_marks = ','.join('?' for _ in digest_chunk)
+        # 只关心本次这些 digest 是否带显式 session/game 证据，结果与全表 LIKE 一致。
+        explicit.update(r['digest'] for r in db.execute(
+            'SELECT digest FROM stat_evidence WHERE digest IN (' + digest_marks + ') AND ('
+            "payload_json LIKE '%session_id%' OR payload_json LIKE '%game_no%')", digest_chunk))
     legacy = {}
     for r in db.execute(
             f'SELECT f.digest,r.focus_player,s.session_id,s.game_no FROM stat_files f '

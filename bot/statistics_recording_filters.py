@@ -11,7 +11,12 @@ def _chunks(values, size=400):
         yield values[start:start + size]
 
 
-def snapshot(db,root,now,include_opponents=False,annotate_series=True):
+def snapshot(db,root,now,include_opponents=False,annotate_series=True,with_facts=True):
+    """Shared eligible-view snapshot.
+
+    with_facts=False 时跳过全部卡牌事实（stat_card_facts）与卡表聚合：只有带卡片
+    条件的查询需要它们，录像筛选默认页不需要。口径不变，只是少读两张表。
+    """
     basis=eligible_views(db,root,now,annotate_series=False)
     rows=basis['views']; ids={(r['digest'],r['player']):r for r in rows}
     if include_opponents:
@@ -30,28 +35,30 @@ def snapshot(db,root,now,include_opponents=False,annotate_series=True):
         from .card_series import reference as series_reference,annotate as annotate_series
         annotate_series(db,list(ids.values()),series_reference(db))
     mapping,_,_=reference(db); canonical=lambda c:mapping.get(c,(c,))[0]
-    carried={};all_carried={}
-    builds={r['build'] for r in ids.values()}
-    for chunk in _chunks(builds):
-        marks=','.join('?' for _ in chunk)
-        for r in db.execute("SELECT build,partition,code FROM stat_build_cards "
-                            f"WHERE copies>0 AND build IN ({marks})",chunk):
-            code=canonical(r['code']);all_carried.setdefault(r['build'],set()).add(code)
-            if r['partition']=='main':carried.setdefault(r['build'],set()).add(code)
-    draws={k:set() for k in ids};used={k:set() for k in ids}
-    facts_present=set()
+    carried={};all_carried={};draws={};used={}
     digests={r['digest'] for r in ids.values()}
-    for chunk in _chunks(digests):
-        marks=','.join('?' for _ in chunk)
-        for f in db.execute('SELECT digest,player,code,drawn,used FROM stat_card_facts '
-                            f'WHERE digest IN ({marks})',chunk):
-            code=canonical(f['code']);facts_present.add((f['digest'],f['player'],code))
-            key=(f['digest'],f['player']);row=ids.get(key)
-            if row is None:continue
-            if f['drawn']==1 and code in carried.get(row['build'],set()):draws[key].add(code)
-            if f['used']==1 and code in all_carried.get(row['build'],set()):used[key].add(code)
-    basis['_all_carried']=all_carried
-    basis['_facts_present']=facts_present
+    if with_facts:
+        builds={r['build'] for r in ids.values()}
+        for chunk in _chunks(builds):
+            marks=','.join('?' for _ in chunk)
+            # copies>0 是表级 CHECK，过滤它只会迫使每行回表；去掉后走覆盖索引。
+            for r in db.execute("SELECT build,partition,code FROM stat_build_cards "
+                                f"WHERE build IN ({marks})",chunk):
+                code=canonical(r['code']);all_carried.setdefault(r['build'],set()).add(code)
+                if r['partition']=='main':carried.setdefault(r['build'],set()).add(code)
+        draws={k:set() for k in ids};used={k:set() for k in ids}
+        facts_present=set()
+        for chunk in _chunks(digests):
+            marks=','.join('?' for _ in chunk)
+            for f in db.execute('SELECT digest,player,code,drawn,used FROM stat_card_facts '
+                                f'WHERE digest IN ({marks})',chunk):
+                code=canonical(f['code']);facts_present.add((f['digest'],f['player'],code))
+                key=(f['digest'],f['player']);row=ids.get(key)
+                if row is None:continue
+                if f['drawn']==1 and code in carried.get(row['build'],set()):draws[key].add(code)
+                if f['used']==1 and code in all_carried.get(row['build'],set()):used[key].add(code)
+        basis['_all_carried']=all_carried
+        basis['_facts_present']=facts_present
     opponents={}
     for chunk in _chunks(digests):
         marks=','.join('?' for _ in chunk)
@@ -188,7 +195,9 @@ def query(db,root,now,args,limit=2000):
 
 def _query(db,root,now,args,limit=2000,ranges=None):
     """limit=None 表示返回全部命中（给打包下载用）；默认仍只回 2000 条给页面。"""
-    basis,rows,draws,used,carried,canonical=snapshot(db,root,now,include_opponents=True,annotate_series=bool(args.get('series')or args.get('opponent_series')))
+    needs_facts=any(args.get(key) for key in ('card','opponent_card','not_card','opponent_not_card'))
+    basis,rows,draws,used,carried,canonical=snapshot(db,root,now,include_opponents=True,
+        annotate_series=bool(args.get('series')or args.get('opponent_series')),with_facts=needs_facts)
     from .statistics_recording_names import decorate
     decorate(db,rows,root,now)
     if args.get('phase_none',['0'])[0]=='1':
@@ -258,23 +267,25 @@ def _query(db,root,now,args,limit=2000,ranges=None):
             group_mode,group_match=mode,match
         if codes:conditions.append((prefix,{canonical(int(c))for c in codes},group_mode,group_match))
     none_keys=('deck','opponent','card','opponent_card','not_card','opponent_not_card','first','outcome')
-    all_carried=basis.get('_all_carried')
-    if all_carried is None:
-        all_carried={}
-        builds={row['build'] for row in rows}
-        for chunk in _chunks(builds):
-            marks=','.join('?' for _ in chunk)
-            for card in db.execute('SELECT build,code FROM stat_build_cards '
-                                   f'WHERE copies>0 AND build IN ({marks})',chunk):
-                all_carried.setdefault(card['build'],set()).add(canonical(card['code']))
-    facts_present=basis.get('_facts_present')
-    if facts_present is None:
-        facts_present=set()
-        for chunk in _chunks({row['digest'] for row in rows}):
-            marks=','.join('?' for _ in chunk)
-            for fact in db.execute('SELECT digest,player,code FROM stat_card_facts '
-                                   f'WHERE digest IN ({marks})',chunk):
-                facts_present.add((fact['digest'],fact['player'],canonical(fact['code'])))
+    all_carried={};facts_present=set()
+    if conditions:
+        all_carried=basis.get('_all_carried')
+        if all_carried is None:
+            all_carried={}
+            builds={row['build'] for row in rows}
+            for chunk in _chunks(builds):
+                marks=','.join('?' for _ in chunk)
+                for card in db.execute('SELECT build,code FROM stat_build_cards '
+                                       f'WHERE build IN ({marks})',chunk):
+                    all_carried.setdefault(card['build'],set()).add(canonical(card['code']))
+        facts_present=basis.get('_facts_present')
+        if facts_present is None:
+            facts_present=set()
+            for chunk in _chunks({row['digest'] for row in rows}):
+                marks=','.join('?' for _ in chunk)
+                for fact in db.execute('SELECT digest,player,code FROM stat_card_facts '
+                                       f'WHERE digest IN ({marks})',chunk):
+                    facts_present.add((fact['digest'],fact['player'],canonical(fact['code'])))
     reasons={'opponent_evidence_missing':0,'self_evidence_missing':0,
              'draw_process_incomplete':0,'card_fact_missing':0,'condition_not_met':0}
     result=[]

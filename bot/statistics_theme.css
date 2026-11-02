@@ -87,3 +87,9 @@ a.download{display:inline-flex;align-items:center;min-height:36px;padding:2px 4p
   .deckpick input{min-height:44px}
   .tablewrap::after,.wrap::after{content:'左右滑动查看完整表格';display:block;text-align:center;font-size:11px;color:#7b897d;padding:4px 0}
 }
+
+/* 正在运行：状态文字左侧的旋转小点（浮层进度条由 statistics_busy.js 注入） */
+.status.busy,.note.busy,[role=status].busy{color:var(--p10-accent)}
+.status.busy::before,.note.busy::before,[role=status].busy::before{content:"";display:inline-block;width:.62em;height:.62em;margin-right:.45em;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;animation:busy-spin .9s linear infinite;vertical-align:-.05em}
+@keyframes busy-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.status.busy::before,.note.busy::before,[role=status].busy::before{animation:none}}

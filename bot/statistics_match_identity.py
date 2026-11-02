@@ -3,15 +3,34 @@ import json
 import sqlite3
 
 
-def capture_metadata(db,digests):
-    captures={}
-    for row in db.execute('SELECT digest,payload_json FROM stat_evidence'):
-        if row['digest'] not in digests:continue
-        try:info=json.loads(row['payload_json']).get('capture',{})
-        except (ValueError,AttributeError):continue
-        if type(info.get('game_no'))is int and info['game_no']>0 and (info.get('session_id')is None or isinstance(info.get('session_id'),str)):
-            captures.setdefault(row['digest'],set()).add((info.get('session_id'),info['game_no'],info.get('captured_from_start')is True))
-    return {digest:next(iter(values))for digest,values in captures.items()if len(values)==1}
+def _read_capture_metadata(db, digests):
+    """只读这些 digest 的证据行；避免为了几条证据扫描整张 stat_evidence。
+
+    不做跨调用缓存：证据行随导入变化，缓存会让同一进程里先后变化的库读到旧值。
+    """
+    captures = {}
+    values = list(dict.fromkeys(digests))
+    for start in range(0, len(values), 400):
+        chunk = values[start:start + 400]
+        marks = ','.join('?' for _ in chunk)
+        for row in db.execute('SELECT digest,payload_json FROM stat_evidence '
+                              'WHERE digest IN (%s)' % marks, chunk):
+            try:
+                info = json.loads(row['payload_json']).get('capture', {})
+            except (ValueError, AttributeError):
+                continue
+            if type(info.get('game_no')) is int and info['game_no'] > 0 and (
+                    info.get('session_id') is None or isinstance(info.get('session_id'), str)):
+                captures.setdefault(row['digest'], set()).add(
+                    (info.get('session_id'), info['game_no'], info.get('captured_from_start') is True))
+    return {digest: next(iter(found)) for digest, found in captures.items() if len(found) == 1}
+
+
+def capture_metadata(db, digests):
+    wanted = {digest for digest in digests if digest}
+    if not wanted:
+        return {}
+    return _read_capture_metadata(db, wanted)
 
 
 def _core_signatures(db, builds):
@@ -28,7 +47,7 @@ def _core_signatures(db, builds):
         try:
             rows = db.execute(
                 'SELECT build,code,copies,partition FROM stat_build_cards '
-                'WHERE build IN (%s) AND partition IN (\'main\',\'extra\') AND copies>0' % marks,
+                'WHERE build IN (%s) AND partition IN (\'main\',\'extra\')' % marks,
                 chunk)
         except sqlite3.Error:
             return None

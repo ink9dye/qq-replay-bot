@@ -49,7 +49,15 @@ class NoAtTests(unittest.TestCase):
             self.assertEqual(service.qq.group_sent[-1][1], '历史结果：花无十日红')
             asyncio.run(service.on_qq_event(plain('订阅 雨雨雨1 前100 静默')))
             self.assertIsNotNone(service.store.get_subscription('10001', '雨雨雨1'))
-            asyncio.run(service.on_qq_event(plain('录像 雨雨雨1')))
+
+            async def replay_query():
+                # 录像属于慢命令：先回一句“正在读取…”，结果随后另发。
+                await service.on_qq_event(plain('录像 雨雨雨1'))
+                self.assertIn('正在读取', service.qq.group_sent[-1][1])
+                if service._slow_tasks:
+                    await asyncio.gather(*list(service._slow_tasks))
+
+            asyncio.run(replay_query())
             self.assertIn('/s/', service.qq.group_sent[-1][1])
             count = len(service.qq.group_sent)
             asyncio.run(service.on_qq_event(plain('普通聊天')))

@@ -35,11 +35,30 @@ def public_index(data_dir):
     except (OSError,ValueError):return {}
 
 
+_merged={}
+_merged_lock=threading.RLock()
+
+
 def index(data_dir):
+    """公开卡名 + 本地卡名的合并索引；两张来源表都按文件指纹缓存，这里再缓存合并结果。
+
+    返回的对象只读（调用方都只 get），避免每次请求重新复制两万条字典（约 0.5 秒）。
+    """
     from .statistics_local_cards import local_index
-    result=dict(public_index(data_dir))
-    for code,local in local_index(data_dir).items():
-        result[code]=dict(result.get(code,{}),**local)
+    public=public_index(data_dir)
+    local=local_index(data_dir)
+    key=(id(public),id(local))
+    with _merged_lock:
+        hit=_merged.get(key)
+        if hit is not None:
+            return hit[2]
+    result=dict(public)
+    for code,local_info in local.items():
+        result[code]=dict(result.get(code,{}),**local_info)
+    with _merged_lock:
+        _merged[key]=(public,local,result)
+        if len(_merged)>8:
+            _merged.pop(next(iter(_merged)))
     return result
 
 

@@ -57,6 +57,18 @@ class ManualClock:
         return self.now
 
 
+# 慢命令先回一句“正在…”，结果再单独发：和既有“构筑图生成中”“历史查询中”“查价中”
+# 保持一致的体验。只给确实要等几秒以上的命令加，避免每条指令都刷屏。
+SLOW_COMMAND_HINTS = {
+    "stats_page": "正在生成统计链接，约几秒…",
+    "replays": "正在读取录像目录，约几秒…",
+    "top100_pie": "前百饼图生成中，约几秒…",
+    "card_usage": "使用量统计中，约几秒…",
+    "card_flow": "单卡流向统计中，约几秒…",
+    "top100_deck": "正在匹配前百构筑，约几秒；完成后把结果发到这里。",
+}
+
+
 def join_rules(subscriptions: list[dict]) -> tuple[list[str], list[RankRule]]:
     """同一玩家只保留一份观战需求。有人要全部对局时直接观战，否则用最宽的名次。"""
     always: list[str] = []
@@ -244,6 +256,7 @@ class BotService:
         self._deck_cache = {}
         self._top100_deck_candidates = {}
         self._deck_tasks = set()
+        self._slow_tasks = set()
         self._known_replays_at = 0.0
         self._known_replays = set()
 
@@ -1214,6 +1227,16 @@ class BotService:
             self._price_quote_tasks.add(task)
             task.add_done_callback(self._price_quote_tasks.discard)
             return
+        hint = SLOW_COMMAND_HINTS.get(parsed_command.get('op'))
+        if hint and self.authorized(user_id) and (
+                parsed_command.get('op') != 'stats_page'
+                or self._statistics_allowed(user_id, conversation)):
+            await send(receiver, hint)
+            task = asyncio.create_task(self._slow_text_job(
+                user_id, text, conversation, receiver, send, forward, event.get('self_id')))
+            self._slow_tasks.add(task)
+            task.add_done_callback(self._slow_tasks.discard)
+            return
         if parsed_command.get('op') == 'help':
             # 帮助是一条分组清单，直接发文字，不再走合并转发。
             reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
@@ -1571,6 +1594,26 @@ class BotService:
             await send(receiver, reply)
         except Exception as exc:
             self.write_log(f"构筑结果发送失败：{exc}")
+
+    async def _slow_text_job(self, user_id, text, conversation, receiver, send, forward=None, self_id=None):
+        """先回一句“正在…”，再在后台跑慢命令；结果（含合并转发卡片）单独发。"""
+        try:
+            reply = await asyncio.wait_for(
+                asyncio.to_thread(self.handle_text, user_id, text, conversation), timeout=120)
+        except asyncio.TimeoutError:
+            reply = "处理超时，请稍后再试。"
+        except Exception as exc:
+            reply = f"处理失败：{exc}"
+            self.write_log(f"慢命令任务异常：{type(exc).__name__}: {exc}")
+        if reply is None:
+            return
+        try:
+            pages = getattr(reply, 'forward_cards', None)
+            if pages and forward is not None and await forward(receiver, pages, self_id):
+                return
+            await send(receiver, str(reply) if pages else reply)
+        except Exception as exc:
+            self.write_log(f"慢命令结果发送失败：{exc}")
 
     async def _history_job(self, user_id, text, conversation, receiver, send):
         try:

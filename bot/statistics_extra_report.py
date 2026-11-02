@@ -28,9 +28,10 @@ def query(db, replay_root, now, filters=None, phases=(), phase_none=False, limit
     for start in range(0, len(builds), 400):
         chunk = builds[start:start + 400]
         marks = ','.join('?' for _ in chunk)
+        # partition 已在主键里，去掉 copies>0（表级 CHECK）后可只读索引。
         for card in db.execute(
                 'SELECT build,code FROM stat_build_cards '
-                f'WHERE partition=\'extra\' AND copies>0 AND build IN ({marks})', chunk):
+                f'WHERE partition=\'extra\' AND build IN ({marks})', chunk):
             groups.setdefault(card['build'], set()).add(int(card['code']))
 
     mapping, _, _ = reference(db)
@@ -53,18 +54,13 @@ def query(db, replay_root, now, filters=None, phases=(), phase_none=False, limit
         for code in build_codes.get(row['build'], ()):
             carried.setdefault(code, set()).add(key)
 
-    # 只取本次 selected 的额外事实；appeared=出场，used 仅作辅助。
-    db.execute('DROP TABLE IF EXISTS temp._extra_selected')
-    db.execute('CREATE TEMP TABLE _extra_selected(digest TEXT, player TEXT, PRIMARY KEY(digest,player))')
-    db.executemany('INSERT OR IGNORE INTO _extra_selected(digest,player) VALUES(?,?)',
-                   [(row['digest'], row['player']) for row in selected])
+    # 只扫额外分区；命中的视角用 carried 精确过滤（与按 selected 连接结果一致），
+    # 不再逐行回表探测临时表——原做法在 8 局在录时占额外卡查询 17 秒里的大部分。
     appeared = {}
     used = {}
     for fact in db.execute(
-            'SELECT f.code,f.digest,f.player,MAX(f.appeared) appeared,MAX(f.used) used '
-            'FROM stat_card_facts f JOIN _extra_selected s '
-            'ON s.digest=f.digest AND s.player=f.player '
-            'WHERE f.partition=\'extra\' GROUP BY f.code,f.digest,f.player'):
+            'SELECT code,digest,player,MAX(appeared) appeared,MAX(used) used '
+            'FROM stat_card_facts WHERE partition=\'extra\' GROUP BY code,digest,player'):
         key = (fact['digest'], fact['player'])
         group = canonical(int(fact['code']))
         if group not in carried or key not in carried[group]:
