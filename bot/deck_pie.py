@@ -218,6 +218,11 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck
                                     image=(representatives or {}).get(extras[0] if extras else primary)
                                     or (representatives or {}).get(primary),
                                     mixed=_mix(color_map[primary], accent) if accent else None))
+    for cat in inner:
+        combos = [row for row in middle_rows
+                  if row['primary'] == cat['name'] and row['extras']]
+        best = max(combos, key=lambda row: (row['players'], len(row['extras']), row['label'])) if combos else None
+        cat['outer_image'] = (best or {}).get('image') or cat.get('image')
     outer = []
     for name, players in rows:
         primary = primaries[name]

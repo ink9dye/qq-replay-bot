@@ -167,47 +167,47 @@ def _paste_wedge(image, center, out_r, in_r, start, end, code, color, thumb=Fals
     image.paste(layer, (int(center[0] - out_r), int(center[1] - out_r)), mask)
 
 
-def _draw_labels(draw, center, radius, labels, font, canvas_width, canvas_height, min_gap=24):
-    """外圈标签：左右分组做纵向错开，再画“径向 + 横向”的肘形引线。"""
-    placed = []
+def _draw_labels(draw, center, radius, labels, font, canvas_width, canvas_height):
+    """外圈标签：左右两列排开，折线从扇区边缘接到列上。"""
+    groups = {'left': [], 'right': []}
     for angle, text, _color in labels:
-        offset = radius + 18
-        x = center[0] + math.cos(angle) * offset
-        y = center[1] + math.sin(angle) * offset
-        placed.append({'angle': angle, 'text': text, 'x': x, 'y': y,
-                       'side': 'right' if math.cos(angle) >= 0 else 'left'})
-
-    for side in ('left', 'right'):
-        rows = sorted((item for item in placed if item['side'] == side), key=lambda item: item['y'])
-        previous = -10 ** 9
-        for row in rows:
-            row['y'] = max(row['y'], previous + min_gap)
-            previous = row['y']
-        if rows and rows[-1]['y'] > canvas_height - 28:
-            shift = rows[-1]['y'] - (canvas_height - 28)
-            for row in rows:
-                row['y'] -= shift
-        for row in rows:
-            row['y'] = max(18, row['y'])
-
-    for item in placed:
-        angle, text = item['angle'], item['text']
-        x, y = item['x'], item['y']
-        edge_x = center[0] + math.cos(angle) * (radius + 2)
-        edge_y = center[1] + math.sin(angle) * (radius + 2)
-        knee_x = center[0] + math.cos(angle) * (radius + 10)
-        knee_y = center[1] + math.sin(angle) * (radius + 10)
-        end_x = x - 4 if item['side'] == 'right' else x + 4
-        draw.line([(edge_x, edge_y), (knee_x, knee_y), (end_x, y)], fill='#b8c6b6', width=1)
-        box = draw.textbbox((0, 0), text, font=font)
-        width = box[2] - box[0]
-        anchor_x = x if item['side'] == 'right' else x - width
-        anchor_x = max(8, min(anchor_x, canvas_width - width - 8))
-        draw.text((anchor_x, y - (box[3] - box[1]) / 2 - box[1]), text, font=font, fill='#2f4138')
+        groups['right' if math.cos(angle) >= 0 else 'left'].append((angle, text))
+    for side, rows in groups.items():
+        rows.sort(key=lambda item: math.sin(item[0]))
+        if not rows:
+            continue
+        spacing = min(22, max(15, (canvas_height - 180) / len(rows)))
+        top = center[1] - (len(rows) - 1) * spacing / 2
+        top = max(100, min(top, canvas_height - 40 - (len(rows) - 1) * spacing))
+        text_x = canvas_width - 300 if side == 'right' else 300
+        bend_x = center[0] + radius + 24 if side == 'right' else center[0] - radius - 24
+        for index, (angle, text) in enumerate(rows):
+            y = top + index * spacing
+            edge_x = center[0] + math.cos(angle) * (radius + 2)
+            edge_y = center[1] + math.sin(angle) * (radius + 2)
+            end_x = text_x - 4 if side == 'right' else text_x + 4
+            draw.line([(edge_x, edge_y), (bend_x, y), (end_x, y)], fill='#b8c6b6', width=1)
+            box = draw.textbbox((0, 0), text, font=font)
+            width = box[2] - box[0]
+            tx = text_x if side == 'right' else text_x - width
+            draw.text((tx, y - (box[3] - box[1]) / 2 - box[1]), text, font=font, fill='#2f4138')
 
 
 def _swatch(draw, x, y, color, size=12):
     draw.rectangle((x, y, x + size, y + size), fill=_rgb(color))
+
+
+def _draw_top_legend(draw, inner, width, font):
+    x, y = 40, 92
+    for cat in inner:
+        text = f"{cat['name']}  {cat['players']}人 · {cat['percent']}%"
+        box = draw.textbbox((0, 0), text, font=font)
+        text_width = box[2] - box[0]
+        if x + text_width + 60 > width - 40:
+            x, y = 40, y + 28
+        draw.rectangle((x, y + 3, x + 12, y + 15), fill=_rgb(cat['color']))
+        draw.text((x + 20, y), text, font=font, fill='#22322B')
+        x += text_width + 50
 
 
 def render(database, replay_root, now):
@@ -216,13 +216,13 @@ def render(database, replay_root, now):
     if not pie.get('total'):
         raise ValueError('暂无卡组档案')
 
-    width, height = 1600, 1000
+    width, height = 1600, 1100
     image = Image.new('RGB', (width, height), 'white')
     draw = ImageDraw.Draw(image)
     title_font, head_font, text_font, small_font = _font(28), _font(18), _font(16), _font(14)
     draw.text((40, 30), f"前100卡组分布 · 有档案 {payload['covered']}/{payload['current']} 人 · "
                         f"内环主大类 / 外环具体卡组", font=title_font, fill='#173529')
-    center = (500, 540)
+    center = (800, 560)
     radius = 330
     inner = pie['inner']
     outer_by_primary = {}
@@ -240,6 +240,12 @@ def render(database, replay_root, now):
     # 先画外环（具体卡组），再挖掉内圈，避免覆盖内环。
     for cat in inner:
         span = cat['players'] / total * 360.0
+        start = angle
+        merged = not cat.get('image')
+        if not merged:
+            _paste_wedge(image, center, radius * 0.94, radius * 0.56,
+                         start, start + span, cat.get('outer_image') or cat.get('image'),
+                         cat['color'], thumb=True)
         cursor = angle
         for item in outer_by_primary.get(cat['name']) or []:
             o_span = item['players'] / max(1, cat['players']) * span
@@ -248,13 +254,17 @@ def render(database, replay_root, now):
                    center[0] + radius * 0.94, center[1] + radius * 0.94)
             code = item.get('image') or middle_image.get(
                 (cat['name'], tuple(sorted(item.get('extras') or [])))) or cat.get('image')
-            if cat.get('image'):
-                _paste_wedge(image, center, radius * 0.94, radius * 0.56,
+            if merged:
+                _paste_wedge(image, center, radius * 0.94, radius * 0.30,
                              cursor, o_end, code, item['color'], thumb=True)
-                draw.arc(box, cursor, o_end, fill='white', width=1)
-            if o_span >= 7.5:
-                o_mid = math.radians((cursor + o_end) / 2)
-                labels.append((o_mid, f"{item['name']}  {item['percent']}%", _rgb(item['color'])))
+            r0 = radius * (0.30 if merged else 0.56)
+            a = math.radians(cursor)
+            draw.line((center[0] + math.cos(a) * r0, center[1] + math.sin(a) * r0,
+                       center[0] + math.cos(a) * radius * 0.94,
+                       center[1] + math.sin(a) * radius * 0.94), fill='white', width=1)
+            draw.arc(box, cursor, o_end, fill='white', width=1)
+            o_mid = math.radians((cursor + o_end) / 2)
+            labels.append((o_mid, f"{item['name']}  {item['percent']}%", _rgb(item['color'])))
             cursor = o_end
         angle = cursor
     hole = radius * 0.56
@@ -296,29 +306,7 @@ def render(database, replay_root, now):
     _center_text(draw, center[0], center[1] - 16, str(total), _font(46), '#173529')
     _center_text(draw, center[0], center[1] + 18, '总人数 · 内环 100%', text_font, '#65776b')
 
-    x, y = 1040, 120
-    draw.text((x, y), '内环 · 主大类（合计 100%）', font=head_font, fill='#48613e')
-    y += 32
-    for item in inner:
-        if y > height - 44:
-            break
-        _swatch(draw, x, y + 3, item['color'])
-        draw.text((x + 22, y - 1), f"{item['name']}  {item['players']}人 · {item['percent']}%",
-                  font=text_font, fill='#22322B')
-        y += 26
-    y += 12
-    draw.text((x, y), '外环 · 具体卡组（外圈文字对应）', font=head_font, fill='#48613e')
-    y += 32
-    for index, item in enumerate(pie.get('outer') or [], 1):
-        if y > height - 40:
-            draw.text((x, y), '…还有更多，见网页', font=small_font, fill='#7a887c')
-            break
-        _swatch(draw, x, y + 2, item['color'])
-        label = f"{index}. {item['name']}  {item['players']}人 · {item['percent']}%"
-        if len(label) > 36:
-            label = label[:35] + '…'
-        draw.text((x + 20, y - 1), label, font=small_font, fill='#22322B')
-        y += 24
+    _draw_top_legend(draw, inner, width, text_font)
     draw.text((40, height - 38), pie.get('note') or '', font=small_font, fill='#65776b')
     output = io.BytesIO()
     image.save(output, format='PNG', optimize=True)

@@ -192,18 +192,22 @@ function renderPie(data){const box=$('deckPie');if(!box)return;window.__piePaylo
    if(span/tau>=0.04){const r=rIn[1]-16,tw=Math.max(28,cat.name.length*13+14),x=cx+Math.cos(mid)*r,y=cy+Math.sin(mid)*r;shapes.push('<rect x="'+(x-tw/2).toFixed(1)+'" y="'+(y-11).toFixed(1)+'" width="'+tw+'" height="22" rx="11" fill="rgba(16,30,22,0.66)"/><text x="'+x.toFixed(1)+'" y="'+(y+4).toFixed(1)+'" text-anchor="middle" class="pie-ring-label" style="fill:#fff">'+pieEsc(cat.name)+'</text>')}
   }
   let c=angle;
+  if(!merged){const oMR=(rOut[0]+rOut[1])/2,oCx=cx+Math.cos(mid)*oMR,oCy=cy+Math.sin(mid)*oMR;
+   shapes.push(art(annulusPath(cx,cy,rOut[0],rOut[1],angle,end),cat.outer_image||cat.image,cat.color,0.16,[oCx,oCy,mid,span,rOut[0],rOut[1]]));}
   for(const o of names){const oSpan=(o.players/Math.max(1,cat.players))*span,oEnd=c+oSpan,oMid=(c+oEnd)/2;
    const r0=merged?rIn[0]:rOut[0],oPath=annulusPath(cx,cy,r0,rOut[1],c,oEnd);
    const oKey=cat.name+'|'+[].concat(o.extras||[]).slice().sort().join(',');const oImage=o.image||middleImage.get(oKey)||cat.image;
    const oMR=(r0+rOut[1])/2,oCx=cx+Math.cos(oMid)*oMR,oCy=cy+Math.sin(oMid)*oMR;
-   shapes.push(art(oPath,oImage,o.color,0.16,[oCx,oCy,oMid,oSpan,r0,rOut[1]]));
+   if(merged)shapes.push(art(oPath,oImage,o.color,0.16,[oCx,oCy,oMid,oSpan,r0,rOut[1]]));
    shapes.push('<path d="'+oPath+'" fill="none" stroke="#fff" stroke-width="1" data-deck="'+pieEsc(o.name)+'" style="cursor:pointer" pointer-events="all"><title>'+pieEsc(o.name)+' · '+o.players+'人 · '+o.percent+'%</title></path>');
-   if(oSpan/tau>=0.022)labels.push({a:oMid,text:o.name+'  '+o.percent+'%',deck:o.name});
+   labels.push({a:oMid,text:o.name+'  '+o.percent+'%',deck:o.name});
    c=oEnd}
   angle=end}
- const placed=labels.map(item=>{const side=Math.cos(item.a)>=0?'right':'left';const r=R+18;return {a:item.a,text:item.text,deck:item.deck,side:side,x:cx+Math.cos(item.a)*r,y:cy+Math.sin(item.a)*r}});
- for(const side of ['left','right']){const rows=placed.filter(p=>p.side===side).sort((a,b)=>a.y-b.y);let prev=-1e9;for(const row of rows){row.y=Math.max(row.y,prev+22);prev=row.y}if(rows.length&&rows[rows.length-1].y>H-26){const shift=rows[rows.length-1].y-(H-26);for(const row of rows)row.y-=shift}}
- for(const item of placed){const anchor=item.side==='right'?'start':'end';const edge=cx+Math.cos(item.a)*(R+3),edgeY=cy+Math.sin(item.a)*(R+3);const tx=Math.max(56,Math.min(W-12,item.x)),ty=Math.max(22,Math.min(H-24,item.y));const kneeX=cx+Math.cos(item.a)*(R+8),kneeY=cy+Math.sin(item.a)*(R+8);const endX=anchor==='start'?tx-4:tx+4;shapes.push('<path d="M'+edge.toFixed(1)+' '+edgeY.toFixed(1)+' L'+kneeX.toFixed(1)+' '+kneeY.toFixed(1)+' L'+endX.toFixed(1)+' '+ty.toFixed(1)+'" fill="none" stroke="#b8c6b6" stroke-width="1"/><text x="'+tx.toFixed(1)+'" y="'+(ty+4).toFixed(1)+'" text-anchor="'+anchor+'" class="pie-outside-label" data-deck="'+pieEsc(item.deck)+'" style="cursor:pointer">'+pieEsc(item.text)+'</text>')}
+ const cols={left:[],right:[]};
+ for(const item of labels){const side=Math.cos(item.a)>=0?'right':'left';cols[side].push({a:item.a,text:item.text,deck:item.deck,side:side})}
+ const rowH=Math.min(22,Math.max(14,(H-120)/Math.max(1,Math.ceil(labels.length/2))));
+ for(const side of ['left','right']){const rows=cols[side].sort((a,b)=>Math.sin(a.a)-Math.sin(b.a));let top=cy-(rows.length-1)*rowH/2;top=Math.max(48,Math.min(top,H-40-(rows.length-1)*rowH));rows.forEach((row,i)=>row.y=top+i*rowH)}
+ for(const side of ['left','right'])for(const item of cols[side]){const anchor=side==='right'?'start':'end',textX=side==='right'?W-190:190,bendX=side==='right'?cx+R+18:cx-R-18;const edge=cx+Math.cos(item.a)*(R*0.97),edgeY=cy+Math.sin(item.a)*(R*0.97);const endX=anchor==='start'?textX-4:textX+4;shapes.push('<path d="M'+edge.toFixed(1)+' '+edgeY.toFixed(1)+' L'+bendX.toFixed(1)+' '+item.y.toFixed(1)+' L'+endX.toFixed(1)+' '+item.y.toFixed(1)+'" fill="none" stroke="#b8c6b6" stroke-width="1"/><text x="'+textX.toFixed(1)+'" y="'+(item.y+4).toFixed(1)+'" text-anchor="'+anchor+'" class="pie-outside-label" data-deck="'+pieEsc(item.deck)+'" style="cursor:pointer">'+pieEsc(item.text)+'</text>')}
  shapes.push('<text x="'+cx+'" y="'+(cy-6)+'" class="pie-center">'+total+'</text><text x="'+cx+'" y="'+(cy+22)+'" class="pie-center-sub">总人数 · 内环主大类 100%</text>');
  box.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="前100卡组分布：内环主大类，外环具体卡组">'+'<defs>'+defs.join('')+'</defs>'+shapes.join('')+'</svg>';
  const legend=$('deckPieLegend');if(legend){const nodes=[];
