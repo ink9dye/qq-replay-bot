@@ -191,8 +191,7 @@ def render(database, replay_root, now):
             o_end = cursor + o_span
             box = (center[0] - radius * 0.94, center[1] - radius * 0.94,
                    center[0] + radius * 0.94, center[1] + radius * 0.94)
-            image_code = middle_image.get((cat['name'], tuple(sorted(item.get('extras') or [])))) or cat.get('image')
-            _paste_wedge(image, center, radius * 0.94, radius * 0.60, cursor, o_end, image_code, item['color'])
+            draw.pieslice(box, cursor, o_end, fill=_rgb(item['color']))
             draw.arc(box, cursor, o_end, fill='white', width=1)
             if o_span >= 7.5:
                 o_mid = math.radians((cursor + o_end) / 2)
@@ -211,7 +210,7 @@ def render(database, replay_root, now):
         color = _rgb(cat['color'])
         box = (center[0] - radius * 0.56, center[1] - radius * 0.56,
                center[0] + radius * 0.56, center[1] + radius * 0.56)
-        _paste_wedge(image, center, radius * 0.56, radius * 0.30, angle, end, cat.get('image'), cat['color'])
+        draw.pieslice(box, angle, end, fill=color)
         draw.arc(box, angle, end, fill='white', width=2)
         angle = end
     _draw_labels(draw, center, radius * 0.94, labels, small_font)
