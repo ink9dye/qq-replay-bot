@@ -124,6 +124,14 @@ def _schedule(data_dir, code, pics):
     _pool.submit(work)
 
 
+def _card_number(code):
+    """回放里先行卡可能写成 <101307061>；统一取纯数字卡号。"""
+    text = str(code).strip()
+    if text.startswith('<') and text.endswith('>'):
+        text = text[1:-1].strip()
+    return int(text) if text.isdigit() else None
+
+
 def prefetch(data_dir, codes):
     """后台预热一批卡图；不阻塞请求。"""
     root = library_root(data_dir)
@@ -132,8 +140,9 @@ def prefetch(data_dir, codes):
     pics = (root / 'pics').resolve()
     if not pics.is_relative_to(root):
         return
-    for code in {int(c) for c in codes if type(c) is int or str(c).isdigit()}:
-        if not 0 < code <= 4294967295:
+    numbers = {_card_number(c) for c in codes}
+    for code in numbers:
+        if code is None or not 0 < code <= 4294967295:
             continue
         if any((pics / (str(candidate) + suffix)).is_file()
                for candidate in _image_codes(code) for suffix in ('.jpg', '.png', '.webp')):
@@ -163,8 +172,10 @@ def wait_for(data_dir, codes, timeout=30):
 
 
 def picture(data_dir, code):
-    if type(code) is not int or not 0 < code <= 4294967295:
+    number = _card_number(code)
+    if number is None or not 0 < number <= 4294967295:
         return None
+    code = number
     root = library_root(data_dir)
     if root is None:
         return None

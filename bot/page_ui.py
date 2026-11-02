@@ -41,11 +41,14 @@ def deck_card_images(main, extra, side, names):
             return ''
         items = []
         for code, count in Counter(cards).items():
-            name = names.get(code) or str(code)
+            raw = str(code).strip()
+            if raw.startswith('<') and raw.endswith('>'):
+                raw = raw[1:-1].strip()
+            name = names.get(code) or names.get(raw) or str(raw)
             badge = f'<span class="card-count">×{count}</span>' if count > 1 else ''
             items.append(
-                f'<a class="card-item" href="javascript:void(0)" onclick="openCardModal({code})" title="{e(name)}">'
-                f'<img src="{CARD_IMAGE_URL.format(code=code)}" onerror="this.onerror=null;this.src=&quot;https://cdn.233.momobako.com/ygopro/pics/{code}.jpg&quot;" alt="{e(name)}" loading="lazy">{badge}</a>'
+                f'<a class="card-item" href="javascript:void(0)" onclick="openCardModal(\'{raw}\')" title="{e(name)}">'
+                f'<img src="{CARD_IMAGE_URL.format(code=raw)}" onerror="this.onerror=null;this.src=&quot;https://cdn.233.momobako.com/ygopro/pics/{raw}.jpg&quot;" alt="{e(name)}" loading="lazy">{badge}</a>'
             )
         return (f'<div class="deck-col"><h4>{e(title)}</h4><span class="muted">{len(cards)} 张</span>'
                 f'<div class="card-images">{"".join(items)}</div></div>')

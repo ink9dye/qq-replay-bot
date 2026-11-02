@@ -38,9 +38,18 @@ _IMAGE_CACHE = {}
 _IMAGE_LOCK = None
 
 
+def _numeric_code(code):
+    """先行/异画卡在回放里可能写成 <101307061>，取图前去掉尖括号。"""
+    text = str(code).strip()
+    if text.startswith('<') and text.endswith('>'):
+        text = text[1:-1].strip()
+    return int(text)
+
+
 def card_image_url(code):
     """新卡在 cdntx super-pre，旧卡在 momobako；按卡号探测并缓存。"""
     import threading
+    code = _numeric_code(code)
     global _IMAGE_LOCK
     if _IMAGE_LOCK is None:
         _IMAGE_LOCK = threading.Lock()
@@ -77,7 +86,7 @@ def card_image_payload(code, data_dir):
     global _IMAGE_BYTES_LOCK
     if _IMAGE_BYTES_LOCK is None:
         _IMAGE_BYTES_LOCK = threading.Lock()
-    code = int(code)
+    code = _numeric_code(code)
     with _IMAGE_BYTES_LOCK:
         cached = _IMAGE_BYTES.get(code)
         if cached:

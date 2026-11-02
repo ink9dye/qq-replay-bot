@@ -6,6 +6,7 @@ from __future__ import annotations
 import html
 import io
 import json
+import os
 import re
 import secrets
 import socket
@@ -453,8 +454,9 @@ def make_handler(app: ShareApp):
 
 
 class ReplayHTTPServer(ThreadingHTTPServer):
-    # Windows 的 SO_REUSEADDR 会允许两个进程抢同一端口，导致链接随机落到另一个实例。
-    allow_reuse_address = False
+    # Windows 的 SO_REUSEADDR 会允许两个进程抢同一端口，导致链接随机落到另一个实例；
+    # Linux 上则需要它来绕过 TIME_WAIT，否则重启后短时间绑不上 8787。
+    allow_reuse_address = os.name != "nt"
 
     def server_bind(self) -> None:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
