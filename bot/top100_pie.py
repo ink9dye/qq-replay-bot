@@ -77,37 +77,53 @@ def _card_thumb(code, size=(30, 42)):
     return None
 
 
-def _draw_ring(draw, center, out_r, in_r, items, font, label_radius, label_kind,
-               labels=None):
-    total = sum(item['players'] for item in items)
-    if not total:
-        return
-    angle = -90.0
-    for index, item in enumerate(items):
-        fraction = item['players'] / total
-        end = angle + fraction * 360
-        box = (center[0] - out_r, center[1] - out_r, center[0] + out_r, center[1] + out_r)
-        color = _rgb(item.get('mixed') or item.get('color'))
-        if fraction >= 0.999:
-            draw.ellipse(box, fill=color)
-        else:
-            draw.pieslice(box, angle, end, fill=color)
-            draw.arc(box, angle, end, fill='white', width=2)
-        mid = math.radians((angle + end) / 2)
-        if label_kind == 'inner' and fraction >= 0.04:
-            x = center[0] + math.cos(mid) * label_radius
-            y = center[1] + math.sin(mid) * label_radius
-            light = (0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]) / 255
-            _center_text(draw, x, y, str(item['name']), font, '#173529' if light > 0.62 else 'white')
-            thumb = _card_thumb(item.get('image'))
-            if thumb is not None and fraction >= 0.045:
-                ix = int(center[0] + math.cos(mid) * (in_r + (out_r - in_r) * 0.42))
-                iy = int(center[1] + math.sin(mid) * (in_r + (out_r - in_r) * 0.42))
-                draw.rectangle((ix - 16, iy - 22, ix + 16, iy + 22), outline='white', width=2)
-                draw._image.paste(thumb, (ix - thumb.width // 2, iy - thumb.height // 2))
-        elif label_kind == 'outer' and labels is not None and fraction >= 0.022:
-            labels.append((mid, f"{item['name']}  {item['percent']}%", color))
-        angle = end
+def _card_art(code, size):
+    if not code:
+        return None
+    roots = (Path(__file__).resolve().parents[1] / 'ygopro' / 'pics',
+             Path('/opt/ygobot/ygopro/pics'))
+    cache = Path(__file__).resolve().parents[1] / 'data' / 'cache' / 'card-art'
+    paths = [root / (str(code) + '.jpg') for root in roots]
+    paths.append(cache / (str(code) + '.jpg'))
+    path = next((item for item in paths if item.is_file()), None)
+    if path is None:
+        try:
+            import urllib.request
+            cache.mkdir(parents=True, exist_ok=True)
+            target = cache / (str(code) + '.jpg')
+            request = urllib.request.Request(
+                'https://cdn.233.momobako.com/ygopro/pics/%s.jpg' % code,
+                headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(request, timeout=6) as response:
+                target.write_bytes(response.read())
+            path = target
+        except Exception:
+            return None
+    try:
+        image = Image.open(path).convert('RGB')
+        scale = max(size / image.width, size / image.height)
+        image = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))),
+                             Image.LANCZOS)
+        left = (image.width - size) // 2
+        top = (image.height - size) // 2
+        return image.crop((left, top, left + size, top + size))
+    except Exception:
+        return None
+
+
+def _paste_wedge(image, center, out_r, in_r, start, end, code, color):
+    size = int(out_r * 2) + 2
+    art = Image.new('RGB', (size, size), _rgb(color))
+    card = _card_art(code, size)
+    if card is not None:
+        art.paste(card, (0, 0))
+    mask = Image.new('L', (size, size), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.pieslice((0, 0, size - 1, size - 1), start, end, fill=255)
+    if in_r > 0:
+        inner = int(size / 2 - in_r)
+        mask_draw.ellipse((inner, inner, size - inner, size - inner), fill=0)
+    image.paste(art, (int(center[0] - out_r), int(center[1] - out_r)), mask)
 
 
 def _draw_labels(draw, center, radius, labels, font):
@@ -156,6 +172,8 @@ def render(database, replay_root, now):
         outer_by_primary.setdefault(item['primary'], []).append(item)
 
     total = pie['total']
+    middle_image = {(m['primary'], tuple(sorted(m.get('extras') or []))): m.get('image')
+                    for m in pie.get('middle') or []}
     angle = -90.0
     labels = []
     outer_by_primary = {}
@@ -170,7 +188,8 @@ def render(database, replay_root, now):
             o_end = cursor + o_span
             box = (center[0] - radius * 0.94, center[1] - radius * 0.94,
                    center[0] + radius * 0.94, center[1] + radius * 0.94)
-            draw.pieslice(box, cursor, o_end, fill=_rgb(item['color']))
+            image_code = middle_image.get((cat['name'], tuple(sorted(item.get('extras') or [])))) or cat.get('image')
+            _paste_wedge(image, center, radius * 0.94, radius * 0.60, cursor, o_end, image_code, item['color'])
             draw.arc(box, cursor, o_end, fill='white', width=1)
             if o_span >= 7.5:
                 o_mid = math.radians((cursor + o_end) / 2)
@@ -189,19 +208,8 @@ def render(database, replay_root, now):
         color = _rgb(cat['color'])
         box = (center[0] - radius * 0.56, center[1] - radius * 0.56,
                center[0] + radius * 0.56, center[1] + radius * 0.56)
-        draw.pieslice(box, angle, end, fill=color)
+        _paste_wedge(image, center, radius * 0.56, radius * 0.30, angle, end, cat.get('image'), cat['color'])
         draw.arc(box, angle, end, fill='white', width=2)
-        if span >= 14:
-            x = center[0] + math.cos(mid) * radius * 0.50
-            y = center[1] + math.sin(mid) * radius * 0.50
-            light = (0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]) / 255
-            _center_text(draw, x, y, cat['name'], small_font, '#173529' if light > 0.62 else 'white')
-            thumb = _card_thumb(cat.get('image'))
-            if thumb is not None:
-                ix = int(center[0] + math.cos(mid) * radius * 0.43)
-                iy = int(center[1] + math.sin(mid) * radius * 0.43)
-                draw.rectangle((ix - 16, iy - 22, ix + 16, iy + 22), outline='white', width=2)
-                image.paste(thumb, (ix - thumb.width // 2, iy - thumb.height // 2))
         angle = end
     _draw_labels(draw, center, radius * 0.94, labels, small_font)
     center_hole = radius * 0.30
