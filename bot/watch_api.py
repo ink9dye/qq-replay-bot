@@ -99,7 +99,8 @@ class _Handler(BaseHTTPRequestHandler):
             if not worker:
                 self._send(400, dict(ok=False, error="worker_required"))
                 return
-            job = self.server.app.claim(worker, int(data.get("capacity") or 1), str(data.get("ip") or ""))
+            job = self.server.app.claim(worker, int(data.get("capacity") or 1), str(data.get("ip") or ""),
+                                        float(data.get("wait") or 0))
             if not job:
                 self._send(204, None)
             else:
@@ -186,8 +187,8 @@ class WatchApiServer:
         self._thread = None
 
     # ---- 供 handler 调用 -------------------------------------------------
-    def claim(self, worker: str, capacity: int, ip: str) -> dict:
-        return self.jobs.claim(worker, capacity, ip)
+    def claim(self, worker: str, capacity: int, ip: str, wait: float = 0.0) -> dict:
+        return self.jobs.claim(worker, capacity, ip, wait)
 
     def heartbeat(self, worker: str, active) -> list[str]:
         return self.jobs.heartbeat(worker, active)

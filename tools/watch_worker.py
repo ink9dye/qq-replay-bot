@@ -63,9 +63,10 @@ def _json_request(server: str, token: str, path: str, payload: dict) -> tuple[in
         return status, {}
 
 
-def claim(server: str, token: str, name: str, capacity: int) -> dict:
+def claim(server: str, token: str, name: str, capacity: int, wait: float = 20.0) -> dict:
+    """长轮询：服务器没任务就挂住最多 wait 秒，有任务立刻返回。"""
     status, data = _json_request(server, token, "/watch-api/claim",
-                                 dict(worker=name, capacity=capacity))
+                                 dict(worker=name, capacity=capacity, wait=wait))
     return data.get("job") or {} if status == 200 else {}
 
 

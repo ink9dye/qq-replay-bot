@@ -102,27 +102,31 @@ class RemoteJobs:
                              recorded_at=float(recorded_at), digest=digest))
 
     # ---- 远程端：认领/心跳/上报 -----------------------------------------
-    def claim(self, worker: str, capacity: int = 1, ip: str = "") -> dict:
-        now = time.time()
-        with self._lock:
-            self._prune(now)
-            info = self._workers.setdefault(worker, dict(active=0, ip="", seen=0.0, capacity=1))
-            info.update(seen=now, capacity=max(1, int(capacity or 1)), ip=ip or info.get("ip", ""))
-            if info["active"] >= info["capacity"]:
+    def claim(self, worker: str, capacity: int = 1, ip: str = "", wait: float = 0.0) -> dict:
+        """认领任务。wait>0 时长轮询：没任务就挂住，最多等 wait 秒。"""
+        deadline = time.time() + max(0.0, float(wait or 0.0))
+        while True:
+            now = time.time()
+            with self._lock:
+                self._prune(now)
+                info = self._workers.setdefault(worker, dict(active=0, ip="", seen=0.0, capacity=1))
+                info.update(seen=now, capacity=max(1, int(capacity or 1)), ip=ip or info.get("ip", ""))
+                if info["active"] < info["capacity"]:
+                    for job_id in self._order:
+                        job = self._jobs.get(job_id)
+                        if job is None or job.claimed_by or job.done:
+                            continue
+                        job.claimed_by = worker
+                        job.lease_until = now + self.lease
+                        info["active"] += 1
+                        self.stats["claimed"] += 1
+                        job.event.set()
+                        payload = dict(job.payload)
+                        payload.update(id=job.id, lease=self.lease)
+                        return payload
+            if now >= deadline:
                 return {}
-            for job_id in self._order:
-                job = self._jobs.get(job_id)
-                if job is None or job.claimed_by or job.done:
-                    continue
-                job.claimed_by = worker
-                job.lease_until = now + self.lease
-                info["active"] += 1
-                self.stats["claimed"] += 1
-                job.event.set()
-                payload = dict(job.payload)
-                payload.update(id=job.id, lease=self.lease)
-                return payload
-        return {}
+            time.sleep(min(0.5, max(0.05, deadline - now)))
 
     def heartbeat(self, worker: str, active: list[str] | None = None) -> list[str]:
         """续租；返回服务器认为应该放弃的任务 id（房间已结束/任务过期）。"""
