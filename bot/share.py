@@ -383,8 +383,8 @@ def make_handler(app: ShareApp):
                 length = int(self.headers.get('Content-Length') or 0)
             except ValueError:
                 length = 0
-            if length <= 0 or length > 8192:
-                self.send_response(413 if length > 8192 else 400)
+            if length <= 0 or length > 32768:
+                self.send_response(413 if length > 32768 else 400)
                 self.send_header('Content-Length', '0')
                 self.end_headers()
                 return

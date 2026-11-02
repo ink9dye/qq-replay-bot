@@ -108,8 +108,14 @@ def query(db, replay_root, now, player=None):
         if person['observed']:
             name=person['deck_type'] or '未识别'
             types[name]=types.get(name,0)+1
+    distribution = [dict(name=k, players=v) for k, v in sorted(types.items(), key=lambda kv: (-kv[1], kv[0]))]
+    try:
+        from .deck_pie import from_data_dir
+        deck_pie = from_data_dir(distribution, _data_dir(db))
+    except Exception:
+        deck_pie = None
     return dict(generated_at=now,roster={k:v for k,v in basis['roster'].items() if k!='members'},
         current_players=len(people),covered_players=len(latest),missing_players=len(people)-len(latest),
         unidentified_players=sum(p['observed'] and not p['deck_type'] for p in people),people=people,
-        deck_distribution=[dict(name=k,players=v) for k,v in sorted(types.items(),key=lambda kv:(-kv[1],kv[0]))],
+        deck_distribution=distribution,deck_pie=deck_pie,
         data_quality=basis['diagnostics'],series_reference=basis['series_reference'],classification_revision=basis['classification_revision'])

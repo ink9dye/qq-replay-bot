@@ -87,7 +87,7 @@ def make_handler(portal):
             self.close_connection=True
             try:
                 length=int(self.headers.get('Content-Length','0'))
-                if not 0<length<=2048:raise ValueError()
+                if not 0<length<=65536:raise ValueError()
                 result=portal.post(self.path,self.headers,self.client_address[0],self.rfile.read(length))
             except ValueError:result=portal._reply(400,'请求内容无效。')
             except Exception as exc:

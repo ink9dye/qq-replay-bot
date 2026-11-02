@@ -78,6 +78,9 @@ def _apply_similar_names(db, views, only=None):
     for view in targets:
         if view.get('classification_source') == 'manual':
             continue
+        # 自动命名按组合规则产生，优先于旧人工名库的相似度标签，保证名字统一。
+        if view.get('classification_source') == 'auto_series':
+            continue
         found = labels.get(view['build'])
         if found:
             view['deck_type'] = found[0]
@@ -263,6 +266,23 @@ def detail(db, data_dir, now, player, replay_root=None):
             name=entry.get('cn_name') or entry.get('name') or str(item['code'])))
     series = [r[0] for r in db.execute(
         'SELECT series FROM stat_build_series WHERE build=? ORDER BY series', (view['build'],))]
+    field_breakdown = []
+    try:
+        from pathlib import Path as _Path
+        from . import series_naming as _naming
+        config = _naming.load_config(data_dir)
+        catalog = _naming.reference_catalog(_Path(data_dir) / 'card-series-reference.json')
+        registry = _naming.build_registry(catalog, config, names)
+        rows = _naming.field_contributors(
+            [dict(code=card['code'], copies=card['copies']) for card in cards['main']],
+            catalog, config, names, registry)
+        names_by_code = {card['code']: card['name'] for card in cards['main']}
+        for row in rows:
+            row['cards'] = [dict(item, name=names_by_code.get(item['code'], str(item['code'])))
+                            for item in row['cards']]
+            field_breakdown.append(row)
+    except Exception:
+        field_breakdown = []
     inferred = {'cards': [], 'conflict': False, 'reason': None, 'fallback': False}
     if replay_root is not None:
         try:
@@ -286,7 +306,8 @@ def detail(db, data_dir, now, player, replay_root=None):
                 classification_status=view['classification_status'],
                 label_source=view.get('label_source'),
                 label_score=view.get('label_score'),
-                cards=cards, series=series, inferred_side=inferred)
+                cards=cards, series=series, inferred_side=inferred,
+                field_breakdown=field_breakdown)
 
 
 def apply_name(db, build, deck, player=None):

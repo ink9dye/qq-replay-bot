@@ -3,9 +3,9 @@
 
 token 是 bearer，2 小时有效。
 - GET：只读查询与页面；访问入口 /statistics/access 仍然不开放。
-- POST：仅放行 /statistics/api/deck-naming，供拿到统计链接的人命名卡组。
-portal 只认本机 + owner cookie，这里以本机 Host/客户端身份调用，并注入 owner 会话。
-不经过 8788 的 HTTP，避免多一层网络和端口依赖。
+- POST：仅放行 /statistics/api/deck-naming（人工命名）与 /statistics/api/deck-naming/groups（组合编辑），
+  供拿到统计链接的人维护命名规则。portal 只认本机 + owner cookie，这里以本机 Host/客户端身份调用，
+  并注入 owner 会话。不经过 8788 的 HTTP，避免多一层网络和端口依赖。
 """
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def route(app, path, parts):
 
 
 def post(app, path, parts, body):
-    """公开统计链接的写接口：只允许卡组命名。"""
+    """公开统计链接的写接口：卡组命名 + 组合编辑。"""
     if len(parts) < 2 or parts[0] != "stats":
         return 403, "text/plain; charset=utf-8", "不支持的操作。".encode()
     token = parts[1]
@@ -91,9 +91,10 @@ def post(app, path, parts, body):
         return error
     tail = parts[2:]
     upstream = "/" + "/".join(tail)
-    if upstream != "/statistics/api/deck-naming":
+    if upstream not in ("/statistics/api/deck-naming", "/statistics/api/deck-naming/groups"):
         return 403, "text/plain; charset=utf-8", "这个接口不通过分享链接开放。".encode()
-    if len(body) > 4096:
+    limit = 16384 if upstream.endswith("/groups") else 4096
+    if len(body) > limit:
         return 400, "text/plain; charset=utf-8", "请求内容过大。".encode()
     portal = getattr(app, "statistics_portal", None)
     if portal is None:

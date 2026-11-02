@@ -65,7 +65,7 @@ class StatisticsPortal:
             target='/statistics/deck-naming' if parse_qs(parsed.query).get('next')==['/statistics/deck-naming'] else '/statistics'
             return self._reply(303,'',extra={'Location':target,'Set-Cookie':f'{COOKIE}={value}; Path=/statistics; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}'})
         if not self._authenticated(headers.get('Cookie')):return self._reply(403,'请使用本机“打开统计页面”入口。')
-        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js'):
+        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js','statistics_busy.js'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
             return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
         if parts==['statistics']:
@@ -124,6 +124,31 @@ class StatisticsPortal:
             except(sqlite3.Error,OSError):return self._reply(409,'有效录像范围已变化、为空或过大，请刷新并缩小范围后重试。')
         if parts==['statistics','deck-naming']:
             return self._reply(200,Path(__file__).with_name('statistics_deck_naming.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
+        if parts==['statistics','api','deck-naming','groups']:
+            from .series_naming_admin import list_groups
+            args=parse_qs(parsed.query)
+            query=args.get('q',[''])[0]
+            try:
+                limit=int(args.get('limit',['50'])[0]);offset=int(args.get('offset',['0'])[0])
+            except ValueError:return self._reply(400,'分页参数无效。')
+            if len(query)>60:return self._reply(400,'搜索词过长。')
+            try:
+                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
+                    db.row_factory=sqlite3.Row;db.execute('BEGIN')
+                    result=list_groups(db,self.database.parent,float(self.clock()),query,limit,offset)
+                return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
+            except (sqlite3.Error,OSError,ValueError):return self._reply(503,'组合数据暂时不可用，请稍后刷新。')
+        if len(parts)==5 and parts[:4]==['statistics','api','deck-naming','groups']:
+            from .series_naming_admin import group_detail
+            from urllib.parse import unquote
+            try:
+                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
+                    db.row_factory=sqlite3.Row;db.execute('BEGIN')
+                    result=group_detail(db,self.database.parent,float(self.clock()),unquote(parts[4]))
+                return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
+            except LookupError:return self._reply(404,'找不到这个命名组。')
+            except (sqlite3.Error,OSError):return self._reply(503,'组合数据暂时不可用，请稍后刷新。')
+            except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','api','deck-naming']:
             from .statistics_deck_naming import detail,list_rows
             args=parse_qs(parsed.query);player=args.get('player',[''])[0]
@@ -486,10 +511,10 @@ class StatisticsPortal:
         except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')
 
     def post(self,path,headers,client,body):
-        # 网页默认仍只提供查询与下载；唯一例外是本机 owner 的"卡组命名"后台。
-        # 它要求：本机回环 + 本机 Host + owner cookie + 自定义请求头 + 同源 Origin + 有界请求体。
+        # 网页默认仍只提供查询与下载；唯一例外是本机 owner 的“卡组命名/组合编辑”后台。
+        # 要求：本机回环 + 本机 Host + owner cookie + 自定义请求头 + 同源 Origin + 有界请求体。
         parsed=urlsplit(path)
-        if parsed.path!='/statistics/api/deck-naming':
+        if parsed.path not in ('/statistics/api/deck-naming','/statistics/api/deck-naming/groups'):
             return self._reply(403,'用户统计页面仅提供查询与下载，不支持管理操作。')
         try:host=urlsplit('//'+headers.get('Host','')).hostname
         except ValueError:return self._reply(403,'本机入口地址无效。')
@@ -501,11 +526,27 @@ class StatisticsPortal:
         if not self._authenticated(headers.get('Cookie')):return self._reply(403,'请使用本机“打开统计页面”入口。')
         if headers.get('X-Deck-Naming')!='1':return self._reply(403,'缺少本页操作标记。')
         if headers.get('Origin','')!='http://'+headers.get('Host',''):return self._reply(403,'来源校验失败。')
-        if len(body)>4096:return self._reply(400,'请求内容过大。')
+        limit=16384 if parsed.path.endswith('/groups') else 4096
+        if len(body)>limit:return self._reply(400,'请求内容过大。')
         try:
             payload=json.loads(body.decode('utf-8'))
+            if not isinstance(payload,dict):raise ValueError()
+        except (UnicodeDecodeError,ValueError):
+            return self._reply(400,'参数无效。')
+        if parsed.path.endswith('/groups'):
+            from .series_naming_admin import update_group
+            try:
+                with closing(sqlite3.connect(str(self.database),timeout=10)) as db:
+                    db.row_factory=sqlite3.Row;db.execute('PRAGMA busy_timeout=5000')
+                    result=update_group(db,self.database.parent,float(self.clock()),payload)
+            except LookupError:return self._reply(404,'找不到这个命名组。')
+            except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
+            except sqlite3.Error:return self._reply(409,'统计库正忙，请稍后重试。')
+            except OSError:return self._reply(500,'命名组配置保存失败，请检查数据目录。')
+            return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
+        try:
             build=payload['build'];deck=payload['deck'];naming_player=payload.get('player')
-        except (UnicodeDecodeError,ValueError,KeyError,TypeError):
+        except (KeyError,TypeError):
             return self._reply(400,'命名参数无效。')
         from .statistics_deck_naming import apply_name
         try:

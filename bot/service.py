@@ -180,6 +180,7 @@ class BotService:
         self._top100_enabled = bool(config.get('_pycharm_watch_entry')) and (config.get('statistics') or {}).get('top100_enabled', True) is not False
         self._capture_status_written = 0.0
         self._classification_rules_signature = None
+        self._series_rules_signature = None
         # 事实/录像索引只由观战进程写（设计：只有 collector 写事实库）。
         # 拆分后的 QQ 进程只读同一份库，启动时不再扫描录像、不再补写事实表，
         # 这样重启 QQ 窗口不会和正在录的观战抢写锁；M3 再把 QQ 的写请求交给 collector。
@@ -1073,6 +1074,25 @@ class BotService:
                 self._classification_rules_signature=marker
             except (OSError,ValueError,TypeError,KeyError):
                 self.write_log('构筑分类规则暂不可用，保留已有分类和未知状态')
+        series_reference=self.data_dir/'card-series-reference.json'
+        series_config=self.data_dir/'series-naming.json'
+        series_marker=tuple((p.stat().st_mtime_ns,p.stat().st_size) if p.exists() else None
+                            for p in (series_reference,series_config))
+        if series_reference.is_file() and (updated or series_marker!=self._series_rules_signature):
+            try:
+                from .series_naming import load_config
+                config=load_config(self.data_dir)
+                pending=self.store.pending_series_count(config,now)
+                if pending>400:
+                    self.write_log(f'组合命名待初始化 {pending} 个构筑；请先运行 bot.series_naming 初始化')
+                else:
+                    result=self.store.refresh_series_names(config,now)
+                    self._series_rules_signature=series_marker
+                    planned=(result or {}).get('planned') or {}
+                    if planned.get('create') or planned.get('clear'):
+                        self.write_log(f"组合命名更新 {planned.get('create',0)} 个、清理 {planned.get('clear',0)} 个")
+            except (OSError,ValueError,TypeError,KeyError,sqlite3.Error):
+                self.write_log('组合命名规则暂不可用，保留现有名字')
         return updated
 
     async def cleanup_loop(self) -> None:

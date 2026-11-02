@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
-"""前100卡组分布饼图（QQ 图片）——仿网页：扇区外引导线标签，上下错开。"""
+"""前100卡组分布饼图（QQ 图片）：内环主大类、中环交集细分、外环具体卡组。
+
+三层各自合计 100%：内环每个卡组只归一个主大类，中环是内环的“独占/交集”细分，
+外环是精确卡组名。颜色与网页共用 deck_pie 的色板。
+"""
 from __future__ import annotations
 
-import colorsys
 import io
 import math
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 
 def collect(database, replay_root, now):
@@ -22,7 +25,12 @@ def collect(database, replay_root, now):
     items = [dict(name=str(row['name']), count=int(row['players']))
              for row in data.get('deck_distribution') or [] if int(row.get('players') or 0) > 0]
     items.sort(key=lambda row: (-row['count'], row['name']))
-    return dict(items=items, covered=int(data.get('covered_players') or 0),
+    pie = data.get('deck_pie')
+    if not pie or not pie.get('total'):
+        from .deck_pie import from_data_dir
+        pie = from_data_dir([dict(name=item['name'], players=item['count']) for item in items],
+                            Path(database).parent)
+    return dict(items=items, pie=pie, covered=int(data.get('covered_players') or 0),
                 current=int(data.get('current_players') or 0),
                 unidentified=int(data.get('unidentified_players') or 0))
 
@@ -40,96 +48,118 @@ def _font(size):
     return ImageFont.load_default()
 
 
-def _web_color(index, name):
-    if name == '未识别':
+def _rgb(color):
+    try:
+        return ImageColor.getrgb(str(color))
+    except ValueError:
         return (170, 181, 196)
-    hue = ((210 + index * 137.508) % 360) / 360.0
-    sat = (64 + (index * 7) % 14) / 100.0
-    light = (49 + (index * 11) % 15) / 100.0
-    red, green, blue = colorsys.hls_to_rgb(hue, light, sat)
-    return int(red * 255), int(green * 255), int(blue * 255)
 
 
-def _place(labels, center_y, top, bottom, gap=18):
-    """网页 place() 的 Python 版：同一侧标签按纵向错开。"""
-    ordered = sorted(labels, key=lambda item: math.sin(item['mid']))
-    previous = -10 ** 9
-    for item in ordered:
-        y = center_y + math.sin(item['mid']) * item['radius']
-        y = max(top, y)
-        if y - previous < gap:
-            y = previous + gap
-        item['y'] = y
-        previous = y
-    nxt = bottom
-    for item in reversed(ordered):
-        if item['y'] > nxt:
-            item['y'] = nxt
-        nxt = item['y'] - gap
-    return ordered
-
-
-def _draw_centered(draw, x, y, text, font, fill):
+def _center_text(draw, x, y, text, font, fill):
     box = draw.textbbox((0, 0), text, font=font)
-    draw.text((x - (box[2] - box[0]) / 2, y - (box[3] - box[1]) / 2), text,
-              font=font, fill=fill)
+    draw.text((x - (box[2] - box[0]) / 2, y - (box[3] - box[1]) / 2), text, font=font, fill=fill)
 
 
-def render(database, replay_root, now):
-    payload = collect(database, replay_root, now)
-    items = payload['items']
-    if not items:
-        raise ValueError('暂无卡组档案')
-
-    width, height = 1120, 780
-    center_x, center_y, radius = 560, 390, 235
-    image = Image.new('RGB', (width, height), 'white')
-    draw = ImageDraw.Draw(image)
-    title_font, label_font, pct_font = _font(23), _font(14), _font(14)
-    draw.text((28, 20), f"前100卡组分布 · 有档案 {payload['covered']}/{payload['current']} 人 · "
-                        f"已识别 {len(items)} 类", font=title_font, fill='#173529')
-
-    total = sum(item['count'] for item in items)
-    colors = [_web_color(index, item['name']) for index, item in enumerate(items)]
+def _draw_ring(draw, center, out_r, in_r, items, font, label_radius, label_kind):
+    total = sum(item['players'] for item in items)
+    if not total:
+        return
     angle = -90.0
-    labels = []
-    for item, color in zip(items, colors):
-        fraction = item['count'] / total
+    for index, item in enumerate(items):
+        fraction = item['players'] / total
         end = angle + fraction * 360
-        box = (center_x - radius, center_y - radius, center_x + radius, center_y + radius)
+        box = (center[0] - out_r, center[1] - out_r, center[0] + out_r, center[1] + out_r)
+        color = _rgb(item.get('mixed') or item.get('color'))
         if fraction >= 0.999:
             draw.ellipse(box, fill=color)
         else:
             draw.pieslice(box, angle, end, fill=color)
-            # 细白边，避免相邻扇区粘在一起
             draw.arc(box, angle, end, fill='white', width=2)
         mid = math.radians((angle + end) / 2)
-        if fraction >= 0.08:
-            _draw_centered(draw, center_x + math.cos(mid) * radius * 0.62,
-                           center_y + math.sin(mid) * radius * 0.62,
-                           f'{fraction * 100:.0f}%' if fraction * 100 >= 10 else f'{fraction * 100:.1f}%',
-                           pct_font, 'white')
-        labels.append(dict(name=item['name'], count=item['count'], mid=mid,
-                           right=math.cos(mid) >= 0, radius=radius + 58))
+        if fraction >= (0.08 if label_kind != 'outer' else 0.035):
+            x = center[0] + math.cos(mid) * label_radius
+            y = center[1] + math.sin(mid) * label_radius
+            if label_kind == 'inner':
+                label = str(item['name'])
+            elif label_kind == 'middle':
+                label = str(item['label'])
+            else:
+                label = str(index + 1)
+            light = (0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]) / 255
+            _center_text(draw, x, y, label, font, '#173529' if light > 0.62 else 'white')
         angle = end
 
-    left = _place([label for label in labels if not label['right']], center_y, 58, height - 28)
-    right = _place([label for label in labels if label['right']], center_y, 58, height - 28)
-    for item in left + right:
-        sx = center_x + math.cos(item['mid']) * (radius + 4)
-        sy = center_y + math.sin(item['mid']) * (radius + 4)
-        ex = center_x + math.cos(item['mid']) * (radius + 32)
-        ey = item['y']
-        lx = ex + 10 if item['right'] else ex - 10
-        draw.line([(sx, sy), (ex, ey), (lx, ey)], fill='#9AA79F', width=1)
-        label = f"{item['name']} {item['count']}人"
-        if len(label) > 28:
-            label = label[:27] + '…'
-        bbox = draw.textbbox((0, 0), label, font=label_font)
-        text_width = bbox[2] - bbox[0]
-        tx = lx if item['right'] else lx - text_width
-        draw.text((tx, ey - (bbox[3] - bbox[1]) / 2 - 1), label, font=label_font, fill='#22322B')
 
+def _swatch(draw, x, y, color, size=12):
+    draw.rectangle((x, y, x + size, y + size), fill=_rgb(color))
+
+
+def render(database, replay_root, now):
+    payload = collect(database, replay_root, now)
+    pie = payload['pie']
+    if not pie.get('total'):
+        raise ValueError('暂无卡组档案')
+
+    width, height = 1320, 880
+    image = Image.new('RGB', (width, height), 'white')
+    draw = ImageDraw.Draw(image)
+    title_font, head_font, text_font, small_font = _font(24), _font(16), _font(15), _font(13)
+    draw.text((30, 22), f"前100卡组分布 · 有档案 {payload['covered']}/{payload['current']} 人 · "
+                        f"内环主大类 / 中环交集 / 外环名字", font=title_font, fill='#173529')
+    center = (430, 450)
+    _draw_ring(draw, center, 262, 236, pie['outer'], small_font, 249, 'outer')
+    draw.ellipse((center[0] - 236, center[1] - 236, center[0] + 236, center[1] + 236), fill='white')
+    _draw_ring(draw, center, 230, 178, pie['middle'], small_font, 204, 'middle')
+    draw.ellipse((center[0] - 178, center[1] - 178, center[0] + 178, center[1] + 178), fill='white')
+    _draw_ring(draw, center, 172, 120, pie['inner'], small_font, 146, 'inner')
+    draw.ellipse((center[0] - 120, center[1] - 120, center[0] + 120, center[1] + 120), fill='white')
+    _center_text(draw, center[0], center[1] - 18, str(pie['total']), _font(40), '#173529')
+    _center_text(draw, center[0], center[1] + 16, '总人数', text_font, '#65776b')
+    _center_text(draw, center[0], center[1] + 38, '内环 100% · 外环 100%', small_font, '#65776b')
+
+    x, y = 850, 120
+    rows = []
+    rows.append(('head', '内环 · 主大类（合计 100%）'))
+    for item in pie['inner']:
+        rows.append(('inner', item))
+    rows.append(('head', '中环 · 交集细分'))
+    for item in pie['middle']:
+        rows.append(('middle', item))
+    rows.append(('head', '外环 · 具体卡组'))
+    for index, item in enumerate(pie['outer']):
+        rows.append(('outer', item))
+    index = 0
+    outer_number = 0
+    for kind, payload_item in rows:
+        if y > height - 26:
+            draw.text((x, y), '…还有更多，见网页', font=small_font, fill='#7a887c')
+            break
+        if kind == 'head':
+            if index:
+                y += 8
+            draw.text((x, y), payload_item, font=head_font, fill='#48613e')
+            y += 26
+        elif kind == 'inner':
+            _swatch(draw, x, y + 2, payload_item['color'])
+            draw.text((x + 20, y - 1), f"{payload_item['name']}  {payload_item['players']}人 · {payload_item['percent']}%",
+                      font=text_font, fill='#22322B')
+            y += 24
+        elif kind == 'middle':
+            _swatch(draw, x, y + 2, payload_item.get('mixed') or payload_item['color'])
+            label = f"{payload_item['label']} @ {payload_item['primary']}  {payload_item['players']}人 · {payload_item['percent']}%"
+            draw.text((x + 20, y - 1), label, font=small_font, fill='#22322B')
+            y += 22
+        else:
+            outer_number += 1
+            _swatch(draw, x, y + 2, payload_item['color'])
+            label = f"{outer_number}. {payload_item['name']}  {payload_item['players']}人 · {payload_item['percent']}%"
+            if len(label) > 34:
+                label = label[:33] + '…'
+            draw.text((x + 20, y - 1), label, font=small_font, fill='#22322B')
+            y += 22
+        index += 1
+    draw.text((30, height - 34), pie.get('note') or '',
+              font=small_font, fill='#65776b')
     output = io.BytesIO()
     image.save(output, format='PNG', optimize=True)
     return output.getvalue(), payload
