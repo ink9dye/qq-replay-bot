@@ -66,8 +66,15 @@ def chart_png(player, stats, now):
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.font_manager import FontProperties
-        font_path = Path('C:/Windows/Fonts/msyh.ttc')
-        font = FontProperties(fname=str(font_path)) if font_path.exists() else FontProperties()
+        # Linux 生产机没有 Windows 雅黑；显式选一个已安装的中文字体，避免标题/轴标签变方框。
+        font_candidates = (
+            Path('C:/Windows/Fonts/msyh.ttc'),
+            Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
+            Path('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'),
+            Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'),
+        )
+        font_path = next((path for path in font_candidates if path.is_file()), None)
+        font = FontProperties(fname=str(font_path)) if font_path else FontProperties()
         fig = Figure(figsize=(10, 5), dpi=100, facecolor='white')
         FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
