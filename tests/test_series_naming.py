@@ -207,9 +207,9 @@ class NamingTests(unittest.TestCase):
             primary_threshold=4, secondary_threshold=3,
             groups=[dict(name='甲', sources=['甲'])]))
         result = series_naming.propose(deck({1: 1}), catalog(tags), config,
-                                       extra_cards=deck({2: 3}))
+                                       extra_cards=deck({2: 8}))
         self.assertEqual(result['name'], '甲')
-        self.assertEqual(result['basis']['primary'], ('甲', 4))
+        self.assertEqual(result['basis']['primary'], ('甲', 5))
 
     def test_three_required_cards_all_present_qualify_below_threshold(self):
         config = series_naming.normalize_config(dict(

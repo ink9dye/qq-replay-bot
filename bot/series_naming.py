@@ -87,7 +87,7 @@ DEFAULT_CONFIG = {
     'exception_position': 'prefix',   # prefix=例外在前；suffix=例外在后
     'exception_order': DEFAULT_EXCEPTION_ORDER,
     'require_primary': True,          # 没有达到主阈值的字段就不自动命名
-    'overwrite_reference': False,     # reference 已明确识别的构筑默认不动
+    'overwrite_reference': True,     # reference 已明确识别的构筑默认不动
     'clear_stale_auto': True,         # 配置变化后不再满足规则的 auto_series 名字要清掉
     'respect_manual': False,          # 旧的人工命名全部作废：默认 auto 规则覆盖 manual
     'require_main_complete': False,   # 主卡不完整仍按已观测部分命名（记 partial 标记）
@@ -473,8 +473,8 @@ def candidate_fields(code, catalog, registry, names, config):
     return set()
 
 
-def count_fields(cards, catalog, config, names=None, registry=None):
-    """cards: [{code,copies}]；返回字段累计张数、未归类张数与未映射卡数。"""
+def count_fields(cards, catalog, config, names=None, registry=None, extra_cards=None, extra_weight=0.5):
+    """cards 主卡组，extra_cards 额外卡组；额外卡按 extra_weight 折算（2 张额外=1 张主）。"""
     registry = registry or build_registry(catalog, config)
     counts = Counter()
     core_counts = Counter()
@@ -485,11 +485,13 @@ def count_fields(cards, catalog, config, names=None, registry=None):
     total = 0
     core_card_groups = registry.get('core_card_groups') or {}
     optional_card_groups = registry.get('optional_card_groups') or {}
-    for card in cards:
+    weighted = [(card, 1.0) for card in cards] + [(card, float(extra_weight)) for card in (extra_cards or [])]
+    for card, weight in weighted:
         code = int(card['code'])
-        copies = int(card['copies'])
-        if copies <= 0:
+        raw_copies = int(card['copies'])
+        if raw_copies <= 0:
             continue
+        copies = raw_copies * weight
         total += copies
         present.add(code)
         for field in core_card_groups.get(code, ()):
@@ -515,6 +517,8 @@ def count_fields(cards, catalog, config, names=None, registry=None):
     for field in list(counts):
         if not core_counts.get(field):
             counts[field] = 0
+        elif float(counts[field]).is_integer():
+            counts[field] = int(counts[field])
     qualified = set()
     for field, codes in (registry.get('core_members') or {}).items():
         # 必要卡全齐即算字段：一件套、两件套、三件套都适用，不再限定 3 张。
@@ -586,7 +590,14 @@ def select_fields(counts, config, registry=None):
         representatives.append(max(specific, key=lambda name: (len(name), filtered[name], name))
                                if specific else broad)
     representatives.sort(key=lambda name: (-filtered[name], -len(name), name))
-    return [(name, filtered[name]) for name in representatives]
+    seen = set()
+    result = []
+    for name in representatives:
+        if name in seen:
+            continue
+        seen.add(name)
+        result.append((name, filtered[name]))
+    return result
 
 
 def compose_name(selected, exceptions, config, qualified=None):
@@ -625,29 +636,32 @@ def compose_name(selected, exceptions, config, qualified=None):
                       secondaries=secondaries, exceptions=exception_names)
 
 
-def field_contributors(cards, catalog, config, names=None, registry=None):
+def field_contributors(cards, catalog, config, names=None, registry=None, extra_cards=None, extra_weight=0.5):
     """某个构筑里每个字段由哪些卡组成（给网页“字段明细”用）。"""
     registry = registry or build_registry(catalog, config, names)
     ancestors = registry.get('ancestors') or {}
     per = defaultdict(list)
-    for card in cards:
+    weighted = [(card, 1.0) for card in cards] + [(card, float(extra_weight)) for card in (extra_cards or [])]
+    for card, weight in weighted:
         code = int(card['code'])
         copies = int(card['copies'])
         if copies <= 0:
             continue
+        effective = copies * weight
         fields = candidate_fields(code, catalog, registry, names, config)
         expanded = set(fields)
         for field in fields:
             expanded |= set(ancestors.get(field) or ())
         for field in expanded:
-            per[field].append(dict(code=code, copies=copies))
+            per[field].append(dict(code=code, copies=effective, raw_copies=copies))
     rows = []
     core_members = registry.get('core_members') or {}
     for field, items in per.items():
         core_codes = set(core_members.get(field) or ())
         if core_codes and not any(int(item['code']) in core_codes for item in items):
             continue
-        rows.append(dict(field=field, copies=sum(item['copies'] for item in items), cards=items))
+        total = sum(item['copies'] for item in items)
+        rows.append(dict(field=field, copies=int(total) if float(total).is_integer() else total, cards=items))
     rows.sort(key=lambda row: (-row['copies'], row['field']))
     return rows
 
@@ -659,7 +673,7 @@ def copies_of(counts, name):
 def propose(cards, catalog, config, names=None, main_complete=True, registry=None, extra_cards=None):
     """单构筑命名建议；cards 为主卡组，extra_cards 为额外卡组（可选）。"""
     registry = registry or build_registry(catalog, config, names)
-    counted = count_fields(list(cards) + list(extra_cards or []), catalog, config, names, registry)
+    counted = count_fields(cards, catalog, config, names, registry, extra_cards=extra_cards)
     exceptions = {name: copies_of(counted['fields'], name) for name in config['exception_order']}
     selected = select_fields(counted['fields'], config, registry)
     small_names = registry.get('small_names') or {}
@@ -949,6 +963,9 @@ def apply_plan(db, planned, config, commit=True):
                                        source='auto_series', score=None)))
             continue
         if row['action'] != 'create' or not row['name']:
+            # 跳过/不够阈值也要记录“已按此版本评估”，否则后台会一直当成待初始化。
+            db.execute('UPDATE stat_builds SET classification_version=? WHERE fingerprint=?',
+                       (version, row['build']))
             continue
         series = [name for name, _copies in row['basis'].get('fields') or []]
         series += [name for name in (row['basis'].get('exceptions') or [])]
