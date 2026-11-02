@@ -656,10 +656,10 @@ def copies_of(counts, name):
     return int(counts.get(name) or 0)
 
 
-def propose(cards, catalog, config, names=None, main_complete=True, registry=None):
-    """单构筑命名建议；cards 为主卡组 [{code,copies}]。"""
+def propose(cards, catalog, config, names=None, main_complete=True, registry=None, extra_cards=None):
+    """单构筑命名建议；cards 为主卡组，extra_cards 为额外卡组（可选）。"""
     registry = registry or build_registry(catalog, config, names)
-    counted = count_fields(cards, catalog, config, names, registry)
+    counted = count_fields(list(cards) + list(extra_cards or []), catalog, config, names, registry)
     exceptions = {name: copies_of(counted['fields'], name) for name in config['exception_order']}
     selected = select_fields(counted['fields'], config, registry)
     small_names = registry.get('small_names') or {}
@@ -690,6 +690,19 @@ def _main_cards(db, builds):
         marks = ','.join('?' for _ in chunk)
         for row in db.execute("SELECT build,code,copies FROM stat_build_cards "
                               "WHERE partition='main' AND copies>0 AND build IN (%s)" % marks, chunk):
+            result.setdefault(row['build'], []).append(dict(row))
+    return result
+
+
+def _extra_cards(db, builds):
+    """一次取回这些 build 的额外卡组；额外卡也计入组合字段。"""
+    result = {}
+    builds = list(builds)
+    for start in range(0, len(builds), 400):
+        chunk = builds[start:start + 400]
+        marks = ','.join('?' for _ in chunk)
+        for row in db.execute("SELECT build,code,copies FROM stat_build_cards "
+                              "WHERE partition='extra' AND copies>0 AND build IN (%s)" % marks, chunk):
             result.setdefault(row['build'], []).append(dict(row))
     return result
 
@@ -870,6 +883,7 @@ def plan(db, now, config, catalog=None, names=None, builds=None, scope='top100',
             builds = scope_builds(db, now, scope, replay_root)
     builds = [build for build in builds if build]
     cards = _main_cards(db, builds)
+    extras = _extra_cards(db, builds)
     rows = _build_rows(db, builds)
     planned = []
     for build in builds:
@@ -899,7 +913,7 @@ def plan(db, now, config, catalog=None, names=None, builds=None, scope='top100',
             planned.append(item)
             continue
         proposal = propose(cards_for_build, catalog, config, names,
-                           bool(info['main_complete']), registry)
+                           bool(info['main_complete']), registry, extras.get(build, []))
         item.update(proposal)
         item['reason'] = proposal['basis'].get('reason')
         if proposal['name'] is None:

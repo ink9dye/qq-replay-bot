@@ -295,7 +295,7 @@ def detail(db, data_dir, now, player, replay_root=None):
         catalog = _naming.reference_catalog(_Path(data_dir) / 'card-series-reference.json')
         registry = _naming.build_registry(catalog, config, names)
         rows = _naming.field_contributors(
-            [dict(code=card['code'], copies=card['copies']) for card in cards['main']],
+            [dict(code=card['code'], copies=card['copies']) for card in (cards['main']+cards['extra'])],
             catalog, config, names, registry)
         names_by_code = {card['code']: card['name'] for card in cards['main']}
         for row in rows:

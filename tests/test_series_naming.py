@@ -200,6 +200,17 @@ class NamingTests(unittest.TestCase):
                                        series_naming.normalize_config(config), names)
         self.assertEqual(result['name'], '阿不思')
 
+    def test_extra_deck_cards_count_into_fields(self):
+        tags = {1: ['甲'], 2: ['甲']}
+        config = series_naming.normalize_config(dict(
+            exceptions=[], keywords={}, ignore_fields=[],
+            primary_threshold=4, secondary_threshold=3,
+            groups=[dict(name='甲', sources=['甲'])]))
+        result = series_naming.propose(deck({1: 1}), catalog(tags), config,
+                                       extra_cards=deck({2: 3}))
+        self.assertEqual(result['name'], '甲')
+        self.assertEqual(result['basis']['primary'], ('甲', 4))
+
     def test_three_required_cards_all_present_qualify_below_threshold(self):
         config = series_naming.normalize_config(dict(
             exceptions=[], keywords={}, ignore_fields=[],
