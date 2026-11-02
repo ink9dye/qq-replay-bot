@@ -1,5 +1,13 @@
 # 萌卡 / YGOPro 观战录像订阅 QQ 机器人
 
+## 云端部署（2026-11 起）
+
+线上 `101.201.108.188` 由三个 systemd 服务提供：`ygo-collector`（观战 + 分享本体 `127.0.0.1:8789`）、`ygo-web`（统计后台 `127.0.0.1:8788`）、`ygo-qq`（QQ），NapCat 在 Docker。
+
+公网入口 `http://101.201.108.188:8787` 由 **nginx 1.24** 监听并反代到 `127.0.0.1:8789`：只放行 `/stats/*`、`/s/*`、`/health`、`/`，按 IP 限速（页面 10r/s、`/statistics/api/` 5r/s，burst 30/20）、单 IP 连接 20、请求头 10s 超时、上游读写 120s、`proxy_buffering off`。分享服务因此只绑回环，**公开链接格式不变**（仍是 `http://<服务器>:8787/stats/<token>`）。
+
+配置随仓库：`deploy/nginx-ygobot-site.conf`、`deploy/nginx-ygobot-proxy.conf`；改完 `nginx -t && systemctl reload nginx`，不重启 collector。巡检脚本按 8787（nginx）/8789（share 本体）/8788 三个端口判断，并额外检查 `8787/health` 是否为 200（抓“nginx 在、上游挂”的 502）。
+
 ## PyCharm统一控制全部观战
 
 普通启动入口自动打开PyCharm并运行watch.py。独立名单与QQ订阅共用一个观战循环；Run窗口按停止即结束全部观战、QQ指令与网页服务，不保留另一个隐藏观战实例。已有统一实例时重复启动只打开文件，不重启观战。具体说明见 [PYCHARM_WATCH.md](PYCHARM_WATCH.md)。
