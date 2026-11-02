@@ -38,7 +38,7 @@ def resolve_ranks(db, people, now):
 
 
 def population(db, replay_root, now, player=None, allowed_digests=None, resolve_rank=True):
-    basis=eligible_views(db,replay_root,now,player=player)
+    basis=eligible_views(db,replay_root,now,player=player,check_files=False)
     if allowed_digests is not None:basis['views']=[r for r in basis['views'] if r['digest'] in allowed_digests]
     from .statistics_population import latest_views
     latest=latest_views(basis)

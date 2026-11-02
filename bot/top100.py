@@ -107,7 +107,7 @@ def snapshot(db,now):
     return state
 
 
-def eligible_views(db,replay_root,now,internal_only=False,scope='default',series_catalog=None,player=None,annotate_series=True):
+def eligible_views(db,replay_root,now,internal_only=False,scope='default',series_catalog=None,player=None,check_files=True,annotate_series=True):
     """不聚合的动态有效视角：掉榜立即无效，重回恢复未到期事实。"""
     from .share import safe_replay_file
     from .card_series import reference,annotate,SEMANTICS
@@ -145,16 +145,19 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
         params+=(player,)
     if wide_population:sql=sql.replace('JOIN stat_current_top100 m ON m.player=v.player','LEFT JOIN stat_current_top100 m ON m.player=v.player')
     rows=[dict(r) for r in db.execute(sql+'ORDER BY g.recorded_at,v.digest,v.player_index',params)]
-    file_paths={}
-    for file_row in db.execute('SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
-        file_paths.setdefault(file_row['digest'],[]).append(file_row['rel_path'])
-    alive={}
-    root_resolved=replay_root.resolve();dir_cache={}
-    for row in rows:
-        digest=row['digest']
-        if digest not in alive:
-            alive[digest]=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
-                              for rel_path in file_paths.get(digest,()))
+    if check_files:
+        file_paths={}
+        for file_row in db.execute('SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
+            file_paths.setdefault(file_row['digest'],[]).append(file_row['rel_path'])
+        alive={}
+        root_resolved=replay_root.resolve();dir_cache={}
+        for row in rows:
+            digest=row['digest']
+            if digest not in alive:
+                alive[digest]=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
+                                  for rel_path in file_paths.get(digest,()))
+    else:
+        alive={row['digest']: True for row in rows}
     if annotate_series:
         annotate(db,rows,series_catalog)
     from .statistics_match_identity import inherit_first_game_types

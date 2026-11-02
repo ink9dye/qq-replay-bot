@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""统计页代理：/stats/<token>/statistics/... → 8787 进程内的 StatisticsPortal。
+"""统计页代理：/stats/<token>/statistics/... → ygo-web 127.0.0.1:8788。
 
 token 是 bearer，2 小时有效。
 - GET：只读查询与页面；访问入口 /statistics/access 仍然不开放。
@@ -9,11 +9,27 @@ token 是 bearer，2 小时有效。
 """
 from __future__ import annotations
 
+import urllib.error
+import urllib.request
 from urllib.parse import urlsplit
 
 OWNER_COOKIE = "qqstats_owner"
+UPSTREAM = "http://127.0.0.1:8788"
 BLOCKED = ("/statistics/access",)
 TEXT_TYPES = ("text/html", "text/javascript", "application/javascript", "text/css", "application/json")
+
+
+def _fetch(upstream, headers, body=None, method="GET"):
+    """请求 ygo-web；失败抛 OSError/HTTPError 由调用方回退或报错。"""
+    request = urllib.request.Request(UPSTREAM + upstream, data=body, method=method)
+    for key, value in headers.items():
+        request.add_header(key, value)
+    request.add_header("Accept-Encoding", "identity")
+    try:
+        response = urllib.request.urlopen(request, timeout=60)
+    except urllib.error.HTTPError as exc:
+        return exc.code, dict(exc.headers.items()), exc.read()
+    return response.status, dict(response.headers.items()), response.read()
 
 
 def _rewrite(body, token):
@@ -62,14 +78,23 @@ def route(app, path, parts):
     portal = getattr(app, "statistics_portal", None)
     if portal is None:
         return 503, "text/plain; charset=utf-8", "统计页尚未初始化。".encode()
+    cookie = f"{OWNER_COOKIE}={portal._session(int(app.clock()) + 600)}"
+    headers = {"Host": "127.0.0.1:8788", "Cookie": cookie}
     try:
-        cookie = f"{OWNER_COOKIE}={portal._session(int(app.clock()) + 600)}"
-        status, content_type, body, headers = portal.route(
-            upstream, {"Host": "127.0.0.1:8788", "Cookie": cookie}, "127.0.0.1")
-    except Exception:
-        return 503, "text/html; charset=utf-8", (
-            "<meta charset='utf-8'><h1>统计服务暂不可用</h1>"
-            "<p>请确认统计网页仍在运行，稍后重新发送“统计”。</p>".encode())
+        status, remote_headers, body = _fetch(upstream, headers)
+        content_type = next((value for key, value in remote_headers.items()
+                             if key.lower() == "content-type"), "application/octet-stream")
+        headers = {key: value for key, value in remote_headers.items()
+                   if key.lower() in ("location", "content-disposition")}
+    except (OSError, urllib.error.URLError):
+        # ygo-web 不可用时回退进程内 portal，至少还能看统计。
+        try:
+            status, content_type, body, headers = portal.route(
+                upstream, {"Host": "127.0.0.1:8788", "Cookie": cookie}, "127.0.0.1")
+        except Exception:
+            return 503, "text/html; charset=utf-8", (
+                "<meta charset='utf-8'><h1>统计服务暂不可用</h1>"
+                "<p>请确认统计网页仍在运行，稍后重新发送“统计”。</p>".encode())
     if any(kind in content_type for kind in TEXT_TYPES):
         body = _rewrite(body, token)
     location = headers.get("Location") if isinstance(headers, dict) else None
@@ -99,16 +124,21 @@ def post(app, path, parts, body):
     portal = getattr(app, "statistics_portal", None)
     if portal is None:
         return 503, "text/plain; charset=utf-8", "统计页尚未初始化。".encode()
+    cookie = f"{OWNER_COOKIE}={portal._session(int(app.clock()) + 600)}"
+    headers = {
+        "Host": "127.0.0.1:8788",
+        "Cookie": cookie,
+        "X-Deck-Naming": "1",
+        "Origin": "http://127.0.0.1:8788",
+        "Content-Type": "application/json",
+    }
     try:
-        cookie = f"{OWNER_COOKIE}={portal._session(int(app.clock()) + 600)}"
-        headers = {
-            "Host": "127.0.0.1:8788",
-            "Cookie": cookie,
-            "X-Deck-Naming": "1",
-            "Origin": "http://127.0.0.1:8788",
-            "Content-Type": "application/json",
-        }
-        status, content_type, payload, _extra = portal.post(upstream, headers, "127.0.0.1", body)
-    except Exception:
-        return 503, "text/plain; charset=utf-8", "统计服务暂不可用，请稍后重试。".encode()
+        status, remote_headers, payload = _fetch(upstream, headers, body=body, method="POST")
+        content_type = next((value for key, value in remote_headers.items()
+                             if key.lower() == "content-type"), "application/octet-stream")
+    except (OSError, urllib.error.URLError):
+        try:
+            status, content_type, payload, _extra = portal.post(upstream, headers, "127.0.0.1", body)
+        except Exception:
+            return 503, "text/plain; charset=utf-8", "统计服务暂不可用，请稍后重试。".encode()
     return status, content_type, payload

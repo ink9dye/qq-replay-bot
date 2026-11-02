@@ -465,6 +465,8 @@ class StatisticsPortal:
             args=parse_qs(parsed.query)
             player=args.get('player',[None])[0] if parts[-1]=='build' else None
             if parts[-1]=='build' and (not player or len(player)>128):return self._reply(400,'需要玩家名称。')
+            if player is None:
+                return self._cached_query_reply(('roster',), lambda db:query(db,self.replay_root,float(self.clock()),None), ttl=300.0, stamp_seconds=300)
             try:
                 # 独立只读连接，不抢服务Store事务、不触发迁移；本次响应固定一个快照。
                 with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
@@ -480,13 +482,13 @@ class StatisticsPortal:
             except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')
         return self._reply(404,'找不到此统计页面。')
 
-    def _cached_query_reply(self,key,callback,ttl=10.0):
+    def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30):
         """相同条件 + 相同数据库文件版本时复用完整响应；DB 一写就失效。"""
         try:
             stat=self.database.stat()
             # 观战进程会持续写库，按文件 mtime 精确比对会让缓存永远失效；
             # 用 30 秒粒度做数据版本，最多容忍半分钟旧数据。
-            stamp=int(stat.st_mtime_ns//30_000_000_000)
+            stamp=int(stat.st_mtime_ns//(stamp_seconds*1_000_000_000))
         except OSError:
             return self._query_reply(callback)
         now=time.monotonic()
