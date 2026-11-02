@@ -66,6 +66,58 @@ def card_image_url(code):
         return candidates[0]
 
 
+_IMAGE_BYTES = {}
+_IMAGE_BYTES_LOCK = None
+
+
+def card_image_payload(code, data_dir):
+    """下载并缓存卡图，返回 base64://，避免 QQ 端再请求外部 CDN。"""
+    import base64
+    import threading
+    global _IMAGE_BYTES_LOCK
+    if _IMAGE_BYTES_LOCK is None:
+        _IMAGE_BYTES_LOCK = threading.Lock()
+    code = int(code)
+    with _IMAGE_BYTES_LOCK:
+        cached = _IMAGE_BYTES.get(code)
+        if cached:
+            return 'base64://' + cached
+        cache_dir = Path(data_dir) / 'card-images'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / (str(code) + '.jpg')
+        blob = b''
+        if path.is_file() and path.stat().st_size <= 8 * 1024 * 1024:
+            blob = path.read_bytes()
+        if not blob:
+            try:
+                from .statistics_local_cards import picture
+                found = picture(data_dir, code)
+                if found:
+                    blob = Path(found[0]).read_bytes()
+            except Exception:
+                blob = b''
+        if not blob:
+            for url in (
+                f'https://cdntx.moecube.com/ygopro-super-pre/data/pics/{code}.jpg',
+                f'https://cdn.233.momobako.com/ygopro/pics/{code}.jpg',
+            ):
+                try:
+                    request = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urlopen(request, timeout=5) as response:
+                        data = response.read(8 * 1024 * 1024 + 1)
+                    if data[:2] == b'\xff\xd8' and len(data) <= 8 * 1024 * 1024:
+                        blob = data
+                        path.write_bytes(blob)
+                        break
+                except Exception:
+                    continue
+        if not blob:
+            return card_image_url(code)
+        encoded = base64.b64encode(blob).decode('ascii')
+        _IMAGE_BYTES[code] = encoded
+        return 'base64://' + encoded
+
+
 class CardReply(str):
     def __new__(cls, text, image_url):
         result = super().__new__(cls, text)
@@ -204,6 +256,35 @@ class CardSearch:
             self.cache.popitem(last=False)
         return result
 
+    def _local_search(self, query, user):
+        """百鸽不可用时，用本地 YGOPro 中文卡库兜底。"""
+        from .statistics_local_cards import local_index
+        value = self._alias((query or "").strip())
+        tokens = [normalize(part) for part in re.split(r"\s+", value) if normalize(part)]
+        if not tokens:
+            return "请输入要查的卡名。"
+        rows = []
+        for info in local_index(self.data_dir).values():
+            name = str(info.get("cn_name") or "")
+            target = normalize(name)
+            if target and all(token in target for token in tokens):
+                rows.append(info)
+        if not rows:
+            return "百鸽查卡接口暂时连不上，本地卡库也没有找到这张卡。"
+        rows.sort(key=lambda item: (normalize(item.get("cn_name") or "") != normalize(value),
+                                    len(str(item.get("cn_name") or "")),
+                                    int(item.get("id") or 0)))
+        cards = [dict(id=int(item["id"]), cn_name=item.get("cn_name") or "",
+                      text={"desc": item.get("description") or ""}) for item in rows[:20]]
+        if len(cards) == 1:
+            return self._reply_detail(cards[0])
+        lines = [f"本地卡库找到 {len(cards)} 张（百鸽暂时连不上）："]
+        lines += [f"{i + 1}. {card_name(card)}（{int(card['id']):08d}）"
+                  for i, card in enumerate(cards[:10])]
+        lines.append("请直接发送数字选择；候选只保存在当前会话。")
+        self.sessions[str(user)] = {"query": value, "rows": cards, "offset": 0, "next": 0, "time": self.clock()}
+        return "\n".join(lines)
+
     def _alias(self, query):
         aliases = {"灰": "灰流丽", "泡影": "无限泡影", "g": "增殖的G"}
         if self.alias_path.exists():
@@ -237,7 +318,7 @@ class CardSearch:
         if block:
             lines.append("\n".join(block))
         lines.append(f"百鸽：https://ygocdb.com/card/{card_id}")
-        return CardReply("\n\n".join(lines), card_image_url(card_id))
+        return CardReply("\n\n".join(lines), card_image_payload(card_id, self.data_dir))
 
     def _pendulum_scale(self, card_id):
         """从本地 YGOPro 文本里取灵摆刻度；没有本地库时返回 None。"""
@@ -265,6 +346,8 @@ class CardSearch:
             try:
                 return self._handle(str(user), action, value)
             except OSError:
+                if action == "search":
+                    return self._local_search(value, user)
                 return "查卡接口暂时连不上，请稍后重试。"
             except (ValueError, KeyError, TypeError):
                 return "查卡暂时失败：数据不是合法 JSON 或格式异常，请稍后重试。"

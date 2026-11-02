@@ -45,6 +45,9 @@ class RecoveryPolicy:
                 self.next_attempt_at = data['next_attempt_at']
                 self.alert = data['alert']
                 self.offline_since = data.get('offline_since', 0)
+                now = self.clock()
+                if self.next_attempt_at - now > 60:
+                    self.next_attempt_at = now + 60
                 if (type(self.failures) is not int or self.failures < 0
                         or self.alert not in ('', 'offline', 'attention')
                         or any(type(v) not in (int,float) or not math.isfinite(v) or v < 0
@@ -82,8 +85,8 @@ class RecoveryPolicy:
     def failed(self):
         self.offline_since = self.offline_since or self.clock()
         self.failures += 1
-        # 前六次有限重连（1/2/4/8/16/30 秒），之后改为每 15 分钟检查一次，避免无限重试。
-        delay = min(2**min(self.failures-1,5),30) if self.failures < 6 else 900
+        # 前六次有限重连（1/2/4/8/16/30 秒），之后每分钟检查一次；仍只重连接口，不登录。
+        delay = min(2**min(self.failures-1,5),30) if self.failures < 6 else 60
         self.next_attempt_at = self.clock()+delay
         self.save()
         if self.clock()-self.offline_since >= 30 or self.failures >= 6:

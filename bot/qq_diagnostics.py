@@ -17,7 +17,7 @@ _WORD_FIELDS = {'action', 'operation', 'reason', 'state', 'kind', 'error_type'}
 
 
 class Diagnostics:
-    def __init__(self, data_dir, *, max_bytes=1024 * 1024, clock=time.time):
+    def __init__(self, data_dir, *, max_bytes=8 * 1024 * 1024, clock=time.time):
         self.path = Path(data_dir) / 'logs' / 'qq-diagnostics.jsonl' if data_dir else None
         self.session = uuid.uuid4().hex[:12]
         self.max_bytes, self.clock = max_bytes, clock
@@ -48,7 +48,7 @@ class Diagnostics:
                 previous = self.path.with_name(self.path.name + '.1')
                 # These three exact owned files only; no directory traversal or recursive cleanup.
                 for path in (self.path, previous, older):
-                    if path.exists() and now - path.stat().st_mtime > 7 * 86400:
+                    if path.exists() and now - path.stat().st_mtime > 90 * 86400:
                         path.unlink()
                 if self.path.exists() and self.path.stat().st_size + len(encoded) > self.max_bytes:
                     older.unlink(missing_ok=True)

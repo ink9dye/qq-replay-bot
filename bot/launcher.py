@@ -23,7 +23,24 @@ from .roles import lock_filenames
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def ensure_statistics_web(root, *, port=8788, popen=subprocess.Popen, pause=time.sleep):
+def listening_pid(port):
+    try:
+        out = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True,
+                                      encoding="utf-8", errors="replace", timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[0].upper() == "TCP" and parts[1].endswith(":" + str(port)) \
+                and parts[3].upper() == "LISTENING":
+            try:
+                return int(parts[4])
+            except ValueError:
+                return None
+    return None
+
+
+def ensure_statistics_web(root, *, port=8788, popen=subprocess.Popen, pause=time.sleep, job_api=None, job=None):
     """Start the missing standalone web; never stop or replace an existing listener."""
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
     def status():
@@ -39,9 +56,14 @@ def ensure_statistics_web(root, *, port=8788, popen=subprocess.Popen, pause=time
     current=status()
     if current=='ready':return True
     if current=='busy':return False
-    popen([sys.executable,'-m','bot.statistics_server','--root',str(root),'--port',str(port)],
+    web_process = popen([sys.executable,'-m','bot.statistics_server','--root',str(root),'--port',str(port)],
         cwd=str(root),stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    if job_api is not None and job is not None and getattr(web_process, 'pid', None):
+        try:
+            job_api.assign(job, web_process.pid)
+        except OSError:
+            pass
     for _ in range(20):
         pause(.25)
         current=status()
@@ -241,7 +263,7 @@ def role_process_running(root: Path, filename: str) -> bool:
     return True
 
 
-def ensure_role_processes(root: Path, config: dict | None = None, *, popen=None, names=None):
+def ensure_role_processes(root: Path, config: dict | None = None, *, popen=None, names=None, job_api=None, job=None):
     """只补缺：已占用角色锁或 8787 健康检查已就绪的服务跳过，不重启、不杀进程。
 
     names 限定要补的窗口；拆模式下 start-all 只负责 QQ，观战由 PyCharm 固定 watch Run 拉起。
@@ -284,6 +306,12 @@ def ensure_role_processes(root: Path, config: dict | None = None, *, popen=None,
             print(f'无法打开{title}服务窗口：{exc}', flush=True)
             continue
         _ROLE_PROCESS_HANDLES.append(process)
+        if name in ("qq", "share") and job_api is not None and job is not None:
+            try:
+                job_api.assign(job, process.pid)
+                print(f"{title}已加入 start-all Job。", flush=True)
+            except OSError as exc:
+                print(f"{title}未加入 Job（{exc}），关闭 start-all 时可能残留。", flush=True)
         started.append(name)
         print(f'已打开{title}服务窗口（python -m {module}）。', flush=True)
     return started, failed
@@ -543,11 +571,41 @@ def main() -> None:
             if not acquired:
                 print('已有启动窗口正在等待登录，请切换到那个窗口完成扫码。')
                 return
-            web_ready = ensure_statistics_web(ROOT)
+            job_api = job = None
+            if split:
+                try:
+                    from .qq_supervisor import WindowsJobApi
+                    job_api = WindowsJobApi()
+                    job = job_api.create()
+                    def _stop_job():
+                        try:
+                            job_api.terminate(job)
+                        except OSError:
+                            pass
+                        try:
+                            job_api.close(job)
+                        except OSError:
+                            pass
+                    install_close_handler(_stop_job)
+                except OSError as exc:
+                    print(f"start-all Job 创建失败，关闭窗口不会自动停止全部服务：{exc}", flush=True)
+            if job_api is not None and job is not None:
+                for _port in (8788, 8787 if share_process_mode(config) else None):
+                    if _port is None:
+                        continue
+                    _pid = listening_pid(_port)
+                    if _pid:
+                        try:
+                            job_api.assign(job, _pid)
+                            print(f"已有服务 {_port} pid={_pid} 已加入 start-all Job。", flush=True)
+                        except OSError as exc:
+                            print(f"已有服务 {_port} 未能加入 Job：{exc}", flush=True)
+            web_ready = ensure_statistics_web(ROOT, job_api=job_api, job=job)
             print('统计网页：'+('已就绪。' if web_ready else '未就绪，请检查8788端口和统计资料。'),flush=True)
             # 顺序：网页 → share（process）→ supervisor → 最后请求 PyCharm watch。
             if split and qq_lifecycle_mode(config) == "supervisor":
-                started, failed = ensure_role_processes(ROOT, config, names=split_role_names(config))
+                started, failed = ensure_role_processes(ROOT, config, names=split_role_names(config),
+                                                       job_api=job_api, job=job)
                 role_failures.extend(failed)
                 start_called[0] = True
                 ok = not failed
@@ -593,6 +651,21 @@ def main() -> None:
         if role_failures:
             print('部分服务窗口未能打开：' + '、'.join(role_failures), flush=True)
         if not ok:print('启动未全部完成。请按上方提示处理；窗口会保留。',flush=True)
+        if job is not None:
+            print('运行窗口保持中：关闭本窗口会停止 QQ/NapCat、share 和 8788，只保留 watch。', flush=True)
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                try:
+                    job_api.terminate(job)
+                except OSError:
+                    pass
+                try:
+                    job_api.close(job)
+                except OSError:
+                    pass
+                raise SystemExit(0) from None
         raise SystemExit(0 if ok and web_ready and not role_failures and watch_error is None else 1)
     except pycharm_link.IDEError as exc:
         # PyCharm 自动运行失败：网页、NapCat 等已经起来的服务不回滚、不杀进程。

@@ -215,10 +215,11 @@ class OneBotClient:
         except OSError:
             pass
 
-    async def pause_for_attention(self, reason):
+    async def pause_for_attention(self, reason, persist=True):
         self.suspended, self.connected, self.pause_reason = True, False, reason
         try:
-            write_state(self.state_dir / 'qq-paused.json' if self.state_dir else None, 'manual_attention', reason)
+            if persist:
+                write_state(self.state_dir / 'qq-paused.json' if self.state_dir else None, 'manual_attention', reason)
         except OSError:
             pass
         self.recovery.announce('attention')
@@ -386,6 +387,11 @@ class OneBotClient:
                     delay = 1.0
                 if self.state_dir:
                     delay = self.recovery.failed()
+                    if self.recovery.failures >= 30:
+                        await self.pause_for_attention(
+                            "连续 30 次无法连接 NapCat，已停止自动重连；请检查 NapCat/QQ 登录后运行 resume-qq.bat。",
+                            persist=False)
+                        break
                 self.publish_state('cooldown' if self.state_dir and delay >= 900 else 'reconnecting', connection_hint(failure) if failure else '接口断开')
                 if self.on_status and failure is not None:
                     self.on_status(connection_hint(failure) + f" {delay:g} 秒后重试。")

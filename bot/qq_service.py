@@ -19,6 +19,11 @@ LOCK_FILE = "bot.lock"
 
 
 def main() -> None:
+    import faulthandler
+    log_dir = ROOT / 'data' / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fault = (log_dir / 'qq-faulthandler.log').open('a', encoding='utf-8')
+    faulthandler.enable(file=fault, all_threads=True)
     set_console_title("QQ机器人 - bot.qq_service")
     lock = StartupLock(ROOT, LOCK_FILE)
     if not lock.acquire():

@@ -2739,6 +2739,7 @@ async def serve(
     catchup_limit = config_number(config, "startup_catchup_limit", STARTUP_CATCHUP_LIMIT, int)
     catchup_joined = 0
     catchup_skipped = set()
+    retry_zero = {}
     silent_tracker = SilentWindowTracker()
     probation_enabled = config_flag(config, "probation_enabled", True) and gate.min_interval > 0
     probation_until = time.monotonic() + PROBATION_SECONDS if probation_enabled else 0.0
@@ -2933,7 +2934,8 @@ async def serve(
                             f"结果 {outcome}｜{detail['drop']}")
                 pause = {"saved": 12, "noreplay": 20, "leave": 30, "retry": 3, "unstable": 120, "gone": 300, "config": 120}.get(outcome, 5)
                 monitor.finished(outcome, detail)
-                silent_room = bool(outcome == 'gone' and (detail.get('packets') or 0) == 0)
+                packets_zero = (detail.get('packets') or 0) == 0
+                silent_room = bool(outcome in ('gone', 'retry', 'unstable') and packets_zero)
                 silent_tracker.note(time.time(), silent_room)
                 rolling.note_outcome(time.time(), outcome == 'saved', silent_room)
                 if outcome == 'saved':
@@ -2990,10 +2992,22 @@ async def serve(
                     message = adaptive.failed(time.monotonic())
                     if message: log(message)
                 cooldown_until[key] = now + pause
+                if outcome == 'saved':
+                    retry_zero.pop(key, None)
+                elif outcome == 'retry' and packets_zero:
+                    retry_zero[key] = retry_zero.get(key, 0) + 1
+                    if retry_zero[key] >= 3:
+                        retry_zero.pop(key, None)
+                        dead_rooms.add(key)
+                        cooldown_until[key] = now + 1800
+                        log(f"同一房间连续 3 次 0 包重试，判定不可观战：{key}（冷却 30 分钟）")
             # 最近一小时成功率熔断：低于 50% 且样本够，直接停 15 分钟，不等全灭。
             if time.time() - last_rate_check >= SUCCESS_BREAKER_CHECK_SECONDS:
                 last_rate_check = time.time()
-                rate, seen = rolling.success_rate(last_rate_check)
+                if time.monotonic() < gate.paused_until:
+                    rate, seen = 1.0, 0
+                else:
+                    rate, seen = rolling.success_rate(last_rate_check)
                 if seen >= SUCCESS_BREAKER_MIN_SAMPLES and rate < SUCCESS_BREAKER_RATE:
                     gate.paused_until = max(gate.paused_until,
                                             time.monotonic() + SUCCESS_BREAKER_PAUSE_SECONDS)

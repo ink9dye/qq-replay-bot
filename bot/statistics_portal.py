@@ -123,9 +123,9 @@ class StatisticsPortal:
         if parts==['statistics','api','deck-naming']:
             from .statistics_deck_naming import detail,list_rows
             args=parse_qs(parsed.query);player=args.get('player',[''])[0]
-            scope=args.get('scope',['100'])[0];query=args.get('q',[''])[0]
+            scope=args.get('scope',['100'])[0];query=args.get('q',[''])[0];deck_query=args.get('deck',[''])[0]
             def run(db):
-                return detail(db,self.database.parent,float(self.clock()),player,self.replay_root) if player else list_rows(db,float(self.clock()),scope,query,self.replay_root)
+                return detail(db,self.database.parent,float(self.clock()),player,self.replay_root) if player else list_rows(db,float(self.clock()),scope,query,self.replay_root,deck_query=deck_query)
             try:return self._query_reply(run)
             except LookupError:return self._reply(404,'没有找到这个玩家的有效构筑或名单记录。')
             except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
@@ -224,6 +224,35 @@ class StatisticsPortal:
             return self._query_reply(lambda db:scoped_query(ranges,lambda:overview(db,self.replay_root,float(self.clock()),basis,decks)))
         if parts==['statistics','cards-report']:
             return self._reply(200,Path(__file__).with_name('statistics_cards_report.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
+        if parts==['statistics','cards-extra']:
+            return self._reply(200,Path(__file__).with_name('statistics_cards_extra.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
+        if parts==['statistics','api','cards-extra']:
+            from .statistics_extra_report import query as extra_report
+            from .statistics_rank_scope import parse_ranges,scoped_query
+            from .statistics_card_report import Filters
+            args=parse_qs(parsed.query)
+            try:
+                ranges=parse_ranges(args)
+                seat=args.get('seat',['all'])[0]
+                if seat not in ('all','first','second'):raise ValueError()
+                internal=args.get('internal',['0'])[0]=='1'
+                phases=args.get('phase',[])
+                phase_none=args.get('phase_none',['0'])[0]=='1'
+                sort=args.get('sort',['carry'])[0]
+                if sort not in ('carry','players','appearance','win','code'):raise ValueError()
+                decks=tuple(json.loads(v) for v in args.get('deck',[]))
+                opponents=tuple(json.loads(v) for v in args.get('opponent',[]))
+                if any(len(v)>100 or any(s is not None and (not isinstance(s,str) or not s.strip() or len(s)>128) for s in v)
+                       for v in (decks,opponents)):
+                    raise ValueError()
+            except (ValueError,TypeError):
+                return self._reply(400,json.dumps({'error':'额外卡筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            filters=Filters(decks,opponents,(),(),None if seat=='all' else seat=='first',internal)
+            try:
+                return self._query_reply(lambda db:scoped_query(ranges,lambda:extra_report(
+                    db,self.replay_root,float(self.clock()),filters=filters,phases=phases,phase_none=phase_none,sort=sort)))
+            except ValueError as exc:
+                return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','api','card-report']:
             from .card_statistics import Filters
             from .statistics_card_report import query as card_report

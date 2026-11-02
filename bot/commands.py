@@ -139,6 +139,16 @@ def parse_command(text: str) -> dict:
         if rest:
             return {"op": "error", "message": "直接发送“前百饼图”即可。"}
         return {"op": "top100_pie"}
+    if head == "使用量":
+        name = " ".join(rest).strip()
+        if not name:
+            return {"op": "error", "message": "格式：使用量 卡名，例如：使用量 神碑之泉"}
+        return {"op": "card_usage", "name": name}
+    if head == "单卡流向":
+        name = " ".join(rest).strip()
+        if not name:
+            return {"op": "error", "message": "格式：单卡流向 卡名，例如：单卡流向 决斗者之力"}
+        return {"op": "card_flow", "name": name}
     if head == "前百构筑":
         keyword = " ".join(rest).strip()
         if not keyword:

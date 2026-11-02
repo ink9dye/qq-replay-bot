@@ -57,6 +57,7 @@ class CpolarTunnel:
         self.last_attempt = float('-inf')
         self.last_error = ''
         self._process = None
+        self._last_health_check = 0.0
 
     # ---- 状态文件 ----
     def _state(self) -> dict:
@@ -99,10 +100,24 @@ class CpolarTunnel:
         alive = self._process is not None and self._process.poll() is None
         if alive and self._fresh(state):
             # 自己还在跑：只按心跳刷状态，不再启动第二条（免费版只允许 1 条）。
+            url = self.current_url()
+            now = self.clock()
+            if url and now - self._last_health_check >= 60:
+                self._last_health_check = now
+                if not self.check(url):
+                    self.last_error = 'cpolar 公网自检失败，准备重连'
+                    self._stop(self._process)
+                    self._process = None
+                    try:
+                        self.state_path.unlink()
+                    except OSError:
+                        pass
+                    self.last_attempt = float('-inf')
+                    return False
             if self.wall() - float(state.get('updated_at') or 0) > max(5.0, self.heartbeat_seconds / 3):
-                self._write_state(self.current_url() or state.get('url', ''), self._process.pid)
+                self._write_state(url or state.get('url', ''), self._process.pid)
             self.last_error = ''
-            return bool(self.current_url())
+            return bool(url)
         if not alive and self._fresh(state):
             # 另一进程起的隧道还新鲜：直接用，不抢占、不再开一条。
             self.last_error = ''

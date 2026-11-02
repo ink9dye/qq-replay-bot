@@ -17,6 +17,6 @@ if "%STARTUP_EXIT%"=="0" (
 ) else (
     echo 启动未全部完成，退出代码 %STARTUP_EXIT%。请查看上方提示。
 )
-echo 此窗口仅显示启动结果，关闭它不会关闭已启动的服务。
+echo 此窗口是运行窗口：关闭它会停止 QQ/NapCat、share 和 8788，只保留 watch。
 pause
 exit /b %STARTUP_EXIT%

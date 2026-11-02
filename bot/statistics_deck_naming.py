@@ -144,20 +144,30 @@ def _row(name, member, view, rank):
                 in_top100=bool(member))
 
 
-def list_rows(db, now, scope='100', query='', replay_root=None):
-    """scope=100/200/all/unnamed；query 非空时跨全部已知玩家搜索（含榜外已采集）。"""
+def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
+    """scope=100/200/all/unnamed；query/玩家名、deck_query/卡组名非空时跨全部已知玩家搜索。"""
     scope = str(scope or '100')
     if scope not in ('100', '200', 'all', 'unnamed'):
         raise ValueError('范围无效。')
     query = (query or '').strip()
-    if len(query) > 128:
+    deck_query = (deck_query or '').strip()
+    if len(query) > 128 or len(deck_query) > 128:
         raise ValueError('搜索词过长。')
     roster = _roster(db)
     views = _latest_views(db, now, replay_root,
                           only=set(roster) if scope == '100' else None)
     names = set(roster) | set(views)
-    searched = bool(query)
-    if searched:
+    searched = bool(query or deck_query)
+    if deck_query:
+        lowered_deck = deck_query.lower()
+        names = {name for name in names
+                 if lowered_deck in ((views.get(name) or {}).get('deck_type') or '').lower()}
+        if scope == '100':
+            names &= set(roster)
+        if query:
+            lowered = query.lower()
+            names = {name for name in names if lowered in name.lower()}
+    elif query:
         lowered = query.lower()
         names = {name for name in names if lowered in name.lower()}
     elif scope == '100':
@@ -199,10 +209,12 @@ def list_rows(db, now, scope='100', query='', replay_root=None):
         value = member['rank'] if member else extra.get(name)
         rank = value if value and value > 0 else None
         rows.append(_row(name, member, views.get(name), rank))
+    if deck_query and scope == '200':
+        rows = [row for row in rows if row['rank'] is not None and row['rank'] <= 200]
     rows.sort(key=lambda r: (r['rank'] is None, r['rank'] or 0, r['player']))
     total = len(rows)
     rows = rows[:MAX_ROWS]
-    return dict(version=2, scope='search' if searched else scope, query=query, total=total,
+    return dict(version=2, scope='search' if searched else scope, query=query, deck_query=deck_query, total=total,
                 shown=len(rows), truncated=total > len(rows),
                 observed=sum(1 for r in rows if r['observed']),
                 recognized=sum(1 for r in rows if r['deck_type']),

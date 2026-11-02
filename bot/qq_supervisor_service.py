@@ -25,7 +25,7 @@ STATE_PATH = ROOT / 'data' / 'qq-lifecycle.json'
 
 
 def log(message: str) -> None:
-    stamp = time.strftime('%H:%M:%S')
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S')
     line = f'[{stamp}] {message}'
     print(line, flush=True)
     try:
@@ -51,8 +51,12 @@ def _spawn_batch(path: Path) -> None:
 
 
 def _spawn_qq_service(root: Path):
+    log_path = Path(root) / 'data' / 'logs' / 'qq-service.log'
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    output = log_path.open('a', encoding='utf-8', errors='replace')
     return subprocess.Popen([sys.executable, '-m', 'bot.qq_service'], cwd=str(root),
-                            creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0))
+                            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 
 
 def _wait_processes(root: Path, timeout: float, predicate) -> list[dict]:
@@ -79,6 +83,11 @@ def _cleanup(supervisor: Supervisor, ownership: Ownership, pids: list[int]) -> N
 
 
 def main() -> int:
+    import faulthandler
+    log_dir = ROOT / 'data' / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fault = (log_dir / 'qq-supervisor-faulthandler.log').open('a', encoding='utf-8')
+    faulthandler.enable(file=fault, all_threads=True)
     set_console_title('QQ机器人运行窗口（关闭即停止 NapCat/QQ）')
     root = ROOT
     config = read_config(root / 'config.json')

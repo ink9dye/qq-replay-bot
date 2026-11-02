@@ -239,8 +239,11 @@ class BotService:
         self._price_reservations = None
         self._price_ui_lock = threading.Lock()
         self._price_quote_tasks = set()
+        self._history_tasks = set()
         self._deck_cache = {}
         self._deck_tasks = set()
+        self._known_replays_at = 0.0
+        self._known_replays = set()
 
     @property
     def price_reservations(self):
@@ -503,9 +506,13 @@ class BotService:
         if op == "top100_rank_build":
             return self._top100_rank_build_text(user, command["rank"])
         if op == "top100_deck":
-            return self._top100_deck_text(command["keyword"])
+            return self._top100_deck_text(user, command["keyword"])
         if op == "top100_pie":
             return self._top100_pie_reply()
+        if op == "card_usage":
+            return self._card_usage_reply(command["name"])
+        if op == "card_flow":
+            return self._card_flow_reply(command["name"])
         if op == "price_quote":
             return self._price_quote_blocking(command)
 
@@ -639,7 +646,7 @@ class BotService:
         """构筑 玩家名：最新构筑图（base64）+ 本链接的 ydk 下载地址。"""
         cache_key = self._deck_cache_key(user_id, player)
         cached = self._deck_cache.get(cache_key)
-        if cached and time.monotonic() - cached[0] < 300:
+        if cached and time.monotonic() - cached[0] < 3600:
             return cached[1]
         self.index_player_replays(player)
         from .match_history import recover_sessions_from_prefix
@@ -681,7 +688,7 @@ class BotService:
 
         image_codes = [int(card.get('code') or 0) for card in
                        (result.get('cards') or []) + ((result.get('inferred_side') or {}).get('cards') or [])]
-        wait_for(self.data_dir, image_codes, timeout=30)
+        wait_for(self.data_dir, image_codes, timeout=4)
 
         def load(code):
             found = picture(self.data_dir, code)
@@ -848,7 +855,11 @@ class BotService:
         directory = self.replay_root / safe_filename_part(player)
         if not directory.is_dir():
             return 0
-        known = {replay["rel_path"] for replay in self.store.all_replays()}
+        now = time.monotonic()
+        if now - self._known_replays_at > 5:
+            self._known_replays = {replay["rel_path"] for replay in self.store.all_replays()}
+            self._known_replays_at = now
+        known = self._known_replays
         indexed = 0
         for path in sorted(directory.glob("*.yrp")):
             try:
@@ -859,6 +870,7 @@ class BotService:
                 continue
             if self._index_replay_file(path, player):
                 indexed += 1
+                known.add(str(relative))
         return indexed
 
     def index_collector_data(self) -> None:
@@ -1095,6 +1107,12 @@ class BotService:
             self._deck_tasks.add(task)
             task.add_done_callback(self._deck_tasks.discard)
             return
+        if parsed_command.get('op') == 'player_history':
+            await send(receiver, "历史查询中，完成后把结果发到这里。")
+            task = asyncio.create_task(self._history_job(user_id, text, conversation, receiver, send))
+            self._history_tasks.add(task)
+            task.add_done_callback(self._history_tasks.discard)
+            return
         if parsed_command.get('op') == 'price_quote':
             await send(receiver, "查价中，约 1 分钟；完成后把结果发到这里。")
             task = asyncio.create_task(self._price_quote_job(parsed_command, receiver, send))
@@ -1309,6 +1327,36 @@ class BotService:
             return reply
         return reply
 
+    def _card_flow_reply(self, card_name):
+        from .card_flow import render_flow
+        try:
+            blob, data = render_flow(self.store.path, self.data_dir, self.clock(), card_name)
+        except ValueError as exc:
+            return f"单卡流向查询失败：{exc}"
+        image_url = "base64://" + base64.b64encode(blob).decode("ascii")
+        text = (f"前100单卡流向：{data['name']}（{data['code']:08d}）\n"
+                f"有构筑 {data['covered']}/{data['current']} 人；带卡 {data['used']}/100 人；"
+                f"共 {len(data['items'])} 个卡组大类") 
+        return CardReply(text, image_url)
+
+    def _card_usage_reply(self, card_name):
+        from .card_usage_pie import render
+        try:
+            blob, data = render(self.store.path, self.data_dir, self.clock(), card_name)
+        except ValueError as exc:
+            return f"使用量查询失败：{exc}"
+        image_url = "base64://" + base64.b64encode(blob).decode("ascii")
+        side = (f"备牌 {data['side_total']} 张" if data['side_available']
+                else "备牌暂无记录")
+        text = (f"前100使用量：{data['name']}（{data['code']:08d}）\n"
+                f"有构筑 {data['covered']}/{data['current']} 人；"
+                f"主卡 {data['main_total']} 张，{side}，总投入 {data['total_total']} 张\n"
+                f"主卡投入人数：" + "，".join(f"{k}张 {v}人" for k, v in data['main_dist'].items()) +
+                ("\n备牌投入人数：" + "，".join(f"{k}张 {v}人" for k, v in data['side_dist'].items())
+                 if data['side_available'] else "\n备牌投入：当前构筑库没有备牌记录") +
+                "\n总投入人数：" + "，".join(f"{k}张 {v}人" for k, v in data['total_dist'].items()))
+        return CardReply(text, image_url)
+
     def _top100_pie_reply(self):
         from .top100_pie import render
         blob, data = render(self.store.path, self.replay_root, self.clock())
@@ -1317,7 +1365,7 @@ class BotService:
                 f"已识别 {len(data['items'])} 类）")
         return CardReply(text, image_url)
 
-    def _top100_deck_text(self, keyword: str) -> str:
+    def _top100_deck_text(self, user: str, keyword: str) -> str:
         from . import deck_naming
         with closing(deck_naming.connect(self.store.path, readonly=True)) as db:
             roster = deck_naming.roster(db)
@@ -1330,6 +1378,8 @@ class BotService:
                 hits.append((row["rank"], row["player"], deck))
         if not hits:
             return f"前100里没有卡组名包含「{keyword}」的玩家。"
+        if len(hits) == 1:
+            return self._deck_build_text(user, hits[0][1])
         lines = [f"前100中卡组名包含「{keyword}」的玩家（{len(hits)} 人）："]
         for rank, player, deck in hits:
             lines.append(f"#{rank} {player} · {deck}")
@@ -1359,6 +1409,20 @@ class BotService:
             await send(receiver, reply)
         except Exception as exc:
             self.write_log(f"构筑结果发送失败：{exc}")
+
+    async def _history_job(self, user_id, text, conversation, receiver, send):
+        try:
+            reply = await asyncio.wait_for(
+                asyncio.to_thread(self.handle_text, user_id, text, conversation), timeout=60)
+        except asyncio.TimeoutError:
+            reply = "历史查询超时，请稍后再试。"
+        except Exception as exc:
+            reply = f"历史查询失败：{exc}"
+            self.write_log(f"历史查询任务异常：{type(exc).__name__}: {exc}")
+        try:
+            await send(receiver, reply)
+        except Exception as exc:
+            self.write_log(f"历史结果发送失败：{exc}")
 
     async def _price_quote_job(self, command, receiver, send):
         try:

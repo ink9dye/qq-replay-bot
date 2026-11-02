@@ -73,8 +73,13 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(service.store.list_subscriptions(), [])
             service.qq = GroupQQ()
             service.group_commands = True
-            asyncio.run(service.on_qq_event(group_event('历史 花无十日红')))
-            self.assertIn('当前排名：3', service.qq.group_sent[0][1])
+
+            async def run_group():
+                await service.on_qq_event(group_event('历史 花无十日红'))
+                await asyncio.gather(*list(service._history_tasks))
+
+            asyncio.run(run_group())
+            self.assertTrue(any('当前排名：3' in text for _, text in service.qq.group_sent))
             self.assertEqual(service.qq.sent, [])
 
     def test_command_full_names_and_help_template(self):

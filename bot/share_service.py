@@ -106,8 +106,12 @@ def build_tunnel(config: dict, app):
     owner = str(share_cfg.get('tunnel_owner') or 'watch').strip().lower()
     if owner != 'share' or share_cfg.get('quick_tunnel') is not True:
         return None
-    from .cpolar_tunnel import resolve_mode
     data_dir = Path(str(config.get('data_dir') or (ROOT / 'data')))
+    mode = str(share_cfg.get('tunnel_mode') or 'ssh').strip().lower()
+    if mode == 'cloudflare':
+        from .cloudflare_tunnel import CloudflareTunnel
+        return CloudflareTunnel(ROOT, data_dir, app.local_base(), share_cfg)
+    from .cpolar_tunnel import resolve_mode
     try:
         mode = resolve_mode(share_cfg)
     except ValueError:
