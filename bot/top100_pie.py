@@ -77,7 +77,7 @@ def _card_thumb(code, size=(30, 42)):
     return None
 
 
-def _card_art(code, size):
+def _card_file(code):
     if not code:
         return None
     roots = (Path(__file__).resolve().parents[1] / 'ygopro' / 'pics',
@@ -99,14 +99,30 @@ def _card_art(code, size):
             path = target
         except Exception:
             return None
+    return path
+
+
+def _card_work(code):
+    path = _card_file(code)
+    if path is None:
+        return None
     try:
         image = Image.open(path).convert('RGB')
-        width, height = image.size
-        image = image.crop((int(width * 0.14), int(height * 0.165),
-                            int(width * (0.14 + 0.74)), int(height * (0.165 + 0.485))))
+    except Exception:
+        return None
+    width, height = image.size
+    return image.crop((int(width * 0.14), int(height * 0.165),
+                       int(width * (0.14 + 0.74)), int(height * (0.165 + 0.485))))
+
+
+def _card_art(code, size):
+    image = _card_work(code)
+    if image is None:
+        return None
+    try:
         scale = max(size / image.width, size / image.height)
         image = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))),
-                             Image.LANCZOS)
+                             Image.Resampling.LANCZOS)
         left = (image.width - size) // 2
         top = (image.height - size) // 2
         return image.crop((left, top, left + size, top + size))
@@ -114,41 +130,80 @@ def _card_art(code, size):
         return None
 
 
-def _paste_wedge(image, center, out_r, in_r, start, end, code, color):
+def _card_art_rect(code, width, height):
+    image = _card_work(code)
+    if image is None:
+        return None
+    try:
+        return image.resize((max(1, int(width)), max(1, int(height))), Image.Resampling.LANCZOS)
+    except Exception:
+        return None
+
+
+def _paste_wedge(image, center, out_r, in_r, start, end, code, color, thumb=False):
     size = int(out_r * 2) + 2
-    art = Image.new('RGB', (size, size), _rgb(color))
-    card = _card_art(code, size)
-    if card is not None:
-        art.paste(card, (0, 0))
+    layer = Image.new('RGB', (size, size), _rgb(color))
     mask = Image.new('L', (size, size), 0)
     mask_draw = ImageDraw.Draw(mask)
     mask_draw.pieslice((0, 0, size - 1, size - 1), start, end, fill=255)
     if in_r > 0:
         inner = int(size / 2 - in_r)
         mask_draw.ellipse((inner, inner, size - inner, size - inner), fill=0)
-    image.paste(art, (int(center[0] - out_r), int(center[1] - out_r)), mask)
+    if thumb and code:
+        span = math.radians(abs(end - start))
+        mid = math.radians((start + end) / 2)
+        r_mid = (out_r + in_r) / 2
+        width = max(out_r * span * 0.98, (out_r - in_r) * 1.526)
+        height = width / 1.526
+        card = _card_art_rect(code, width, height)
+        if card is not None:
+            px = int(size / 2 + math.cos(mid) * r_mid - card.width / 2)
+            py = int(size / 2 + math.sin(mid) * r_mid - card.height / 2)
+            layer.paste(card, (px, py))
+    else:
+        card = _card_art(code, size)
+        if card is not None:
+            layer.paste(card, (0, 0))
+    image.paste(layer, (int(center[0] - out_r), int(center[1] - out_r)), mask)
 
 
-def _draw_labels(draw, center, radius, labels, font):
-    labels.sort(key=lambda item: item[0])
-    last = -99.0
-    for angle, text, color in labels:
-        r = radius + 20
-        if angle - last < 0.18:
-            r += 16
-        last = angle
-        x = center[0] + math.cos(angle) * r
-        y = center[1] + math.sin(angle) * r
+def _draw_labels(draw, center, radius, labels, font, canvas_width, canvas_height, min_gap=24):
+    """外圈标签：左右分组做纵向错开，再画“径向 + 横向”的肘形引线。"""
+    placed = []
+    for angle, text, _color in labels:
+        offset = radius + 18
+        x = center[0] + math.cos(angle) * offset
+        y = center[1] + math.sin(angle) * offset
+        placed.append({'angle': angle, 'text': text, 'x': x, 'y': y,
+                       'side': 'right' if math.cos(angle) >= 0 else 'left'})
+
+    for side in ('left', 'right'):
+        rows = sorted((item for item in placed if item['side'] == side), key=lambda item: item['y'])
+        previous = -10 ** 9
+        for row in rows:
+            row['y'] = max(row['y'], previous + min_gap)
+            previous = row['y']
+        if rows and rows[-1]['y'] > canvas_height - 28:
+            shift = rows[-1]['y'] - (canvas_height - 28)
+            for row in rows:
+                row['y'] -= shift
+        for row in rows:
+            row['y'] = max(18, row['y'])
+
+    for item in placed:
+        angle, text = item['angle'], item['text']
+        x, y = item['x'], item['y']
         edge_x = center[0] + math.cos(angle) * (radius + 2)
         edge_y = center[1] + math.sin(angle) * (radius + 2)
-        draw.line((edge_x, edge_y, x - math.cos(angle) * 4, y - math.sin(angle) * 4),
-                  fill='#b8c6b6', width=1)
+        knee_x = center[0] + math.cos(angle) * (radius + 10)
+        knee_y = center[1] + math.sin(angle) * (radius + 10)
+        end_x = x - 4 if item['side'] == 'right' else x + 4
+        draw.line([(edge_x, edge_y), (knee_x, knee_y), (end_x, y)], fill='#b8c6b6', width=1)
         box = draw.textbbox((0, 0), text, font=font)
         width = box[2] - box[0]
-        if math.cos(angle) >= 0:
-            draw.text((x, y - (box[3] - box[1]) / 2), text, font=font, fill='#2f4138')
-        else:
-            draw.text((x - width, y - (box[3] - box[1]) / 2), text, font=font, fill='#2f4138')
+        anchor_x = x if item['side'] == 'right' else x - width
+        anchor_x = max(8, min(anchor_x, canvas_width - width - 8))
+        draw.text((anchor_x, y - (box[3] - box[1]) / 2 - box[1]), text, font=font, fill='#2f4138')
 
 
 def _swatch(draw, x, y, color, size=12):
@@ -161,14 +216,14 @@ def render(database, replay_root, now):
     if not pie.get('total'):
         raise ValueError('暂无卡组档案')
 
-    width, height = 1400, 900
+    width, height = 1600, 1000
     image = Image.new('RGB', (width, height), 'white')
     draw = ImageDraw.Draw(image)
-    title_font, head_font, text_font, small_font = _font(24), _font(16), _font(15), _font(13)
-    draw.text((30, 22), f"前100卡组分布 · 有档案 {payload['covered']}/{payload['current']} 人 · "
+    title_font, head_font, text_font, small_font = _font(28), _font(18), _font(16), _font(14)
+    draw.text((40, 30), f"前100卡组分布 · 有档案 {payload['covered']}/{payload['current']} 人 · "
                         f"内环主大类 / 外环具体卡组", font=title_font, fill='#173529')
-    center = (430, 470)
-    radius = 255
+    center = (500, 540)
+    radius = 330
     inner = pie['inner']
     outer_by_primary = {}
     for item in pie.get('outer') or []:
@@ -191,14 +246,18 @@ def render(database, replay_root, now):
             o_end = cursor + o_span
             box = (center[0] - radius * 0.94, center[1] - radius * 0.94,
                    center[0] + radius * 0.94, center[1] + radius * 0.94)
-            draw.pieslice(box, cursor, o_end, fill=_rgb(item['color']))
-            draw.arc(box, cursor, o_end, fill='white', width=1)
+            code = item.get('image') or middle_image.get(
+                (cat['name'], tuple(sorted(item.get('extras') or [])))) or cat.get('image')
+            if cat.get('image'):
+                _paste_wedge(image, center, radius * 0.94, radius * 0.56,
+                             cursor, o_end, code, item['color'], thumb=True)
+                draw.arc(box, cursor, o_end, fill='white', width=1)
             if o_span >= 7.5:
                 o_mid = math.radians((cursor + o_end) / 2)
                 labels.append((o_mid, f"{item['name']}  {item['percent']}%", _rgb(item['color'])))
             cursor = o_end
         angle = cursor
-    hole = radius * 0.60
+    hole = radius * 0.56
     draw.ellipse((center[0] - hole, center[1] - hole,
                   center[0] + hole, center[1] + hole), fill='white')
     # 内环主大类
@@ -210,40 +269,57 @@ def render(database, replay_root, now):
         color = _rgb(cat['color'])
         box = (center[0] - radius * 0.56, center[1] - radius * 0.56,
                center[0] + radius * 0.56, center[1] + radius * 0.56)
-        draw.pieslice(box, angle, end, fill=color)
-        draw.arc(box, angle, end, fill='white', width=2)
+        if cat.get('image'):
+            _paste_wedge(image, center, radius * 0.56, radius * 0.30,
+                         angle, end, cat.get('image'), cat['color'], thumb=True)
+            draw.arc(box, angle, end, fill='white', width=2)
         angle = end
-    _draw_labels(draw, center, radius * 0.94, labels, small_font)
+    # 没有主大类的卡组（其他/未识别）直接占据内外环整段
+    start = -90.0
+    for cat in inner:
+        span = cat['players'] / total * 360.0
+        if not cat.get('image'):
+            cursor = start
+            for item in outer_by_primary.get(cat['name']) or []:
+                o_span = item['players'] / max(1, cat['players']) * span
+                o_end = cursor + o_span
+                code = item.get('image') or middle_image.get(
+                    (cat['name'], tuple(sorted(item.get('extras') or [])))) or cat.get('image')
+                _paste_wedge(image, center, radius * 0.94, radius * 0.30,
+                             cursor, o_end, code, item['color'], thumb=True)
+                cursor = o_end
+        start += span
+    _draw_labels(draw, center, radius * 0.94, labels, _font(16), width, height)
     center_hole = radius * 0.30
     draw.ellipse((center[0] - center_hole, center[1] - center_hole,
                   center[0] + center_hole, center[1] + center_hole), fill='white')
-    _center_text(draw, center[0], center[1] - 16, str(total), _font(40), '#173529')
+    _center_text(draw, center[0], center[1] - 16, str(total), _font(46), '#173529')
     _center_text(draw, center[0], center[1] + 18, '总人数 · 内环 100%', text_font, '#65776b')
 
-    x, y = 900, 110
+    x, y = 1040, 120
     draw.text((x, y), '内环 · 主大类（合计 100%）', font=head_font, fill='#48613e')
-    y += 28
+    y += 32
     for item in inner:
-        if y > height - 40:
+        if y > height - 44:
             break
-        _swatch(draw, x, y + 2, item['color'])
-        draw.text((x + 20, y - 1), f"{item['name']}  {item['players']}人 · {item['percent']}%",
+        _swatch(draw, x, y + 3, item['color'])
+        draw.text((x + 22, y - 1), f"{item['name']}  {item['players']}人 · {item['percent']}%",
                   font=text_font, fill='#22322B')
-        y += 24
-    y += 10
+        y += 26
+    y += 12
     draw.text((x, y), '外环 · 具体卡组（外圈文字对应）', font=head_font, fill='#48613e')
-    y += 26
+    y += 32
     for index, item in enumerate(pie.get('outer') or [], 1):
-        if y > height - 34:
+        if y > height - 40:
             draw.text((x, y), '…还有更多，见网页', font=small_font, fill='#7a887c')
             break
         _swatch(draw, x, y + 2, item['color'])
         label = f"{index}. {item['name']}  {item['players']}人 · {item['percent']}%"
-        if len(label) > 34:
-            label = label[:33] + '…'
+        if len(label) > 36:
+            label = label[:35] + '…'
         draw.text((x + 20, y - 1), label, font=small_font, fill='#22322B')
-        y += 22
-    draw.text((30, height - 32), pie.get('note') or '', font=small_font, fill='#65776b')
+        y += 24
+    draw.text((40, height - 38), pie.get('note') or '', font=small_font, fill='#65776b')
     output = io.BytesIO()
     image.save(output, format='PNG', optimize=True)
     return output.getvalue(), payload

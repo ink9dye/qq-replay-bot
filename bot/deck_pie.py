@@ -149,7 +149,7 @@ def _distribution_rows(distribution):
     return rows
 
 
-def layers(distribution, groups, threshold=THRESHOLD, representatives=None):
+def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck_images=None):
     """计算三层饼图数据；groups 由 group_names() 提供，representatives 为组→代表卡号。"""
     rows = _distribution_rows(distribution)
     total = sum(players for _name, players in rows)
@@ -227,10 +227,17 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None):
         rank = next(index for index, item in enumerate(siblings) if item[0] == name)
         lightness = 62 - min(rank, 5) * 7
         color = color_map[primary]
+        image = (deck_images or {}).get(name)
+        if not image:
+            for field in ([extras[0]] if extras else []) + [primary] + matches[name]:
+                image = (representatives or {}).get(field)
+                if image:
+                    break
         outer.append(dict(name=name, players=players, percent=round(100 * players / total, 1),
                           primary=primary, extras=extras, shared=bool(extras),
                           color=_shade(color, lightness / 100),
-                          accent=color_map.get(extras[0]) if extras else None))
+                          accent=color_map.get(extras[0]) if extras else None,
+                          image=image))
     outer.sort(key=lambda item: (-item['players'], item['name']))
     return dict(total=total, threshold=threshold,
                 inner=inner, middle=middle_rows, outer=outer,
@@ -241,6 +248,7 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None):
                 note='内环按主大类各算一次、合计100%；中环是内环的交集细分；外环为具体卡组名。')
 
 
-def from_data_dir(distribution, data_dir, threshold=THRESHOLD, representatives=None):
+def from_data_dir(distribution, data_dir, threshold=THRESHOLD, representatives=None, deck_images=None):
     return layers(distribution, group_names(data_dir), threshold,
-                  representatives if representatives is not None else first_cards(data_dir))
+                  representatives if representatives is not None else first_cards(data_dir),
+                  deck_images)

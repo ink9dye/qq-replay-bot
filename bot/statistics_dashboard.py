@@ -88,6 +88,26 @@ def search_players(db,replay_root,now,text):
     return dict(people=result,limited=len(names)>30)
 
 
+def deck_images(db, names):
+    """每个精确卡组名选一张代表卡：该卡组构筑里总投入最多的主卡。"""
+    wanted = {str(name) for name in names}
+    if not wanted:
+        return {}
+    best = {}
+    rows = db.execute(
+        "SELECT COALESCE(b.deck_type,'') AS deck_type, c.code, SUM(c.copies) AS copies "
+        "FROM stat_builds b JOIN stat_build_cards c ON c.build=b.fingerprint "
+        "WHERE c.partition='main' GROUP BY deck_type, c.code")
+    for deck_type, code, copies in rows:
+        key = '未识别' if not deck_type else str(deck_type)
+        if key not in wanted:
+            continue
+        old = best.get(key)
+        if old is None or copies > old[1] or (copies == old[1] and code < old[0]):
+            best[key] = (int(code), int(copies))
+    return {name: item[0] for name, item in best.items()}
+
+
 def query(db, replay_root, now, player=None):
     basis,latest,people=population(db,replay_root,now)
     if player is not None:
@@ -111,7 +131,7 @@ def query(db, replay_root, now, player=None):
     distribution = [dict(name=k, players=v) for k, v in sorted(types.items(), key=lambda kv: (-kv[1], kv[0]))]
     try:
         from .deck_pie import from_data_dir
-        deck_pie = from_data_dir(distribution, _data_dir(db))
+        deck_pie = from_data_dir(distribution, _data_dir(db), deck_images=deck_images(db, types))
     except Exception:
         deck_pie = None
     return dict(generated_at=now,roster={k:v for k,v in basis['roster'].items() if k!='members'},
