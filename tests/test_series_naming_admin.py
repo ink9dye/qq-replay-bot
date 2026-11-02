@@ -69,6 +69,17 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(codes, [100, 101, 200])
         self.assertTrue(detail['builds'])
 
+    def test_move_card_between_required_and_optional(self):
+        self.save(dict(op='create', name='烙印', sources=['烙印']))
+        self.save(dict(op='move_card', name='烙印', card=100, to='optional'))
+        detail = admin.group_detail(self.db, self.data, 1000.0, '烙印')
+        self.assertEqual([card['code'] for card in detail['optional_cards']], [100])
+        self.assertNotIn(100, [card['code'] for card in detail['cards']])
+        self.save(dict(op='move_card', name='烙印', card=100, to='required'))
+        detail = admin.group_detail(self.db, self.data, 1000.0, '烙印')
+        self.assertEqual(detail['optional_cards'], [])
+        self.assertIn(100, [card['code'] for card in detail['cards']])
+
     def test_same_name_groups_merge(self):
         self.save(dict(op='create', name='烙印', sources=['烙印']))
         self.save(dict(op='create', name='烙印', sources=['烙印']))

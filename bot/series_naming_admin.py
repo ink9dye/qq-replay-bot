@@ -372,6 +372,39 @@ def update_group(db, data_dir, now, payload):
         if 'exception_order' in raw or exception_names:
             old = [value for value in (raw.get('exception_order') or []) if value in exception_names]
             raw['exception_order'] = old + [value for value in exception_names if value not in old]
+    elif op == 'move_card':
+        code = payload.get('card')
+        if isinstance(code, str) and code.isdigit():
+            code = int(code)
+        if type(code) is not int or not 0 < code <= 4294967295:
+            raise ValueError('卡号无效。')
+        to = payload.get('to')
+        if to not in ('required', 'optional'):
+            raise ValueError('目标必须是 required 或 optional。')
+        if kind is None:
+            config = series_naming.load_config(data_dir)
+            registry = series_naming.build_registry(catalog, config, names)
+            entry = registry['groups'].get(before) or registry['groups'].get(name) or {}
+            item = dict(name=name, sources=sorted(entry.get('sources') or []))
+            raw.setdefault('groups', []).append(item)
+            kind, index = 'groups', len(raw['groups']) - 1
+        item = dict(raw[kind][index])
+        add = set(item.get('add') or [])
+        remove = set(item.get('remove') or [])
+        optional = set(item.get('optional') or [])
+        if to == 'optional':
+            optional.add(code)
+            remove.add(code)
+            add.discard(code)
+        else:
+            optional.discard(code)
+            remove.discard(code)
+            add.add(code)
+        item['add'] = sorted(add)
+        item['remove'] = sorted(remove)
+        item['optional'] = sorted(optional)
+        item['name'] = name
+        raw[kind][index] = item
     elif op in ('add_optional', 'remove_optional'):
         codes = _resolve_terms(data_dir, payload.get('cards'))
         if kind is None:
