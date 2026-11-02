@@ -191,6 +191,7 @@ def group_detail(db, data_dir, now, name):
     used.sort(key=lambda item: -item['copies'])
     row['builds'] = used
     row['builds_total'] = len(used)
+    row['representative'] = entry.get('representative')
     row['config'] = config_summary(config)
     return row
 
@@ -271,6 +272,37 @@ def update_group(db, data_dir, now, payload):
         raise ValueError('组名无效。')
     before = (payload.get('before') or name).strip()
     fields = _group_payload(payload)
+    if op == 'representative':
+        code = payload.get('card')
+        if code in (None, '', 0):
+            code = None
+        elif isinstance(code, str) and code.isdigit():
+            code = int(code)
+        if code is not None and (type(code) is not int or not 0 < code <= 4294967295):
+            raise ValueError('代表卡卡号无效。')
+        config = series_naming.load_config(data_dir)
+        registry = series_naming.build_registry(catalog, config, names)
+        members = set(registry['members'].get(name) or [])
+        if code is not None and code not in members:
+            raise ValueError('代表卡必须是该组的成员卡。')
+        kind, index = _find_group(raw, before)
+        if kind is None:
+            entry = registry['groups'].get(before) or registry['groups'].get(name) or {}
+            item = dict(name=name, sources=sorted(entry.get('sources') or []))
+            raw.setdefault('groups', []).append(item)
+            kind, index = 'groups', len(raw['groups']) - 1
+        item = dict(raw[kind][index])
+        if code is None:
+            item.pop('representative', None)
+        else:
+            item['representative'] = code
+        item['name'] = name
+        raw[kind][index] = item
+        config = series_naming.normalize_config(raw)
+        _validate(config, catalog, names)
+        backup = save_raw(data_dir, raw)
+        return dict(changed=True, name=name, representative=code,
+                    backup=str(backup) if backup else None, config=config_summary(config))
     if op == 'rename':
         new_name = (payload.get('new_name') or '').strip()
         if not new_name or len(new_name) > 60:

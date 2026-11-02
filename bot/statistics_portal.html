@@ -4,7 +4,7 @@
 :root{font-family:"Microsoft YaHei",system-ui,sans-serif;color:#173529;background:#f3f5f0;font-size:15px}*{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}button{cursor:pointer}header{background:#173f32;color:#fff;padding:38px max(24px,calc((100vw - 1200px)/2));border-bottom:5px solid #c9e787}header small{letter-spacing:.18em;color:#c9e787}h1{font-size:32px;margin:12px 0}header p{color:#d4e2d7;line-height:1.7;max-width:800px}main{max-width:1248px;padding:28px 24px 60px;margin:auto}.topline{display:flex;align-items:center;justify-content:space-between;gap:16px}#refresh{border:1px solid #adc0ae;background:white;color:#173f32;border-radius:8px;padding:10px 18px}.status{line-height:1.8;color:#52645a}.stale{color:#95551c;background:#fff2df;padding:12px;border-radius:8px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:24px 0}.metric{background:#fff;border:1px solid #dde4da;padding:20px;border-radius:12px}.metric strong{display:block;font-size:32px;font-weight:600;margin:8px 0}.metric span{font-size:13px;color:#68786e}.layout{display:block}.panel{min-width:0;background:white;border:1px solid #dde4da;border-radius:12px;padding:20px}h2{font-size:18px;margin:0 0 18px}aside p,.note{font-size:13px;color:#65776b;line-height:1.8}.dist{display:flex;justify-content:space-between;margin:16px 0 5px;gap:8px;font-size:14px}.bar{height:7px;background:#edf2e8;border-radius:4px}.bar i{display:block;height:100%;background:#72975a;border-radius:4px}.filters{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:12px;margin-bottom:18px}label{font-size:12px;color:#5d7163}input,select{display:block;width:100%;margin-top:7px;padding:10px 9px;border:1px solid #cbd6c9;border-radius:7px;background:#fff;color:#234230}.tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:610px}th{font-size:12px;text-align:left;color:#68796e;background:#f5f7f2}th,td{padding:14px 10px;border-bottom:1px solid #e9eee4}td{font-size:14px;vertical-align:top}td:first-child{font-variant-numeric:tabular-nums;color:#739068;width:48px}.name{font-weight:600;word-break:break-word}.points{font-size:12px;color:#7c897f;margin-top:5px}.tag{display:inline-block;background:#edf3e8;padding:3px 7px;border-radius:5px;font-size:12px;margin:2px;color:#48613e}.muted{color:#8c968e}.detail{border:0;background:none;color:#32684f;text-decoration:underline;text-underline-offset:4px;padding:0;font-size:14px}.empty{padding:40px;color:#738171;text-align:center}dialog{border:1px solid #b5c8b1;border-radius:14px;width:min(720px,94vw);max-height:85vh;padding:26px;color:#173529}dialog::backdrop{background:#10291db0}dialog h2{margin-right:45px}#close{position:absolute;right:20px;top:18px;background:#eff4e9;border:0;border-radius:8px;padding:8px 12px}.cards{display:grid;grid-template-columns:1fr 1fr;gap:7px;font-size:14px}.card{display:flex;gap:8px;padding:7px;background:#f4f7f0;border-radius:5px}.card b{color:#62894d}.section-title{margin:22px 0 10px;font-size:15px}footer{font-size:12px;color:#7a887c;line-height:1.8;margin-top:22px}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #86b273;outline-offset:2px}@media(max-width:850px){.layout{grid-template-columns:1fr}aside{display:none}.metrics{gap:8px}.metric{padding:14px}.metric strong{font-size:26px}.filters{grid-template-columns:1fr 1fr}.filters label:first-child{grid-column:1/-1}}@media(max-width:520px){header{padding:26px 20px}main{padding:20px 12px}h1{font-size:26px}.metrics{grid-template-columns:1fr 1fr}.panel{padding:14px}.topline{align-items:flex-start}.cards{grid-template-columns:1fr}}
 .deck-pie svg{width:100%;height:auto;display:block;max-height:560px}
 .pie-mobile-legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px 20px;margin-top:12px;padding-top:12px;border-top:1px solid #dbe2d8}
-.pie-mobile-legend div{display:flex;align-items:center;gap:7px;min-width:0;font-size:12.5px;color:#22322b;cursor:pointer;line-height:1.5;border:1px solid #e2e9df;background:#f8faf5;border-radius:8px;padding:7px 9px;transition:background .15s,border-color .15s}
+.pie-mobile-legend .pie-legend-row{display:flex;align-items:center;gap:7px;min-width:0;font-size:12.5px;color:#22322b;cursor:pointer;line-height:1.5;border:1px solid #e2e9df;background:#f8faf5;border-radius:8px;padding:7px 9px;transition:background .15s,border-color .15s}
 .pie-mobile-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;flex:none}
 .pie-mobile-legend b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 .pie-mobile-legend span{color:#65776b;margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -26,9 +26,45 @@
 .pie-legend-row b{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pie-legend-row span{color:#65776b;white-space:nowrap;margin-left:auto}
 @media (max-width:640px){.deck-pie{overflow:hidden}.deck-pie svg{min-width:0;width:100%;max-height:none}.deck-pie .pie-label,.deck-pie .pie-pct{display:none}.deck-pie svg polyline{display:none}.pie-mobile-legend{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-top:10px}}
-@media(max-width:640px){.pie-mobile-legend .pie-legend-group{grid-column:1/-1}}@media(max-width:640px){ .pie-mobile-legend{grid-template-columns:minmax(0,1fr)}.pie-mobile-legend .pie-legend-row{flex-wrap:wrap}.pie-legend-row b{white-space:normal;overflow-wrap:anywhere}.pie-legend-row span{white-space:normal;margin-left:18px}.pie-mobile-legend .pie-legend-scroll{max-height:none;max-width:100%;min-width:0}.pie-legend-row{max-width:100%;min-width:0}}</style><style>
+@media(max-width:640px){.pie-mobile-legend .pie-legend-group{grid-column:1/-1}}@media(max-width:640px){ .pie-mobile-legend{grid-template-columns:minmax(0,1fr)}.pie-mobile-legend .pie-legend-row{flex-wrap:wrap}.pie-legend-row b{white-space:normal;overflow-wrap:anywhere}.pie-legend-row span{white-space:normal;margin-left:18px}.pie-mobile-legend .pie-legend-scroll{max-height:none;max-width:100%;min-width:0}.pie-legend-row{max-width:100%;min-width:0}}.pie-mobile-legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:8px 16px}
+.pie-cat{border:1px solid #e2e9df;background:#f8faf5;border-radius:10px;padding:0 10px;margin:0}
+.pie-cat summary{display:flex;align-items:center;gap:8px;padding:8px 0;cursor:pointer;list-style:none}
+.pie-cat summary::-webkit-details-marker{display:none}
+.pie-cat img{width:26px;height:38px;object-fit:cover;border-radius:4px;background:#e7efe0;flex:none}
+.pie-cat i{width:10px;height:10px;border-radius:2px;flex:none}
+.pie-cat b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.pie-cat-count{color:#65776b;font-size:12px;white-space:nowrap}
+.pie-sub{padding:0 0 8px 34px;display:flex;flex-direction:column;gap:3px}
+.pie-sub-row,.pie-sub-name{font-size:12.5px;color:#22322b;display:flex;justify-content:space-between;gap:8px}
+.pie-sub-mid{color:#48613e;font-weight:600}
+.pie-sub-name{cursor:pointer;border-top:1px dashed #e9eee4;padding-top:2px}
+.pie-sub-name:hover{color:#2f6b4f}
+.pie-sub-more{font-size:12px;color:#8c968e}
+@media(max-width:640px){.pie-mobile-legend{grid-template-columns:1fr}}.pie-sub-row i{width:8px;height:8px;border-radius:2px;flex:none}
+.pie-sub-names{padding-left:14px;display:flex;flex-direction:column;gap:2px}
+.pie-sub-name{font-size:12px;color:#4b5d52;cursor:pointer;border:0;padding:0;background:transparent;display:block}
+.pie-sub-name:hover{color:#2f6b4f}
+.pie-ring-label{font-size:13px;font-weight:600}</style><style>
 .main-nav{display:flex;gap:10px 24px;flex-wrap:wrap;margin-bottom:20px}.main-nav a{font-size:15px;text-decoration:none;padding:8px 0;border-bottom:2px solid transparent}.main-nav a:hover{border-color:currentColor}
-@media(max-width:640px){.pie-mobile-legend .pie-legend-group{grid-column:1/-1}}@media(max-width:640px){ .pie-mobile-legend{grid-template-columns:minmax(0,1fr)}.pie-mobile-legend .pie-legend-row{flex-wrap:wrap}.pie-legend-row b{white-space:normal;overflow-wrap:anywhere}.pie-legend-row span{white-space:normal;margin-left:18px}.pie-mobile-legend .pie-legend-scroll{max-height:none;max-width:100%;min-width:0}.pie-legend-row{max-width:100%;min-width:0}}</style><link rel="stylesheet" href="/statistics/assets/statistics_nav.css"><link rel="stylesheet" href="/statistics/assets/statistics_theme.css"><script src="/statistics/assets/statistics_busy.js"></script></head><body><nav class="main-nav" aria-label="主要功能"><a href="/statistics" aria-current="page">玩家排名</a><a href="/statistics/cards-report">卡片统计</a><a href="/statistics/cards-extra">额外卡</a><a href="/statistics/matrix">卡组胜率</a><a href="/statistics/recordings">录像筛选</a><a href="/statistics/deck-naming">卡组命名</a></nav>
+@media(max-width:640px){.pie-mobile-legend .pie-legend-group{grid-column:1/-1}}@media(max-width:640px){ .pie-mobile-legend{grid-template-columns:minmax(0,1fr)}.pie-mobile-legend .pie-legend-row{flex-wrap:wrap}.pie-legend-row b{white-space:normal;overflow-wrap:anywhere}.pie-legend-row span{white-space:normal;margin-left:18px}.pie-mobile-legend .pie-legend-scroll{max-height:none;max-width:100%;min-width:0}.pie-legend-row{max-width:100%;min-width:0}}.pie-mobile-legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:8px 16px}
+.pie-cat{border:1px solid #e2e9df;background:#f8faf5;border-radius:10px;padding:0 10px;margin:0}
+.pie-cat summary{display:flex;align-items:center;gap:8px;padding:8px 0;cursor:pointer;list-style:none}
+.pie-cat summary::-webkit-details-marker{display:none}
+.pie-cat img{width:26px;height:38px;object-fit:cover;border-radius:4px;background:#e7efe0;flex:none}
+.pie-cat i{width:10px;height:10px;border-radius:2px;flex:none}
+.pie-cat b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.pie-cat-count{color:#65776b;font-size:12px;white-space:nowrap}
+.pie-sub{padding:0 0 8px 34px;display:flex;flex-direction:column;gap:3px}
+.pie-sub-row,.pie-sub-name{font-size:12.5px;color:#22322b;display:flex;justify-content:space-between;gap:8px}
+.pie-sub-mid{color:#48613e;font-weight:600}
+.pie-sub-name{cursor:pointer;border-top:1px dashed #e9eee4;padding-top:2px}
+.pie-sub-name:hover{color:#2f6b4f}
+.pie-sub-more{font-size:12px;color:#8c968e}
+@media(max-width:640px){.pie-mobile-legend{grid-template-columns:1fr}}.pie-sub-row i{width:8px;height:8px;border-radius:2px;flex:none}
+.pie-sub-names{padding-left:14px;display:flex;flex-direction:column;gap:2px}
+.pie-sub-name{font-size:12px;color:#4b5d52;cursor:pointer;border:0;padding:0;background:transparent;display:block}
+.pie-sub-name:hover{color:#2f6b4f}
+.pie-ring-label{font-size:13px;font-weight:600}</style><link rel="stylesheet" href="/statistics/assets/statistics_nav.css"><link rel="stylesheet" href="/statistics/assets/statistics_theme.css"><script src="/statistics/assets/statistics_busy.js"></script></head><body><nav class="main-nav" aria-label="主要功能"><a href="/statistics" aria-current="page">玩家排名</a><a href="/statistics/cards-report">卡片统计</a><a href="/statistics/cards-extra">额外卡</a><a href="/statistics/matrix">卡组胜率</a><a href="/statistics/recordings">录像筛选</a><a href="/statistics/deck-naming">卡组命名</a></nav>
 <header><small>ARENA OBSERVATORY / 本机统计</small><h1>玩家排名</h1><p>每位玩家只取一份最新有效观测。构筑来自已收录小局；首局与换边后分别标注，未采集和未识别分别显示。</p></header>
 <main><p class="legacy-links" hidden><a href="/statistics/card-table" style="color:#32684f">卡片统计表 →</a>　　<a href="/statistics/cards" style="color:#32684f">单卡指标 →</a>　<a href="/statistics/matrix" style="color:#32684f">对阵矩阵 →</a>　<a href="/statistics/groups" style="color:#32684f">卡组分布 →</a>　<a href="/statistics/investment" style="color:#32684f">卡片投入分布 →</a></p><div class="topline"><div id="status" class="status" role="status">正在读取当前榜单…</div><button id="refresh">刷新统计</button></div>
 <div class="metrics" id="metrics"></div><section class="panel" id="deckPiePanel" aria-label="前100卡组分布"><h2>前100卡组分布</h2><div id="deckPie" class="deck-pie"></div><div id="deckPieLegend" class="pie-mobile-legend" aria-label="卡组图例"></div><p id="deckPieNote" class="note"></p></section><div class="layout"><section class="panel" aria-label="当前前100玩家"><div class="filters"><label>查找玩家<input id="search" type="search" placeholder="搜索前100或订阅玩家" maxlength="128"></label><label>卡组类型<input id="deck" type="search" list="deck-options" autocomplete="off" placeholder="输入或选择卡组类型"><datalist id="deck-options"></datalist></label></div>
@@ -58,37 +94,58 @@ function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
+function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
+function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
+function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
+function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
+function cardThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src='https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2';img.onerror=()=>img.remove();return img}
+function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
+function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
+function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
+function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
+function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code)||'';img.onerror=()=>img.remove();return img}
+function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
+function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
+function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
+function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
+function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
 function renderPie(data){const box=$('deckPie');if(!box)return;const pie=data.deck_pie;if(!pie||!pie.total||!(pie.inner||[]).length){box.textContent='暂无可用的卡组档案。';$('deckPieLegend').replaceChildren();$('deckPieNote').textContent='';return}
- const W=880,H=560,cx=440,cy=280,R=200,tau=Math.PI*2;
- const rings=[{key:'inner',r0:R*0.32,r1:R*0.52,items:pie.inner},{key:'middle',r0:R*0.55,r1:R*0.74,items:pie.middle},{key:'outer',r0:R*0.77,r1:R*0.98,items:pie.outer}];
- const shapes=[];let outerNumber=0;
- for(const ring of rings){const total=ring.items.reduce((n,item)=>n+item.players,0);if(!total)continue;let angle=-Math.PI/2;
-  for(const item of ring.items){const fraction=item.players/total,end=angle+fraction*tau;const color=item.color||item.mixed||'#AAB5C4';const label=item.name||item.label;
-   let attrs='';if(ring.key==='outer'){outerNumber+=1;attrs=' data-deck="'+pieEsc(item.name)+'"'}else if(ring.key==='inner'){attrs=' data-category="'+pieEsc(item.name)+'"'}
-   const tip='<title>'+pieEsc(label)+' · '+item.players+'人 · '+item.percent+'%'+(ring.key==='inner'?'（主大类，内环合计100%）':ring.key==='middle'?'（交集细分）':'（外环合计100%）')+'</title>';
-   shapes.push('<path d="'+annulusPath(cx,cy,ring.r0,ring.r1,angle,end)+'" fill="'+color+'"'+attrs+'>'+tip+'</path>');
-   const mid=(angle+end)/2,midR=(ring.r0+ring.r1)/2;
-   if(ring.key==='inner'&&fraction>=0.08){shapes.push('<text x="'+(cx+Math.cos(mid)*midR).toFixed(1)+'" y="'+(cy+Math.sin(mid)*midR+4).toFixed(1)+'" text-anchor="middle" class="pie-ring-label" fill="'+ringLabelColor(color)+'">'+pieEsc(item.name)+'</text>')}
-   else if(ring.key==='middle'&&fraction>=0.1){shapes.push('<text x="'+(cx+Math.cos(mid)*midR).toFixed(1)+'" y="'+(cy+Math.sin(mid)*midR+4).toFixed(1)+'" text-anchor="middle" class="pie-ring-label" fill="'+ringLabelColor(color)+'">'+pieEsc(item.label)+'</text>')}
-   else if(ring.key==='outer'&&fraction>=0.035){shapes.push('<text x="'+(cx+Math.cos(mid)*(R*0.875)).toFixed(1)+'" y="'+(cy+Math.sin(mid)*(R*0.875)+4).toFixed(1)+'" text-anchor="middle" class="pie-ring-label" fill="'+ringLabelColor(color)+'">'+outerNumber+'</text>')}
-   angle=end}}
- shapes.push('<text x="'+cx+'" y="'+(cy-4)+'" class="pie-center">'+pie.total+'</text><text x="'+cx+'" y="'+(cy+22)+'" class="pie-center-sub">总人数</text>');
- box.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="前100卡组分布三层饼图">'+shapes.join('')+'</svg>';
- const legend=$('deckPieLegend');if(legend){const groups=[['内环 · 主大类（合计 100%）',pie.inner,'inner'],['中环 · 交集细分（内环的细分，合计 100%）',pie.middle,'middle'],['外环 · 具体卡组（合计 100%）',pie.outer,'outer']];const nodes=[];
-  for(const [title,items,kind] of groups){const section=el('div',undefined,'pie-legend-group');section.append(el('h3',title));
-   if(kind==='middle')section.append(el('p','中环是内环“独占 / ∩其他大类”的细分，不改变内环总数。','note'));
-   const list=el('div',undefined,'pie-legend-scroll');
-   items.forEach((item,index)=>{const row=el('div',undefined,'pie-legend-row'),dot=el('i'),name=el('b'),count=el('span'),color=item.mixed||item.color||'#AAB5C4';dot.style.background=color;
-    if(kind==='inner'){name.textContent=item.name;count.textContent=item.players+'人 · 内环'+item.percent+'%';row.title='点击按该大类筛选：'+item.name;row.onclick=()=>onPieCategory(item.name);row.dataset.category=item.name}
-    else if(kind==='middle'){name.textContent=item.label+' @ '+item.primary;count.textContent=item.players+'人 · '+item.percent+'%';row.title='中环是内环的交集细分'}
-    else{name.textContent=(index+1)+'. '+item.name;count.textContent=item.players+'人 · '+item.percent+'%';row.title='点击筛选：'+item.name;row.onclick=()=>onPieClick(item.name);row.dataset.deck=item.name}
-    row.append(dot,name,count);list.append(row)});
-   section.append(list);nodes.push(section)}
+ const W=920,H=640,cx=460,cy=320,R=250,tau=Math.PI*2,total=pie.total;
+ const middleByPrimary=new Map(),outerByKey=new Map();
+ for(const m of pie.middle||[]){const list=middleByPrimary.get(m.primary)||[];list.push(m);middleByPrimary.set(m.primary,list)}
+ for(const o of pie.outer||[]){const k=pieKey(o.primary,o.extras);const list=outerByKey.get(k)||[];list.push(o);outerByKey.set(k,list)}
+ const rIn=[R*0.32,R*0.70],rOut=[R*0.73,R*0.96];
+ const shapes=[];let angle=-Math.PI/2;
+ for(const cat of pie.inner){const span=cat.players/total*tau,end=angle+span;
+  const path=annulusPath(cx,cy,rIn[0],rIn[1],angle,end);
+  shapes.push('<path d="'+path+'" fill="'+cat.color+'" stroke="#fff" stroke-width="1.5" data-category="'+pieEsc(cat.name)+'"><title>'+pieEsc(cat.name)+' · '+cat.players+'人 · '+cat.percent+'%</title></path>');
+  if(span/tau>=0.04){const mid=(angle+end)/2,r=(rIn[0]+rIn[1])/2;shapes.push('<text x="'+(cx+Math.cos(mid)*r).toFixed(1)+'" y="'+(cy+Math.sin(mid)*r+4).toFixed(1)+'" text-anchor="middle" class="pie-ring-label" fill="'+ringLabelColor(cat.color)+'">'+pieEsc(cat.name)+'</text>')}
+  const mids=middleByPrimary.get(cat.name)||[];
+  const mixed=mids.length>1||(mids[0]&&(mids[0].extras||[]).length>0);
+  if(mixed){let b=angle;
+   for(const m of mids){const mSpan=(m.players/Math.max(1,cat.players))*span,mEnd=b+mSpan;
+    const outerPath=annulusPath(cx,cy,rOut[0],rOut[1],b,mEnd);
+    shapes.push('<path d="'+outerPath+'" fill="'+(m.mixed||m.color)+'" stroke="#fff" stroke-width="1.5"><title>'+pieEsc(cat.name+' · '+m.label)+' · '+m.players+'人 · '+m.percent+'%</title></path>');
+    if(mSpan/tau>=0.07){const mid=(b+mEnd)/2,r=(rOut[0]+rOut[1])/2;shapes.push('<text x="'+(cx+Math.cos(mid)*r).toFixed(1)+'" y="'+(cy+Math.sin(mid)*r+4).toFixed(1)+'" text-anchor="middle" class="pie-ring-label" fill="'+ringLabelColor(m.mixed||m.color)+'">'+pieEsc(m.label)+'</text>')}
+    b=mEnd}}
+  angle=end}
+ shapes.push('<text x="'+cx+'" y="'+(cy-6)+'" class="pie-center">'+total+'</text><text x="'+cx+'" y="'+(cy+22)+'" class="pie-center-sub">总人数 · 内环主系列 100%</text>');
+ box.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="前100卡组分布：内环主系列，外环副系列组合">'+shapes.join('')+'</svg>';
+ const legend=$('deckPieLegend');if(legend){const nodes=[];
+  for(const cat of pie.inner){const details=el('details',undefined,'pie-cat');details.open=nodes.length<3;
+   const summary=el('summary');const img=legendThumb(cat.image);if(img)summary.append(img);
+   const dot=el('i');dot.style.background=cat.color;summary.append(dot);summary.append(el('b',cat.name));summary.append(el('span',cat.players+'人 · '+cat.percent+'%','pie-cat-count'));details.append(summary);
+   const body=el('div',undefined,'pie-sub');
+   for(const m of middleByPrimary.get(cat.name)||[]){const row=el('div',undefined,'pie-sub-row');const dot2=el('i');dot2.style.background=m.mixed||m.color;row.append(dot2);row.append(el('span',m.label+'  '+m.players+'人 · '+m.percent+'%','pie-sub-mid'));body.append(row);
+    const names=outerByKey.get(pieKey(cat.name,m.extras))||[];
+    if(names.length){const namesBox=el('div',undefined,'pie-sub-names');for(const o of names.slice(0,5)){const line=el('div',o.name+'  '+o.players+'人','pie-sub-name');line.title='点击筛选：'+o.name;line.onclick=()=>onPieClick(o.name);namesBox.append(line)}if(names.length>5)namesBox.append(el('div','其余 '+(names.length-5)+' 种在筛选里','pie-sub-more'));body.append(namesBox)}}
+   details.append(body);nodes.push(details)}
   legend.replaceChildren(...nodes)}
- box.querySelectorAll('[data-deck]').forEach(path=>path.addEventListener('click',()=>onPieClick(path.getAttribute('data-deck'))));
  box.querySelectorAll('[data-category]').forEach(path=>path.addEventListener('click',()=>onPieCategory(path.getAttribute('data-category'))));
  const identified=(pie.inner||[]).filter(item=>item.name!=='未识别'&&item.name!=='其他').length,missing=Math.max(0,(data.current_players||0)-(data.covered_players||0));
- window.__pieBase='有档案 '+data.covered_players+'/'+data.current_players+' 人 · 主大类 '+identified+' 个'+(missing?'（未采集 '+missing+' 人未计入饼图）':'')+' · 内环每个卡组只归一个主大类（合计100%）· 中环交集细分 · 外环合计100% · 点击扇区筛选，再点一次取消';
+ window.__pieBase='有档案 '+data.covered_players+'/'+data.current_players+' 人 · 主系列 '+identified+' 个'+(missing?'（未采集 '+missing+' 人未计入饼图）':'')+' · 内环=主系列；外环只展开有副系列的组合（纯主轴/＋副系列）；代表卡见右侧图例 · 点击主系列筛选';
  paintPie()}
 function onPieCategory(name){if(!name||name==='其他'||name==='未识别')return;const input=$('deck');if(!input)return;input.value=input.value===name?'':name;render();paintPie()}
 function paintPie(){const select=$('deck'),raw=select?select.value:'',names=[...document.querySelectorAll('#deckPie [data-deck]')].map(p=>p.getAttribute('data-deck')),active=names.includes(raw)?raw:'';document.querySelectorAll('#deckPie [data-deck]').forEach(path=>{const name=path.getAttribute('data-deck');path.classList.toggle('active',active===name);path.classList.toggle('dim',!!active&&active!==name)});document.querySelectorAll('#deckPieLegend [data-deck]').forEach(row=>{const name=row.getAttribute('data-deck');row.classList.toggle('active',active===name)});if(window.__pieBase)$('deckPieNote').textContent=window.__pieBase+(active?' · 已筛选：'+active+'（再点一次取消）':'')}

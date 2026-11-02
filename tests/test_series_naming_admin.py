@@ -69,6 +69,17 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(codes, [100, 101, 200])
         self.assertTrue(detail['builds'])
 
+    def test_representative_must_be_member_and_can_be_changed(self):
+        self.save(dict(op='create', name='烙印', sources=['烙印']))
+        self.save(dict(op='representative', name='烙印', card=101))
+        detail = admin.group_detail(self.db, self.data, 1000.0, '烙印')
+        self.assertEqual(detail['representative'], 101)
+        with self.assertRaises(ValueError):
+            self.save(dict(op='representative', name='烙印', card=200))
+        self.save(dict(op='representative', name='烙印', card=None))
+        detail = admin.group_detail(self.db, self.data, 1000.0, '烙印')
+        self.assertIsNone(detail['representative'])
+
     def test_card_terms_accept_name_and_code(self):
         self.save(dict(op='create', name='阿不思组', keywords=['阿不思'], keyword_scope='all'))
         self.save(dict(op='add_cards', name='阿不思组', cards=['阿不思的落胤', '201']))

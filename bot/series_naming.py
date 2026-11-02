@@ -96,7 +96,7 @@ DEFAULT_CONFIG = {
 }
 
 GROUP_KEYS = ('name', 'sources', 'add', 'remove', 'keywords', 'enabled',
-              'includes', 'keyword_scope')
+              'includes', 'keyword_scope', 'representative')
 
 
 class ConfigError(ValueError):
@@ -142,10 +142,16 @@ def _group(item, index, require_keywords=True):
     keyword_scope = item.get('keyword_scope', 'unmapped')
     if keyword_scope not in ('unmapped', 'all'):
         raise ConfigError('命名组 %s 的 keyword_scope 只能是 unmapped 或 all' % name)
+    representative = item.get('representative')
+    if representative in ('', 0):
+        representative = None
+    if representative is not None and (type(representative) is not int or not 0 < representative <= 4294967295):
+        raise ConfigError('命名组 %s 的 representative 必须是正整数卡号' % name)
     return dict(name=name.strip(), sources=[tag.strip() for tag in sources],
                 add=sorted(set(codes)), remove=sorted(set(remove)),
                 keywords=[word.strip() for word in keywords if word.strip()], enabled=enabled,
-                includes=[child.strip() for child in includes], keyword_scope=keyword_scope)
+                includes=[child.strip() for child in includes], keyword_scope=keyword_scope,
+                representative=representative)
 
 
 def normalize_config(raw=None):
@@ -303,6 +309,7 @@ def build_registry(catalog, config, names=None):
         entry = groups.setdefault(name, dict(name=name, sources=set(), add=set(),
                                              remove=set(), keywords=[], enabled=True,
                                              includes=[], keyword_scope='unmapped',
+                                             representative=None,
                                              exception=name in config['exception_order']))
         entry['sources'].update(item['sources'])
         entry['add'].update(item['add'])
@@ -312,6 +319,8 @@ def build_registry(catalog, config, names=None):
         if item.get('keyword_scope') == 'all':
             entry['keyword_scope'] = 'all'
         entry['enabled'] = entry['enabled'] and item['enabled']
+        if item.get('representative'):
+            entry['representative'] = int(item['representative'])
         for tag in item['sources']:
             claimed[normalize_tag(tag)] = name
     for tag, target in config['field_aliases'].items():
@@ -319,7 +328,7 @@ def build_registry(catalog, config, names=None):
         claimed.setdefault(tag, target)
         groups.setdefault(target, dict(name=target, sources=set(), add=set(), remove=set(),
                                        keywords=[], enabled=True, includes=[],
-                                       keyword_scope='unmapped',
+                                       keyword_scope='unmapped', representative=None,
                                        exception=target in config['exception_order']))
     members = defaultdict(set)
     for code, row in reference.items():
@@ -328,7 +337,7 @@ def build_registry(catalog, config, names=None):
             if name not in groups:
                 groups[name] = dict(name=name, sources={tag}, add=set(), remove=set(),
                                     keywords=[], enabled=True, includes=[],
-                                    keyword_scope='unmapped',
+                                    keyword_scope='unmapped', representative=None,
                                     exception=name in config['exception_order'])
             if groups[name]['enabled']:
                 members[name].add(code)

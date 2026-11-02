@@ -47,6 +47,45 @@ def _mix(left, right, ratio=0.5):
 
 
 _CACHE = {}
+_FIRST_CACHE = {}
+
+
+def _stamps(data_dir):
+    reference = data_dir / 'card-series-reference.json'
+    from . import series_naming
+    config_path = data_dir / series_naming.CONFIG_NAME
+    try:
+        return tuple((path.stat().st_mtime_ns, path.stat().st_size) if path.exists() else None
+                     for path in (config_path, reference))
+    except OSError:
+        return None
+
+
+def first_cards(data_dir):
+    """每个命名组的第一张卡（组内卡号最小）作为代表图。"""
+    from . import series_naming
+    data_dir = Path(data_dir)
+    stamp = _stamps(data_dir)
+    if stamp is None:
+        return {}
+    key = str(data_dir.resolve())
+    cached = _FIRST_CACHE.get(key)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    try:
+        config = series_naming.load_config(data_dir)
+        catalog = series_naming.reference_catalog(data_dir / 'card-series-reference.json')
+        registry = series_naming.build_registry(catalog, config)
+    except Exception:
+        return {}
+    result = {}
+    for name, codes in registry['members'].items():
+        if not codes:
+            continue
+        chosen = (registry['groups'].get(name) or {}).get('representative')
+        result[name] = chosen if chosen in codes else min(codes)
+    _FIRST_CACHE[key] = (stamp, result)
+    return result
 
 
 def group_names(data_dir):
@@ -110,8 +149,8 @@ def _distribution_rows(distribution):
     return rows
 
 
-def layers(distribution, groups, threshold=THRESHOLD):
-    """计算三层饼图数据；groups 由 group_names() 提供，便于单测直接注入。"""
+def layers(distribution, groups, threshold=THRESHOLD, representatives=None):
+    """计算三层饼图数据；groups 由 group_names() 提供，representatives 为组→代表卡号。"""
     rows = _distribution_rows(distribution)
     total = sum(players for _name, players in rows)
     if not total:
@@ -163,7 +202,8 @@ def layers(distribution, groups, threshold=THRESHOLD):
             palette_index += 1
 
     inner = [dict(name=name, players=inner_players[name],
-                  percent=round(100 * inner_players[name] / total, 1), color=color_map[name])
+                  percent=round(100 * inner_players[name] / total, 1), color=color_map[name],
+                  image=(representatives or {}).get(name))
              for name in ordered]
     middle_rows = []
     for primary in ordered:
@@ -175,6 +215,8 @@ def layers(distribution, groups, threshold=THRESHOLD):
             middle_rows.append(dict(primary=primary, label=label, extras=list(extras),
                                     players=players, percent=round(100 * players / total, 1),
                                     color=color_map[primary], accent=accent,
+                                    image=(representatives or {}).get(extras[0] if extras else primary)
+                                    or (representatives or {}).get(primary),
                                     mixed=_mix(color_map[primary], accent) if accent else None))
     outer = []
     for name, players in rows:
@@ -199,5 +241,6 @@ def layers(distribution, groups, threshold=THRESHOLD):
                 note='内环按主大类各算一次、合计100%；中环是内环的交集细分；外环为具体卡组名。')
 
 
-def from_data_dir(distribution, data_dir, threshold=THRESHOLD):
-    return layers(distribution, group_names(data_dir), threshold)
+def from_data_dir(distribution, data_dir, threshold=THRESHOLD, representatives=None):
+    return layers(distribution, group_names(data_dir), threshold,
+                  representatives if representatives is not None else first_cards(data_dir))
