@@ -73,6 +73,34 @@ def process_one(database, replay_root, game_root, runner=subprocess.run, clock=t
     return 'analyzed' if len(report.get('players', [])) == 2 else 'failed'
 
 
+def _lock(handle):
+    """跨进程排他锁：Windows 用 msvcrt 字节锁，POSIX 用 fcntl.lockf；拿不到返回 False。"""
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.lockf(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB, 1)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock(handle):
+    if os.name == 'nt':
+        import msvcrt
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.lockf(handle.fileno(), fcntl.LOCK_UN, 1)
+
+
+def engine_ready(root=None):
+    """本机能否真正解析录像：ocgcore.dll 是 Windows PE，只有 Windows 能加载。"""
+    return os.name == 'nt' and ((Path(root) if root else ROOT) / 'runtime' / 'ocgcore.dll').is_file()
+
+
 def start_worker(root):
     root = Path(root)
     cfg = json.loads((root/'config.json').read_text(encoding='utf-8-sig'))
@@ -80,23 +108,26 @@ def start_worker(root):
     replays = Path(cfg.get('replay_dir') or data/'replays')
     game_root = Path(str(cfg.get('ygopro_dir') or 'D:/MyCardLibrary/ygopro'))
     stop = threading.Event()
+    if not engine_ready():
+        # 没有引擎时每条录像都会解析失败，而失败 sidecar 会被当成“已尝试、永不重试”，
+        # 等于把整段历史永久标死；所以宁可不启动，只留一行说明。
+        print('draw-analysis 未启动：本机没有可用的解析引擎（runtime/ocgcore.dll，仅 Windows）', file=sys.stderr)
+        return stop
     def loop():
         # OS lock is released on process exit. It stores no replay/player facts.
         try:
-            import msvcrt
             with (data/'draw-analysis.lock').open('a+b') as lock:
                 lock.seek(0)
                 if not lock.read(1): lock.write(b'0'); lock.flush()
                 lock.seek(0)
-                try: msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-                except OSError: return
+                if not _lock(lock): return
                 try:
                     while not stop.is_set():
                         try: state = process_one(data/'bot.sqlite3', replays, game_root)
                         except (OSError, ValueError, sqlite3.Error): state = 'error'
                         stop.wait(2 if state in ('analyzed', 'failed') else 30)
                 finally:
-                    lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+                    lock.seek(0); _unlock(lock)
         except OSError: return
     thread = threading.Thread(target=loop, name='draw-analysis', daemon=True)
     thread.start()
