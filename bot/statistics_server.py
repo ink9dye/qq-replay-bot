@@ -123,6 +123,16 @@ def main():
             time.sleep(5)
             server.portal.warmup()
         threading.Thread(target=_warm,daemon=True).start()
+        def _roster_keepwarm():
+            # roster 缓存 ttl 300 秒，命中不续期；每 240 秒强制重算一次，留 60 秒余量。
+            # 冷查询在 2C2G + 8 路录制下要 4-9 秒，放到后台线程里跑，用户侧只吃缓存。
+            while True:
+                time.sleep(240)
+                try:
+                    server.portal.keep_roster_warm()
+                except Exception:
+                    pass
+        threading.Thread(target=_roster_keepwarm,daemon=True).start()
         def _side_loop():
             import json as _json
             while True:

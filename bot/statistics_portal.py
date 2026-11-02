@@ -461,7 +461,7 @@ class StatisticsPortal:
             player=args.get('player',[None])[0] if parts[-1]=='build' else None
             if parts[-1]=='build' and (not player or len(player)>128):return self._reply(400,'需要玩家名称。')
             if player is None:
-                return self._cached_query_reply(('roster',), lambda db:query(db,self.replay_root,float(self.clock()),None), ttl=300.0, stamp_seconds=86400)
+                return self._roster_reply()
             return self._cached_query_reply(('deck-detail',player), lambda db:query(db,self.replay_root,float(self.clock()),player), ttl=300.0, stamp_seconds=86400)
             try:
                 # 独立只读连接，不抢服务Store事务、不触发迁移；本次响应固定一个快照。
@@ -488,8 +488,20 @@ class StatisticsPortal:
             except Exception:
                 pass
 
-    def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30):
-        """相同条件 + 相同数据库文件版本时复用完整响应；DB 一写就失效。"""
+    def _roster_reply(self, force=False):
+        """榜首查询的唯一入口：route 与后台保活共用，保证缓存键一致。"""
+        from .statistics_dashboard import query
+        return self._cached_query_reply(('roster',), lambda db:query(db,self.replay_root,float(self.clock()),None), ttl=300.0, stamp_seconds=86400, force=force)
+
+    def keep_roster_warm(self):
+        """后台保活：缓存命中不会续期，必须强制重算才能填上 300 秒过期空档。"""
+        return self._roster_reply(force=True)
+
+    def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
+        """相同条件 + 相同数据库文件版本时复用完整响应；DB 一写就失效。
+
+        force=True 跳过命中直接重算并覆盖缓存（供后台保活续期，命中本身不会续期）。
+        """
         try:
             stat=self.database.stat()
             # 观战进程会持续写库，按文件 mtime 精确比对会让缓存永远失效；
@@ -500,7 +512,7 @@ class StatisticsPortal:
         now=time.monotonic()
         with self._query_cache_lock:
             hit=self._query_cache.get(key)
-            if hit and hit[0]==stamp and now-hit[1]<=ttl:
+            if hit and hit[0]==stamp and now-hit[1]<=ttl and not force:
                 return hit[2]
         result=self._query_reply(callback)
         if result[0]==200:
