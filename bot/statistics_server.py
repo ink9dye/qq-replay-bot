@@ -109,7 +109,9 @@ def create_server(root,port=8788):
     data=Path(cfg.get('data_dir') or root/'data');replays=Path(cfg.get('replay_dir') or data/'replays')
     if not (data/'bot.sqlite3').is_file():raise ValueError('statistics_database_missing')
     portal=StatisticsPortal(data/'bot.sqlite3',replays,time.time,owner_secret(data/'statistics-owner.key'))
-    return ReplayHTTPServer(('127.0.0.1',port),make_handler(portal))
+    server=ReplayHTTPServer(('127.0.0.1',port),make_handler(portal))
+    server.portal=portal
+    return server
 
 
 def main():
@@ -117,6 +119,10 @@ def main():
     args=parser.parse_args()
     try:
         server=create_server(args.root,args.port)
+        def _warm():
+            time.sleep(5)
+            server.portal.warmup()
+        threading.Thread(target=_warm,daemon=True).start()
         from .draw_analysis_worker import start_worker
         analysis_stop=start_worker(args.root)
         try:server.serve_forever()

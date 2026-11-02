@@ -165,10 +165,11 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
         stamp = os.stat(db_path).st_mtime_ns
     except OSError:
         stamp = 0
-    cache_key = (int(float(now) // 300), scope, query, deck_query, str(replay_root))
+    import time as _time
+    cache_key = (scope, query, deck_query, str(replay_root))
     cached = _LIST_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
+    if cached is not None and _time.monotonic() - cached[0] <= 300:
+        return cached[1]
     roster = _roster(db)
     views = _latest_views(db, now, replay_root if scope == 'unnamed' else None,
                           only=set(roster) if scope == '100' else None)
@@ -235,7 +236,7 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
                   observed=sum(1 for r in rows if r['observed']),
                   recognized=sum(1 for r in rows if r['deck_type']),
                   rows=rows)
-    _LIST_CACHE[cache_key] = result
+    _LIST_CACHE[cache_key] = (_time.monotonic(), result)
     if len(_LIST_CACHE) > 32:
         _LIST_CACHE.clear()
     return result

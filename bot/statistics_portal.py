@@ -466,7 +466,7 @@ class StatisticsPortal:
             player=args.get('player',[None])[0] if parts[-1]=='build' else None
             if parts[-1]=='build' and (not player or len(player)>128):return self._reply(400,'需要玩家名称。')
             if player is None:
-                return self._cached_query_reply(('roster',), lambda db:query(db,self.replay_root,float(self.clock()),None), ttl=300.0, stamp_seconds=300)
+                return self._cached_query_reply(('roster',), lambda db:query(db,self.replay_root,float(self.clock()),None), ttl=300.0, stamp_seconds=86400)
             try:
                 # 独立只读连接，不抢服务Store事务、不触发迁移；本次响应固定一个快照。
                 with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
@@ -481,6 +481,16 @@ class StatisticsPortal:
                 return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
             except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')
         return self._reply(404,'找不到此统计页面。')
+
+    def warmup(self):
+        """后台预热最常用的统计查询，走真实 route，确保缓存键与用户请求完全一致。"""
+        headers = {"Host": "127.0.0.1:8788",
+                   "Cookie": f"qqstats_owner={self._session(int(self.clock()) + 600)}"}
+        for path in ("/statistics/api/roster", "/statistics/api/deck-naming?scope=100"):
+            try:
+                self.route(path, headers, "127.0.0.1")
+            except Exception:
+                pass
 
     def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30):
         """相同条件 + 相同数据库文件版本时复用完整响应；DB 一写就失效。"""
