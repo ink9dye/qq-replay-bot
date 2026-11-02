@@ -123,6 +123,23 @@ def main():
             time.sleep(5)
             server.portal.warmup()
         threading.Thread(target=_warm,daemon=True).start()
+        def _side_loop():
+            import json as _json
+            while True:
+                time.sleep(300)
+                try:
+                    status_path = server.portal.database.parent / 'capture-status.json'
+                    status = _json.loads(status_path.read_text(encoding='utf-8'))
+                    if int(status.get('active_observations') or 0) != 0:
+                        continue
+                    if time.time() - float(status.get('updated_at') or 0) > 180:
+                        continue
+                    from .side_inference import run as side_run
+                    side_run(args.root, limit=20)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_side_loop, daemon=True).start()
         from .draw_analysis_worker import start_worker
         analysis_stop=start_worker(args.root)
         try:server.serve_forever()

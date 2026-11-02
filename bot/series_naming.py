@@ -75,7 +75,7 @@ DEFAULT_EXCEPTION_ORDER = []
 DEFAULT_GROUPS = []
 
 DEFAULT_CONFIG = {
-    'primary_threshold': 8,
+    'primary_threshold': 5,
     'secondary_threshold': 4,
     'max_fields': 4,
     'cluster_specific_ratio': 0.6,   # 子系列张数 >= 父系列×该比例时优先用更具体的子系列名
@@ -479,6 +479,7 @@ def count_fields(cards, catalog, config, names=None, registry=None):
     counts = Counter()
     core_counts = Counter()
     optional_counts = Counter()
+    present = set()
     untagged = 0
     unknown_cards = 0
     total = 0
@@ -490,6 +491,7 @@ def count_fields(cards, catalog, config, names=None, registry=None):
         if copies <= 0:
             continue
         total += copies
+        present.add(code)
         for field in core_card_groups.get(code, ()):
             core_counts[field] += copies
         for field in optional_card_groups.get(code, ()):
@@ -513,7 +515,12 @@ def count_fields(cards, catalog, config, names=None, registry=None):
     for field in list(counts):
         if not core_counts.get(field):
             counts[field] = 0
-    return dict(fields=counts, optional=optional_counts, total=total,
+    qualified = set()
+    for field, codes in (registry.get('core_members') or {}).items():
+        # 必要卡全齐即算字段：一件套、两件套、三件套都适用，不再限定 3 张。
+        if codes and all(code in present for code in codes):
+            qualified.add(field)
+    return dict(fields=counts, optional=optional_counts, qualified=qualified, total=total,
                 untagged=untagged, unknown_cards=unknown_cards)
 
 
@@ -582,17 +589,18 @@ def select_fields(counts, config, registry=None):
     return [(name, filtered[name]) for name in representatives]
 
 
-def compose_name(selected, exceptions, config):
-    """按阈值挑主/次字段，再拼例外；返回 (name 或 None, 依据 dict)。"""
+def compose_name(selected, exceptions, config, qualified=None):
+    """按阈值挑主/次字段，再拼例外；三件套全齐的字段可绕过阈值。"""
+    qualified = set(qualified or ())
     primary = None
     secondaries = []
-    if selected and selected[0][1] >= config['primary_threshold']:
+    if selected and (selected[0][1] >= config['primary_threshold'] or selected[0][0] in qualified):
         primary = selected[0]
         limit = config['max_fields'] - 1
         for name, copies in selected[1:]:
             if len(secondaries) >= limit:
                 break
-            if copies >= config['secondary_threshold']:
+            if copies >= config['secondary_threshold'] or name in qualified:
                 secondaries.append((name, copies))
     fields = ([primary] if primary else []) + secondaries
     if primary is None and config['require_primary']:
@@ -656,10 +664,13 @@ def propose(cards, catalog, config, names=None, main_complete=True, registry=Non
     selected = select_fields(counted['fields'], config, registry)
     small_names = registry.get('small_names') or {}
     optional_counts = counted.get('optional') or {}
+    qualified = set(counted.get('qualified') or ())
     if small_names:
         selected = [(small_names.get(field, field) if not optional_counts.get(field) else field, copies)
                     for field, copies in selected]
-    name, basis = compose_name(selected, exceptions, config)
+        qualified = {small_names.get(field, field) if not optional_counts.get(field) else field
+                     for field in qualified}
+    name, basis = compose_name(selected, exceptions, config, qualified)
     total = counted['total']
     coverage = (basis.get('primary')[1] / total) if basis.get('primary') and total else 0.0
     return dict(name=name, basis=basis,

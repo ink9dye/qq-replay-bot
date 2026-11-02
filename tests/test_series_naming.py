@@ -76,7 +76,7 @@ class NamingTests(unittest.TestCase):
 
     def test_below_primary_threshold_is_not_named(self):
         tags = {code: ['系列甲'] for code in range(1, 8)}
-        result = self.propose(tags, {code: 1 for code in range(1, 8)})
+        result = self.propose(tags, {code: 1 for code in range(1, 5)})
         self.assertIsNone(result['name'])
         self.assertEqual(result['basis']['reason'], 'below_primary_threshold')
 
@@ -199,6 +199,17 @@ class NamingTests(unittest.TestCase):
         result = series_naming.propose(deck(copies), catalog(tags),
                                        series_naming.normalize_config(config), names)
         self.assertEqual(result['name'], '阿不思')
+
+    def test_three_required_cards_all_present_qualify_below_threshold(self):
+        config = series_naming.normalize_config(dict(
+            exceptions=[], keywords={}, ignore_fields=[],
+            primary_threshold=8, secondary_threshold=4,
+            groups=[dict(name='混沌', add=[1, 2, 3])]))
+        tags = {1: [], 2: [], 3: []}
+        result = series_naming.propose(deck({1: 1, 2: 1, 3: 1}), catalog(tags), config)
+        self.assertEqual(result['name'], '混沌')
+        missing = series_naming.propose(deck({1: 1, 2: 1}), catalog(tags), config)
+        self.assertIsNone(missing['name'])
 
     def test_small_name_when_only_required_cards_present(self):
         config = series_naming.normalize_config(dict(
