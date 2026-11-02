@@ -242,12 +242,13 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck
         rank = next(index for index, item in enumerate(siblings) if item[0] == name)
         lightness = 62 - min(rank, 5) * 7
         color = color_map[primary]
-        image = (deck_images or {}).get(name)
+        image = None
+        for field in ([extras[0]] if extras else []) + [primary] + matches[name]:
+            image = (representatives or {}).get(field)
+            if image:
+                break
         if not image:
-            for field in ([extras[0]] if extras else []) + [primary] + matches[name]:
-                image = (representatives or {}).get(field)
-                if image:
-                    break
+            image = (deck_images or {}).get(name)
         outer.append(dict(name=name, players=players, percent=round(100 * players / total, 1),
                           primary=primary, extras=extras, shared=bool(extras),
                           color=_shade(color, lightness / 100),
