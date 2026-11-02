@@ -211,16 +211,17 @@ class Store:
         with self._lock,self._db:
             return apply_rules(self._db,parsed,threshold,margin,version)
 
-    def refresh_series_names(self, config, now, scope='latest'):
-        """按组合规则增量命名；只处理版本未更新的构筑，人工默认会被规则覆盖。"""
+    def refresh_series_names(self, config, now, replay_root=None, scope='latest'):
+        """按组合规则增量命名；scop='latest' 用每人最新一场的 game1 构筑。"""
         from .series_naming import apply_names
         with self._lock,self._db:
-            return apply_names(self._db,now,config,scope=scope,only_pending=True)
+            return apply_names(self._db,now,config,scope=scope,replay_root=replay_root,only_pending=True)
 
-    def pending_series_count(self, config, now):
-        from .series_naming import latest_builds,version_for
+    def pending_series_count(self, config, now, replay_root=None):
+        from .series_naming import pending_latest_main,version_for
         with self._lock:
-            return len(latest_builds(self._db,now,version_for(config),config['respect_manual']))
+            return len(pending_latest_main(self._db,replay_root,now,
+                                           version_for(config),config['respect_manual']))
 
     def unknown_builds(self, now):
         # 维护队列，不是按人的卡组使用人数或胜率统计。

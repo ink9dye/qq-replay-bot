@@ -1082,11 +1082,11 @@ class BotService:
             try:
                 from .series_naming import load_config
                 config=load_config(self.data_dir)
-                pending=self.store.pending_series_count(config,now)
+                pending=self.store.pending_series_count(config,now,self.replay_root)
                 if pending>400:
                     self.write_log(f'组合命名待初始化 {pending} 个构筑；请先运行 bot.series_naming 初始化')
                 else:
-                    result=self.store.refresh_series_names(config,now)
+                    result=self.store.refresh_series_names(config,now,self.replay_root)
                     self._series_rules_signature=series_marker
                     planned=(result or {}).get('planned') or {}
                     if planned.get('create') or planned.get('clear'):

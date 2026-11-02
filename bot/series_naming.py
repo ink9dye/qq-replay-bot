@@ -685,10 +685,38 @@ def all_builds(db):
     return [row[0] for row in db.execute('SELECT fingerprint FROM stat_builds')]
 
 
+def latest_main_builds(db, replay_root, now):
+    """每人最新一场的 game1 构筑（与玩家页/饼图同一套选择）。"""
+    from .statistics_dashboard import population
+    _basis, latest, _people = population(db, Path(replay_root), float(now), resolve_rank=False)
+    return [row['build'] for row in latest.values() if row.get('build')]
+
+
+def _filter_pending(db, builds, version, respect_manual):
+    pending = []
+    for start in range(0, len(builds), 400):
+        chunk = builds[start:start + 400]
+        marks = ','.join('?' for _ in chunk)
+        for row in db.execute('SELECT fingerprint,classification_source,classification_version '
+                              'FROM stat_builds WHERE fingerprint IN (%s)' % marks, chunk):
+            if not respect_manual and row['classification_source'] == 'manual':
+                pending.append(row['fingerprint'])
+            elif row['classification_version'] != version:
+                pending.append(row['fingerprint'])
+    return pending
+
+
+def pending_latest_main(db, replay_root, now, version, respect_manual=True):
+    builds = (latest_main_builds(db, replay_root, now) if replay_root is not None
+              else latest_builds(db, now))
+    return _filter_pending(db, builds, version, respect_manual)
+
+
 def apply_names(db, now, config, catalog=None, names=None, scope='latest',
                 replay_root=None, only_pending=True, commit=True):
     """按当前配置计算并写入 auto_series；后台定时/新录像同步时调用。
 
+    scope='latest' 时命名“每人最新一场的 game1 构筑”（与玩家页一致）；
     respect_manual=False（默认）时人工构筑也会按规则重算，保证全站名字统一。
     """
     catalog = catalog_from_db(db, catalog)
@@ -698,13 +726,16 @@ def apply_names(db, now, config, catalog=None, names=None, scope='latest',
         builds = all_builds(db)
     elif only_pending:
         if scope == 'latest':
-            builds = latest_builds(db, now, version, respect)
+            builds = (pending_latest_main(db, replay_root, now, version, respect)
+                      if replay_root is not None
+                      else _filter_pending(db, latest_builds(db, now), version, respect))
         elif scope == 'top100':
             builds = pending_builds(db, now, version, 'top100', respect)
         else:
             builds = pending_builds(db, now, version, 'active', respect)
     elif scope == 'latest':
-        builds = latest_builds(db, now, None, respect)
+        builds = (latest_main_builds(db, replay_root, now) if replay_root is not None
+                  else latest_builds(db, now, None, respect))
     elif scope == 'everything':
         builds = all_builds(db)
     elif scope in ('top100', 'active'):
@@ -744,7 +775,8 @@ def plan(db, now, config, catalog=None, names=None, builds=None, scope='top100',
     registry = build_registry(catalog, config, names)
     if builds is None:
         if scope == 'latest':
-            builds = latest_builds(db, now, None, config['respect_manual'])
+            builds = (latest_main_builds(db, replay_root, now) if replay_root is not None
+                      else latest_builds(db, now, None, config['respect_manual']))
         elif scope == 'everything':
             builds = all_builds(db)
         else:
