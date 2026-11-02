@@ -359,6 +359,8 @@ def build_registry(catalog, config, names=None):
             members[name].update(entry['add'])
         if entry['remove']:
             members[name].difference_update(entry['remove'])
+    # includes 是“可添加项”：不计入核心；只有核心卡在场时才补充张数。
+    core_members = {name: set(codes) for name, codes in members.items()}
     missing = set()
     resolved = {}
 
@@ -409,7 +411,15 @@ def build_registry(catalog, config, names=None):
         for word in entry['keywords']:
             keyword_map.append((entry['name'], word))
     keyword_map.sort(key=lambda pair: (-len(pair[1]), pair[0]))
+    core_card_groups = defaultdict(set)
+    for name, codes in core_members.items():
+        if name in ignore:
+            continue
+        for code in codes:
+            core_card_groups[code].add(name)
     return dict(groups=groups, members={name: sorted(codes) for name, codes in members.items()},
+                core_members={name: sorted(codes) for name, codes in core_members.items()},
+                core_card_groups={code: frozenset(names) for code, names in core_card_groups.items()},
                 card_groups={code: frozenset(names) for code, names in card_groups.items()},
                 keywords=keyword_map, ignore=ignore,
                 ancestors={child: frozenset(parents) for child, parents in ancestors.items()},
@@ -438,15 +448,19 @@ def count_fields(cards, catalog, config, names=None, registry=None):
     """cards: [{code,copies}]；返回字段累计张数、未归类张数与未映射卡数。"""
     registry = registry or build_registry(catalog, config)
     counts = Counter()
+    core_counts = Counter()
     untagged = 0
     unknown_cards = 0
     total = 0
+    core_card_groups = registry.get('core_card_groups') or {}
     for card in cards:
         code = int(card['code'])
         copies = int(card['copies'])
         if copies <= 0:
             continue
         total += copies
+        for field in core_card_groups.get(code, ()):
+            core_counts[field] += copies
         fields = candidate_fields(code, catalog, registry, names, config)
         if fields:
             # 子组合的卡同时计入 includes 它的父组合（大组合包含小组合）。
@@ -463,6 +477,9 @@ def count_fields(cards, catalog, config, names=None, registry=None):
             continue
         for field in fields:
             counts[field] += copies
+    for field in list(counts):
+        if not core_counts.get(field):
+            counts[field] = 0
     return dict(fields=counts, total=total, untagged=untagged, unknown_cards=unknown_cards)
 
 
@@ -583,7 +600,11 @@ def field_contributors(cards, catalog, config, names=None, registry=None):
         for field in expanded:
             per[field].append(dict(code=code, copies=copies))
     rows = []
+    core_members = registry.get('core_members') or {}
     for field, items in per.items():
+        core_codes = set(core_members.get(field) or ())
+        if core_codes and not any(int(item['code']) in core_codes for item in items):
+            continue
         rows.append(dict(field=field, copies=sum(item['copies'] for item in items), cards=items))
     rows.sort(key=lambda row: (-row['copies'], row['field']))
     return rows
