@@ -117,12 +117,34 @@ def active(unit):
     return bool(out and out.stdout.strip() == 'active')
 
 
+def wait_active(unit, timeout=20):
+    """systemctl restart 返回时服务可能仍在启动；给启动留出时间，避免误报。"""
+    deadline = time.monotonic() + timeout
+    while True:
+        if active(unit):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(1)
+
+
 def port_open(port):
     try:
         with socket.create_connection(('127.0.0.1', port), timeout=2):
             return True
     except OSError:
         return False
+
+
+def wait_port(port, timeout=20):
+    """服务刚重启时端口可能晚于 systemd active；避免把启动窗口误报为故障。"""
+    deadline = time.monotonic() + timeout
+    while True:
+        if port_open(port):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(1)
 
 
 def docker_running(name):
@@ -158,6 +180,7 @@ def main():
     state = load_state()
     now = time.time()
     issues = []
+    restarted = False
 
     for unit in UNITS:
         if not unit_exists(unit):
@@ -165,8 +188,8 @@ def main():
         if not active(unit):
             log('restart %s' % unit)
             run(['systemctl', 'restart', unit], timeout=40)
-            time.sleep(5)
-            if not active(unit):
+            restarted = True
+            if not wait_active(unit):
                 issues.append('%s 未运行，自动重启失败' % unit)
             else:
                 log('%s restarted ok' % unit)
@@ -179,7 +202,8 @@ def main():
             issues.append('NapCat 容器未运行，自动重启失败')
 
     for port in (8787, 8788):
-        if not port_open(port):
+        # 刚重启的进程可能还在加载（M3 初始化、卡表索引等），不能按立即探测判故障。
+        if not (wait_port(port, 30) if restarted else port_open(port)):
             issues.append('端口 %d 未监听' % port)
 
     if docker_exists('napcat') and not port_open(3001):
