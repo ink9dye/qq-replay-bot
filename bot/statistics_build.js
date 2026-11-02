@@ -46,7 +46,7 @@ document.addEventListener('click',async event=>{
  const status=$('status'),old=status.textContent;
  status.textContent='正在打包录像…';
  try{
-  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
   let response;
   try{response=await fetch(link.href,{credentials:'same-origin',signal:controller.signal});}
   finally{clearTimeout(timer);}

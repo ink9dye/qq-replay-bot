@@ -369,7 +369,7 @@ def make_handler(app: ShareApp):
                 replay = app.store.get_replay(int(parts[3]))
                 filename = app.download_name(replay)
                 self.send_header("Content-Disposition", attachment_header(filename, f"replay-{int(parts[3])}.yrp"))
-            elif status == 200 and content_type == "application/zip":
+            elif status == 200 and content_type == "application/zip" and parts[0] == 's':
                 link = app.store.get_link(parts[1])
                 self.send_header("Content-Disposition", attachment_header(link["player"] + " 观战录像.zip", "replays.zip"))
             self.send_header("Cache-Control", "no-store")

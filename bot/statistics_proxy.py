@@ -75,6 +75,9 @@ def route(app, path, parts):
     location = headers.get("Location") if isinstance(headers, dict) else None
     if location and location.startswith("/statistics"):
         return status, content_type, b"", {"Location": f"/stats/{token}" + location}
+    disposition = headers.get("Content-Disposition") if isinstance(headers, dict) else None
+    if disposition:
+        return status, content_type, body, {"Content-Disposition": disposition}
     return status, content_type, body
 
 
