@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 OWNER_COOKIE = "qqstats_owner"
 UPSTREAM = "http://127.0.0.1:8788"
@@ -21,7 +21,7 @@ TEXT_TYPES = ("text/html", "text/javascript", "application/javascript", "text/cs
 
 def _fetch(upstream, headers, body=None, method="GET"):
     """请求 ygo-web；失败抛 OSError/HTTPError 由调用方回退或报错。"""
-    request = urllib.request.Request(UPSTREAM + upstream, data=body, method=method)
+    request = urllib.request.Request(UPSTREAM + quote(upstream, safe='/?&=%:'), data=body, method=method)
     for key, value in headers.items():
         request.add_header(key, value)
     request.add_header("Accept-Encoding", "identity")
