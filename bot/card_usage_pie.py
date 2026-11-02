@@ -135,8 +135,14 @@ def render(database, data_dir, now, card_name):
     import matplotlib.pyplot as plt
     from matplotlib.font_manager import FontProperties
 
-    font_path = Path('C:/Windows/Fonts/msyh.ttc')
-    prop = FontProperties(fname=str(font_path)) if font_path.exists() else None
+    font_candidates = (
+        Path('C:/Windows/Fonts/msyh.ttc'),
+        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
+        Path('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'),
+        Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'),
+    )
+    font_path = next((path for path in font_candidates if path.is_file()), None)
+    prop = FontProperties(fname=str(font_path)) if font_path else None
     if prop is not None:
         plt.rcParams['font.family'] = prop.get_name()
     plt.rcParams['axes.unicode_minus'] = False

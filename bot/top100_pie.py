@@ -28,8 +28,14 @@ def collect(database, replay_root, now):
 
 
 def _font(size):
-    path = Path('C:/Windows/Fonts/msyh.ttc')
-    if path.exists():
+    candidates = (
+        Path('C:/Windows/Fonts/msyh.ttc'),
+        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
+        Path('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'),
+        Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'),
+    )
+    path = next((item for item in candidates if item.is_file()), None)
+    if path is not None:
         return ImageFont.truetype(str(path), size)
     return ImageFont.load_default()
 

@@ -80,8 +80,14 @@ def collect_flow(database, data_dir, now, card_name):
 
 def _font():
     from matplotlib.font_manager import FontProperties
-    path = Path('C:/Windows/Fonts/msyh.ttc')
-    return FontProperties(fname=str(path)) if path.exists() else None
+    candidates = (
+        Path('C:/Windows/Fonts/msyh.ttc'),
+        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
+        Path('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'),
+        Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'),
+    )
+    path = next((item for item in candidates if item.is_file()), None)
+    return FontProperties(fname=str(path)) if path else None
 
 
 def render_flow(database, data_dir, now, card_name):
