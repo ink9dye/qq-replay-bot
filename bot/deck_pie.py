@@ -218,32 +218,19 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck
                                     image=(representatives or {}).get(extras[0] if extras else primary)
                                     or (representatives or {}).get(primary),
                                     mixed=_mix(color_map[primary], accent) if accent else None))
-    for cat in inner:
-        siblings = [name for name, _players in rows if primaries[name] == cat['name']]
-        combos = [row for row in middle_rows
-                  if row['primary'] == cat['name'] and row['extras']]
-        best = max(combos, key=lambda row: (row['players'], len(row['extras']), row['label'])) if combos else None
-        own = next((row['players'] for row in middle_rows
-                    if row['primary'] == cat['name'] and not row['extras']), 0)
-        outer_image = (best or {}).get('image') or cat.get('image')
-        band_image = None
-        if cat.get('image') and len(siblings) <= 3:
-            band_image = cat['image']
-            if best and best['players'] > own:
-                band_image = best.get('image') or cat['image']
-        cat['outer_image'] = outer_image
-        cat['band_image'] = band_image
     outer = []
     for name, players in rows:
         primary = primaries[name]
         extras = [field for field in matches[name] if field in qualified and field != primary]
+        secondary = [field for field in matches[name] if field != primary]
+        ordered_fields = sorted(secondary, key=lambda field: (-field_players[field], matches[name].index(field)))
         siblings = sorted((item for item in rows if primaries[item[0]] == primary),
                           key=lambda item: (-item[1], item[0]))
         rank = next(index for index, item in enumerate(siblings) if item[0] == name)
         lightness = 62 - min(rank, 5) * 7
         color = color_map[primary]
         image = None
-        for field in ([extras[0]] if extras else []) + [primary] + matches[name]:
+        for field in ordered_fields + [primary] + matches[name]:
             image = (representatives or {}).get(field)
             if image:
                 break
@@ -255,6 +242,10 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck
                           accent=color_map.get(extras[0]) if extras else None,
                           image=image))
     outer.sort(key=lambda item: (-item['players'], item['name']))
+    for cat in inner:
+        images = {row.get('image') for row in outer
+                  if row['primary'] == cat['name'] and row.get('image')}
+        cat['band_image'] = next(iter(images)) if len(images) == 1 else None
     return dict(total=total, threshold=threshold,
                 inner=inner, middle=middle_rows, outer=outer,
                 inner_percent=sum(item['percent'] for item in inner),
