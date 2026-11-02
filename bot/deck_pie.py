@@ -219,10 +219,20 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck
                                     or (representatives or {}).get(primary),
                                     mixed=_mix(color_map[primary], accent) if accent else None))
     for cat in inner:
+        siblings = [name for name, _players in rows if primaries[name] == cat['name']]
         combos = [row for row in middle_rows
                   if row['primary'] == cat['name'] and row['extras']]
         best = max(combos, key=lambda row: (row['players'], len(row['extras']), row['label'])) if combos else None
-        cat['outer_image'] = (best or {}).get('image') or cat.get('image')
+        own = next((row['players'] for row in middle_rows
+                    if row['primary'] == cat['name'] and not row['extras']), 0)
+        outer_image = (best or {}).get('image') or cat.get('image')
+        band_image = None
+        if cat.get('image') and len(siblings) <= 3:
+            band_image = cat['image']
+            if best and best['players'] > own:
+                band_image = best.get('image') or cat['image']
+        cat['outer_image'] = outer_image
+        cat['band_image'] = band_image
     outer = []
     for name, players in rows:
         primary = primaries[name]

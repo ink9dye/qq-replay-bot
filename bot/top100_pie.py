@@ -242,27 +242,19 @@ def render(database, replay_root, now):
         span = cat['players'] / total * 360.0
         start = angle
         merged = not cat.get('image')
-        if not merged:
-            _paste_wedge(image, center, radius * 0.94, radius * 0.56,
-                         start, start + span, cat.get('outer_image') or cat.get('image'),
-                         cat['color'], thumb=True)
+        band = cat.get('band_image')
         cursor = angle
         for item in outer_by_primary.get(cat['name']) or []:
             o_span = item['players'] / max(1, cat['players']) * span
             o_end = cursor + o_span
-            box = (center[0] - radius * 0.94, center[1] - radius * 0.94,
-                   center[0] + radius * 0.94, center[1] + radius * 0.94)
             code = item.get('image') or middle_image.get(
                 (cat['name'], tuple(sorted(item.get('extras') or [])))) or cat.get('image')
             if merged:
                 _paste_wedge(image, center, radius * 0.94, radius * 0.30,
                              cursor, o_end, code, item['color'], thumb=True)
-            r0 = radius * (0.30 if merged else 0.56)
-            a = math.radians(cursor)
-            draw.line((center[0] + math.cos(a) * r0, center[1] + math.sin(a) * r0,
-                       center[0] + math.cos(a) * radius * 0.94,
-                       center[1] + math.sin(a) * radius * 0.94), fill='white', width=1)
-            draw.arc(box, cursor, o_end, fill='white', width=1)
+            elif not band:
+                _paste_wedge(image, center, radius * 0.94, radius * 0.56,
+                             cursor, o_end, code, item['color'], thumb=True)
             o_mid = math.radians((cursor + o_end) / 2)
             labels.append((o_mid, f"{item['name']}  {item['percent']}%", _rgb(item['color'])))
             cursor = o_end
@@ -279,7 +271,7 @@ def render(database, replay_root, now):
         color = _rgb(cat['color'])
         box = (center[0] - radius * 0.56, center[1] - radius * 0.56,
                center[0] + radius * 0.56, center[1] + radius * 0.56)
-        if cat.get('image'):
+        if cat.get('image') and not cat.get('band_image'):
             _paste_wedge(image, center, radius * 0.56, radius * 0.30,
                          angle, end, cat.get('image'), cat['color'], thumb=True)
             draw.arc(box, angle, end, fill='white', width=2)
@@ -298,6 +290,31 @@ def render(database, replay_root, now):
                 _paste_wedge(image, center, radius * 0.94, radius * 0.30,
                              cursor, o_end, code, item['color'], thumb=True)
                 cursor = o_end
+        start += span
+    # 单一大类：一张图铺满内外环，避免中间断层
+    start = -90.0
+    for cat in inner:
+        span = cat['players'] / total * 360.0
+        if cat.get('band_image'):
+            _paste_wedge(image, center, radius * 0.94, radius * 0.30,
+                         start, start + span, cat['band_image'], cat['color'], thumb=True)
+        start += span
+    # 扇区边界线
+    start = -90.0
+    box = (center[0] - radius * 0.94, center[1] - radius * 0.94,
+           center[0] + radius * 0.94, center[1] + radius * 0.94)
+    for cat in inner:
+        span = cat['players'] / total * 360.0
+        r0 = radius * (0.30 if (cat.get('band_image') or not cat.get('image')) else 0.56)
+        cursor = start
+        for item in outer_by_primary.get(cat['name']) or []:
+            o_span = item['players'] / max(1, cat['players']) * span
+            a = math.radians(cursor)
+            draw.line((center[0] + math.cos(a) * r0, center[1] + math.sin(a) * r0,
+                       center[0] + math.cos(a) * radius * 0.94,
+                       center[1] + math.sin(a) * radius * 0.94), fill='white', width=1)
+            draw.arc(box, cursor, cursor + o_span, fill='white', width=1)
+            cursor += o_span
         start += span
     _draw_labels(draw, center, radius * 0.94, labels, _font(16), width, height)
     center_hole = radius * 0.30
