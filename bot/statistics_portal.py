@@ -132,12 +132,7 @@ class StatisticsPortal:
                 limit=int(args.get('limit',['50'])[0]);offset=int(args.get('offset',['0'])[0])
             except ValueError:return self._reply(400,'分页参数无效。')
             if len(query)>60:return self._reply(400,'搜索词过长。')
-            try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
-                    db.row_factory=sqlite3.Row;db.execute('BEGIN')
-                    result=list_groups(db,self.database.parent,float(self.clock()),query,limit,offset)
-                return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
-            except (sqlite3.Error,OSError,ValueError):return self._reply(503,'组合数据暂时不可用，请稍后刷新。')
+            return self._cached_query_reply(('groups',query,limit,offset), lambda db:list_groups(db,self.database.parent,float(self.clock()),query,limit,offset), ttl=60.0)
         if len(parts)==5 and parts[:4]==['statistics','api','deck-naming','groups']:
             from .series_naming_admin import group_detail
             from urllib.parse import unquote
@@ -486,7 +481,7 @@ class StatisticsPortal:
         """后台预热最常用的统计查询，走真实 route，确保缓存键与用户请求完全一致。"""
         headers = {"Host": "127.0.0.1:8788",
                    "Cookie": f"qqstats_owner={self._session(int(self.clock()) + 600)}"}
-        for path in ("/statistics/api/roster", "/statistics/api/deck-naming?scope=100"):
+        for path in ("/statistics/api/roster", "/statistics/api/deck-naming?scope=100", "/statistics/api/deck-naming/groups?limit=50"):
             try:
                 self.route(path, headers, "127.0.0.1")
             except Exception:
