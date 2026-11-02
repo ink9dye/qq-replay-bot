@@ -119,10 +119,15 @@ def usage_counts(db, data_dir, now, config=None, catalog=None, names=None, roste
 def _row(entry, registry, usage, names, limit=None):
     name = entry['name']
     codes = registry['members'].get(name) or []
-    cards = [dict(code=code, name=_card_name(names, code)) for code in codes]
+    core = set((registry.get('core_members') or {}).get(name) or ())
+    optional_codes = set(entry.get('optional') or ())
+    cards = [dict(code=code, name=_card_name(names, code)) for code in codes if code in core]
+    optional_cards = [dict(code=code, name=_card_name(names, code)) for code in sorted(optional_codes)]
     return dict(name=name,
+                small_name=entry.get('small_name'),
                 cards=cards if limit is None else cards[:limit],
-                cards_total=len(cards),
+                optional_cards=optional_cards,
+                cards_total=len(codes),
                 sources=sorted(entry['sources']),
                 keywords=list(entry['keywords']),
                 keyword_scope=entry['keyword_scope'],
@@ -217,6 +222,9 @@ def _group_payload(payload):
         if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
             raise ValueError('%s 必须是字符串列表' % key)
         fields[key] = [item.strip() for item in value]
+    if 'small_name' in payload:
+        value = payload.get('small_name')
+        fields['small_name'] = (value or '').strip() if isinstance(value, str) else value
     if 'keyword_scope' in payload:
         if payload['keyword_scope'] not in ('unmapped', 'all'):
             raise ValueError('keyword_scope 只能是 unmapped 或 all')
@@ -364,6 +372,24 @@ def update_group(db, data_dir, now, payload):
         if 'exception_order' in raw or exception_names:
             old = [value for value in (raw.get('exception_order') or []) if value in exception_names]
             raw['exception_order'] = old + [value for value in exception_names if value not in old]
+    elif op in ('add_optional', 'remove_optional'):
+        codes = _resolve_terms(data_dir, payload.get('cards'))
+        if kind is None:
+            config = series_naming.load_config(data_dir)
+            registry = series_naming.build_registry(catalog, config, names)
+            entry = registry['groups'].get(before) or registry['groups'].get(name) or {}
+            item = dict(name=name, sources=sorted(entry.get('sources') or []))
+            raw.setdefault('groups', []).append(item)
+            kind, index = 'groups', len(raw['groups']) - 1
+        item = dict(raw[kind][index])
+        optional = set(item.get('optional') or [])
+        if op == 'add_optional':
+            optional.update(codes)
+        else:
+            optional.difference_update(codes)
+        item['optional'] = sorted(optional)
+        item['name'] = name
+        raw[kind][index] = item
     elif op in ('add_cards', 'remove_cards'):
         codes = _resolve_terms(data_dir, payload.get('cards'))
         if kind is None:

@@ -95,7 +95,7 @@ DEFAULT_CONFIG = {
     'joiner': '',
 }
 
-GROUP_KEYS = ('name', 'sources', 'add', 'remove', 'keywords', 'enabled',
+GROUP_KEYS = ('name', 'small_name', 'sources', 'add', 'remove', 'optional', 'keywords', 'enabled',
               'includes', 'keyword_scope', 'representative')
 
 
@@ -119,6 +119,13 @@ def _group(item, index, require_keywords=True):
     name = item.get('name')
     if not isinstance(name, str) or not name.strip() or len(name) > 60:
         raise ConfigError('命名组 #%d 的 name 必须是非空、<=60 字符的字符串' % index)
+    small_name = item.get('small_name')
+    if small_name in ('', None):
+        small_name = None
+    elif not isinstance(small_name, str) or not small_name.strip() or len(small_name) > 60:
+        raise ConfigError('命名组 %s 的 small_name 必须是非空、<=60 字符的字符串' % name)
+    else:
+        small_name = small_name.strip()
     sources = item.get('sources') or []
     if not isinstance(sources, list) or any(not isinstance(tag, str) or not tag for tag in sources):
         raise ConfigError('命名组 %s 的 sources 必须是字符串列表' % name)
@@ -128,6 +135,9 @@ def _group(item, index, require_keywords=True):
     remove = item.get('remove') or []
     if not isinstance(remove, list) or any(type(code) is not int or not 0 < code <= 4294967295 for code in remove):
         raise ConfigError('命名组 %s 的 remove 必须是正整数卡号列表' % name)
+    optional = item.get('optional') or []
+    if not isinstance(optional, list) or any(type(code) is not int or not 0 < code <= 4294967295 for code in optional):
+        raise ConfigError('命名组 %s 的 optional 必须是正整数卡号列表' % name)
     keywords = item.get('keywords') or []
     if not isinstance(keywords, list) or any(not isinstance(word, str) or not word for word in keywords):
         raise ConfigError('命名组 %s 的 keywords 必须是字符串列表' % name)
@@ -147,8 +157,9 @@ def _group(item, index, require_keywords=True):
         representative = None
     if representative is not None and (type(representative) is not int or not 0 < representative <= 4294967295):
         raise ConfigError('命名组 %s 的 representative 必须是正整数卡号' % name)
-    return dict(name=name.strip(), sources=[tag.strip() for tag in sources],
+    return dict(name=name.strip(), small_name=small_name, sources=[tag.strip() for tag in sources],
                 add=sorted(set(codes)), remove=sorted(set(remove)),
+                optional=sorted(set(optional)),
                 keywords=[word.strip() for word in keywords if word.strip()], enabled=enabled,
                 includes=[child.strip() for child in includes], keyword_scope=keyword_scope,
                 representative=representative)
@@ -308,14 +319,17 @@ def build_registry(catalog, config, names=None):
     claimed, groups = {}, {}
     for item in definitions:
         name = item['name']
-        entry = groups.setdefault(name, dict(name=name, sources=set(), add=set(),
-                                             remove=set(), keywords=[], enabled=True,
+        entry = groups.setdefault(name, dict(name=name, small_name=None, sources=set(), add=set(),
+                                             remove=set(), optional=set(), keywords=[], enabled=True,
                                              includes=[], keyword_scope='unmapped',
                                              representative=None,
                                              exception=name in config['exception_order']))
         entry['sources'].update(item['sources'])
         entry['add'].update(item['add'])
         entry['remove'].update(item['remove'])
+        entry['optional'].update(item.get('optional') or [])
+        if item.get('small_name'):
+            entry['small_name'] = item['small_name']
         entry['keywords'].extend(item['keywords'])
         entry['includes'].extend(child for child in item['includes'] if child not in entry['includes'])
         if item.get('keyword_scope') == 'all':
@@ -361,6 +375,12 @@ def build_registry(catalog, config, names=None):
             members[name].difference_update(entry['remove'])
     # includes 是“可添加项”：不计入核心；只有核心卡在场时才补充张数。
     core_members = {name: set(codes) for name, codes in members.items()}
+    optional_groups = {}
+    for name, entry in groups.items():
+        if not entry['enabled'] or not entry.get('optional'):
+            continue
+        members[name].update(entry['optional'])
+        optional_groups[name] = set(entry['optional'])
     missing = set()
     resolved = {}
 
@@ -417,9 +437,18 @@ def build_registry(catalog, config, names=None):
             continue
         for code in codes:
             core_card_groups[code].add(name)
+    optional_card_groups = defaultdict(set)
+    for name, codes in optional_groups.items():
+        if name in ignore:
+            continue
+        for code in codes:
+            optional_card_groups[code].add(name)
+    small_names = {name: entry.get('small_name') for name, entry in groups.items() if entry.get('small_name')}
     return dict(groups=groups, members={name: sorted(codes) for name, codes in members.items()},
                 core_members={name: sorted(codes) for name, codes in core_members.items()},
                 core_card_groups={code: frozenset(names) for code, names in core_card_groups.items()},
+                optional_card_groups={code: frozenset(names) for code, names in optional_card_groups.items()},
+                small_names=small_names,
                 card_groups={code: frozenset(names) for code, names in card_groups.items()},
                 keywords=keyword_map, ignore=ignore,
                 ancestors={child: frozenset(parents) for child, parents in ancestors.items()},
@@ -449,10 +478,12 @@ def count_fields(cards, catalog, config, names=None, registry=None):
     registry = registry or build_registry(catalog, config)
     counts = Counter()
     core_counts = Counter()
+    optional_counts = Counter()
     untagged = 0
     unknown_cards = 0
     total = 0
     core_card_groups = registry.get('core_card_groups') or {}
+    optional_card_groups = registry.get('optional_card_groups') or {}
     for card in cards:
         code = int(card['code'])
         copies = int(card['copies'])
@@ -461,6 +492,8 @@ def count_fields(cards, catalog, config, names=None, registry=None):
         total += copies
         for field in core_card_groups.get(code, ()):
             core_counts[field] += copies
+        for field in optional_card_groups.get(code, ()):
+            optional_counts[field] += copies
         fields = candidate_fields(code, catalog, registry, names, config)
         if fields:
             # 子组合的卡同时计入 includes 它的父组合（大组合包含小组合）。
@@ -480,7 +513,8 @@ def count_fields(cards, catalog, config, names=None, registry=None):
     for field in list(counts):
         if not core_counts.get(field):
             counts[field] = 0
-    return dict(fields=counts, total=total, untagged=untagged, unknown_cards=unknown_cards)
+    return dict(fields=counts, optional=optional_counts, total=total,
+                untagged=untagged, unknown_cards=unknown_cards)
 
 
 def _clusters(names, registry=None):
@@ -620,6 +654,11 @@ def propose(cards, catalog, config, names=None, main_complete=True, registry=Non
     counted = count_fields(cards, catalog, config, names, registry)
     exceptions = {name: copies_of(counted['fields'], name) for name in config['exception_order']}
     selected = select_fields(counted['fields'], config, registry)
+    small_names = registry.get('small_names') or {}
+    optional_counts = counted.get('optional') or {}
+    if small_names:
+        selected = [(small_names.get(field, field) if not optional_counts.get(field) else field, copies)
+                    for field, copies in selected]
     name, basis = compose_name(selected, exceptions, config)
     total = counted['total']
     coverage = (basis.get('primary')[1] / total) if basis.get('primary') and total else 0.0

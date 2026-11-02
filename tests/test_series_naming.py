@@ -200,6 +200,35 @@ class NamingTests(unittest.TestCase):
                                        series_naming.normalize_config(config), names)
         self.assertEqual(result['name'], '阿不思')
 
+    def test_small_name_when_only_required_cards_present(self):
+        config = series_naming.normalize_config(dict(
+            exceptions=[], keywords={}, ignore_fields=[],
+            primary_threshold=4, secondary_threshold=3,
+            groups=[dict(name='大轴', small_name='小轴', add=[1], optional=[2])]))
+        only_small = series_naming.propose(deck({1: 5}), catalog({1: [], 2: []}), config)
+        self.assertEqual(only_small['name'], '小轴')
+        both = series_naming.propose(deck({1: 2, 2: 5}), catalog({1: [], 2: []}), config)
+        self.assertEqual(both['name'], '大轴')
+        self.assertEqual(both['basis']['primary'], ('大轴', 7))
+
+    def test_big_core_present_switches_to_big_name_and_absorbs_small(self):
+        # 小轴的必选项单独在场叫小轴；大轴自己的核心卡也登场时改叫大轴，小轴名不再重复列。
+        tags = {1: ['大轴'], 2: ['小轴']}
+        config = dict(
+            exceptions=[], keywords={}, ignore_fields=[],
+            primary_threshold=4, secondary_threshold=3,
+            groups=[dict(name='大轴', sources=['大轴'], includes=['小轴']),
+                    dict(name='小轴', sources=['小轴'])],
+        )
+        only_small = series_naming.propose(deck({2: 5}), catalog(tags),
+                                           series_naming.normalize_config(config))
+        self.assertEqual(only_small['name'], '小轴')
+        both = series_naming.propose(deck({1: 2, 2: 5}), catalog(tags),
+                                     series_naming.normalize_config(config))
+        self.assertEqual(both['name'], '大轴')
+        self.assertEqual(both['basis']['primary'], ('大轴', 7))
+        self.assertNotIn('小轴', [item['name'] for item in both['fields']])
+
     def test_includes_cycle_is_rejected(self):
         config = series_naming.normalize_config(dict(
             exceptions=[], keywords={}, ignore_fields=[],
