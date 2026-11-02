@@ -14,13 +14,13 @@ class PolicyTests(unittest.TestCase):
             clock, notices = [1000], []
             policy = RecoveryPolicy(tmp, clock=lambda:clock[0], notify=notices.append)
             delays = []
-            for _ in range(6):
+            for _ in range(8):
                 delays.append(policy.failed())
                 clock[0] += delays[-1]
-            self.assertEqual(delays, [1,2,4,8,16,900])
+            self.assertEqual(delays, [1,2,4,8,10,10,10,10])
             self.assertEqual(notices, ['offline'])
             restored = RecoveryPolicy(tmp, clock=lambda:clock[0]-900, notify=notices.append)
-            self.assertEqual(restored.remaining(), 900)
+            self.assertEqual(restored.remaining(), 10)
             restored.announce('offline')
             self.assertEqual(notices, ['offline'])
             restored.announce('attention')
@@ -29,6 +29,12 @@ class PolicyTests(unittest.TestCase):
             restored.stable()
             self.assertEqual(notices, ['offline','attention','online'])
             self.assertEqual(restored.failures, 0)
+
+    def test_retry_delay_never_exceeds_ten_seconds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = RecoveryPolicy(tmp, notify=lambda _:None)
+            self.assertEqual([policy.failed() for _ in range(10)],
+                             [1,2,4,8,10,10,10,10,10,10])
 
     def test_corrupt_state_and_failed_persistence_stop_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -7,6 +7,13 @@ import time
 from pathlib import Path
 from .reliability import write_state
 
+# 重连退避上限：NapCat 恢复后最多等 10 秒就能连上。
+RETRY_DELAY_CAP = 10
+# 重启后旧冷却最多保留 10 秒，不让上一个进程的长冷却拖住新进程。
+RESTART_COOLDOWN_CAP = 10
+# 连续失败上限，约 25 分钟（1+2+4+8 秒后每 10 秒一次）；到点停止自动重连，等人工确认。
+GIVE_UP_AFTER_FAILURES = 150
+
 
 def desktop_notice(kind):
     """Best-effort local balloon, fixed text only; does not block the event loop."""
@@ -46,8 +53,8 @@ class RecoveryPolicy:
                 self.alert = data['alert']
                 self.offline_since = data.get('offline_since', 0)
                 now = self.clock()
-                if self.next_attempt_at - now > 60:
-                    self.next_attempt_at = now + 60
+                if self.next_attempt_at - now > RESTART_COOLDOWN_CAP:
+                    self.next_attempt_at = now + RESTART_COOLDOWN_CAP
                 if (type(self.failures) is not int or self.failures < 0
                         or self.alert not in ('', 'offline', 'attention')
                         or any(type(v) not in (int,float) or not math.isfinite(v) or v < 0
@@ -85,8 +92,8 @@ class RecoveryPolicy:
     def failed(self):
         self.offline_since = self.offline_since or self.clock()
         self.failures += 1
-        # 前六次有限重连（1/2/4/8/16/30 秒），之后每分钟检查一次；仍只重连接口，不登录。
-        delay = min(2**min(self.failures-1,5),30) if self.failures < 6 else 60
+        # 退避 1/2/4/8/10/10… 秒，上限 10 秒；仍只重连接口，不登录。
+        delay = min(2**(self.failures-1), RETRY_DELAY_CAP)
         self.next_attempt_at = self.clock()+delay
         self.save()
         if self.clock()-self.offline_since >= 30 or self.failures >= 6:

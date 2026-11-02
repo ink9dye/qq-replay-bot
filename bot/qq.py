@@ -17,6 +17,7 @@ from .account_guard import AccountMismatch, verify_transport_account
 from .reliability import OutboundGate, RequestGuard, AccountAttention, restriction_hint, write_state
 from pathlib import Path
 from .qq_diagnostics import Diagnostics, trace_id, exception_fields
+from .qq_recovery import GIVE_UP_AFTER_FAILURES
 
 
 def mark_stopped(state_dir, reason='QQ窗口已关闭'):
@@ -390,9 +391,9 @@ class OneBotClient:
                     delay = 1.0
                 if self.state_dir:
                     delay = self.recovery.failed()
-                    if self.recovery.failures >= 30:
+                    if self.recovery.failures >= GIVE_UP_AFTER_FAILURES:
                         await self.pause_for_attention(
-                            "连续 30 次无法连接 NapCat，已停止自动重连；请检查 NapCat/QQ 登录后运行 resume-qq.bat。",
+                            "连续重试约 25 分钟仍无法连接 NapCat，已停止自动重连；请检查 NapCat/QQ 登录后运行 resume-qq.bat。",
                             persist=False)
                         break
                 self.publish_state('cooldown' if self.state_dir and delay >= 900 else 'reconnecting', connection_hint(failure) if failure else '接口断开')
