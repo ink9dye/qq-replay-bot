@@ -100,11 +100,21 @@ def parse_command(text: str) -> dict:
     if head == "我的订阅":
         return {"op": "list"}
     if head == "订阅":
-        if len(rest) != 3:
-            return {"op": "error", "message": "格式：订阅 “玩家名” 全部或前100 推送或静默"}
-        player, scope_text, mode_text = rest
+        if not rest or len(rest) > 3:
+            return {"op": "error", "message": "格式：订阅 “玩家名” [全部或前100] [推送或静默]；只写玩家名默认“全部 + 静默”。"}
+        player = rest[0]
         if not player.strip():
             return {"op": "error", "message": "玩家名不能为空"}
+        scope_text, mode_text = "全部", "静默"
+        defaulted = len(rest) < 3
+        if len(rest) == 2:
+            # 第二个词既可能是范围，也可能是通知方式；只写一个时另一项用默认值。
+            if rest[1] in ("推送", "静默"):
+                mode_text = rest[1]
+            else:
+                scope_text = rest[1]
+        elif len(rest) == 3:
+            scope_text, mode_text = rest[1], rest[2]
         try:
             top = parse_scope(scope_text)
         except ValueError as exc:
@@ -115,7 +125,8 @@ def parse_command(text: str) -> dict:
             notify = False
         else:
             return {"op": "error", "message": "通知方式请写“推送”或“静默”"}
-        return {"op": "subscribe", "player": player.strip(), "rank_top": top, "notify": notify}
+        return {"op": "subscribe", "player": player.strip(), "rank_top": top,
+                "notify": notify, "defaulted": defaulted}
     if head in ("推送", "静默", "取消订阅", "录像"):
         player = " ".join(rest).strip()
         if not player:

@@ -585,7 +585,8 @@ class BotService:
                 command["notify"],
                 self.clock(),
             )
-            return "已订阅。\n" + self._format_sub(sub) + "\n后台持续观测该玩家所有对局；推送和录像链接按以上条件筛选，卡组使用最新观测。"
+            default_note = "（未写的范围/通知方式按默认：全部 / 静默）\n" if command.get("defaulted") else ""
+            return "已订阅。\n" + default_note + self._format_sub(sub) + "\n后台持续观测该玩家所有对局；推送和录像链接按以上条件筛选，卡组使用最新观测。"
         if op in ("push", "silent"):
             notify = op == "push"
             if not self.store.set_notify(user, command["player"], notify):

@@ -589,6 +589,47 @@ class SubscriptionTests(unittest.TestCase):
 
 
 
+    def test_subscribe_defaults_to_all_silent(self):
+
+        with temporary_service() as service:
+
+            service.clock.now = 100
+
+            reply = service.handle_text("10001", '订阅 "甲"')
+
+            self.assertIn("已订阅", reply)
+
+            self.assertIn("默认", reply)
+
+            sub = service.store.get_subscription("10001", "甲")
+
+            self.assertIsNone(sub["rank_top"])
+
+            self.assertFalse(sub["notify"])
+
+            self.assertIn("全部", service.handle_text("10001", "我的订阅"))
+
+            service.handle_text("10001", '订阅 "甲" 前100')
+
+            sub = service.store.get_subscription("10001", "甲")
+
+            self.assertEqual(sub["rank_top"], 100)
+
+            self.assertFalse(sub["notify"])
+
+            service.handle_text("10001", '订阅 "甲" 推送')
+
+            sub = service.store.get_subscription("10001", "甲")
+
+            self.assertIsNone(sub["rank_top"])
+
+            self.assertTrue(sub["notify"])
+
+            service.handle_text("10001", '取消订阅 "甲"')
+
+            self.assertIn("没有订阅", service.handle_text("10001", "我的订阅"))
+
+
     def test_commands_and_exact_name(self):
 
         with temporary_service() as service:
