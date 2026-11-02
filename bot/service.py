@@ -183,8 +183,8 @@ class BotService:
         # 事实/录像索引只由观战进程写（设计：只有 collector 写事实库）。
         # 拆分后的 QQ 进程只读同一份库，启动时不再扫描录像、不再补写事实表，
         # 这样重启 QQ 窗口不会和正在录的观战抢写锁；M3 再把 QQ 的写请求交给 collector。
-        if "watch" in self.roles:
-            self.index_collector_data()
+        # 索引可能扫描上千个旧录像（解析很慢），放到 run() 里后台执行，避免挡住分享端口。
+        self._index_on_start = "watch" in self.roles
         share_cfg = config.get("share") or {}
         qq_cfg = config.get("qq") or {}
         self.link_hours = float(share_cfg.get("link_hours") or 5)
@@ -933,18 +933,26 @@ class BotService:
         """扫描录像目录，把已存在但还没索引的录像（例如 watch.py 保存的）加入索引。"""
         known = {replay["rel_path"] for replay in self.store.all_replays()}
         indexed = 0
-        for path in sorted(self.replay_root.rglob("*.yrp")):
-            try:
-                relative = path.resolve().relative_to(self.replay_root.resolve())
-            except ValueError:
-                continue
-            if str(relative) in known:
-                continue
-            focus = self._focus_player(path)
-            if not focus:
-                continue
-            if self._index_replay_file(path, focus):
-                indexed += 1
+        previous = os.environ.get("YGOPRO_SKIP_ARENA_RANK")
+        os.environ["YGOPRO_SKIP_ARENA_RANK"] = "1"
+        try:
+            for path in sorted(self.replay_root.rglob("*.yrp")):
+                try:
+                    relative = path.resolve().relative_to(self.replay_root.resolve())
+                except ValueError:
+                    continue
+                if str(relative) in known:
+                    continue
+                focus = self._focus_player(path)
+                if not focus:
+                    continue
+                if self._index_replay_file(path, focus):
+                    indexed += 1
+        finally:
+            if previous is None:
+                os.environ.pop("YGOPRO_SKIP_ARENA_RANK", None)
+            else:
+                os.environ["YGOPRO_SKIP_ARENA_RANK"] = previous
         if indexed:
             self.write_log(f"已索引 {indexed} 个本地已有录像")
         return indexed
@@ -1770,6 +1778,16 @@ class BotService:
             self.write_log(f"分享服务监听 http://{self.share.bind_host}:{self.share.bind_port}/")
         elif "share" in active and self.share_external():
             self.write_log("分享服务由独立 share_service 提供（share.mode=process），watch 不再监听 8787。")
+        if getattr(self, "_index_on_start", False) and "watch" in active:
+            import threading
+
+            def _index_in_background():
+                try:
+                    self.index_collector_data()
+                except Exception as exc:  # noqa: BLE001
+                    self.write_log(f"后台索引旧录像失败：{exc!r}")
+
+            threading.Thread(target=_index_in_background, name="index-collector", daemon=True).start()
         qq_cfg = self.config.get("qq") or {}
         token = str(qq_cfg.get("access_token") or "").strip()
         tasks = []

@@ -370,6 +370,33 @@ def make_handler(app: ShareApp):
             self.end_headers()
             self.wfile.write(body)
 
+        def do_POST(self) -> None:
+            try:
+                length = int(self.headers.get('Content-Length') or 0)
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 8192:
+                self.send_response(413 if length > 8192 else 400)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            body = self.rfile.read(length)
+            path = unquote(self.path.split('?', 1)[0])
+            parts = [part for part in path.split('/') if part]
+            if len(parts) >= 2 and parts[0] == 'stats':
+                from .statistics_proxy import post as stats_post
+                status, content_type, payload = stats_post(app, self.path, parts, body)
+            else:
+                status, content_type, payload = 403, 'text/plain; charset=utf-8', '不支持的操作。'.encode()
+            self.send_response(status)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(payload)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Referrer-Policy', 'no-referrer')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.end_headers()
+            self.wfile.write(payload)
+
         def _route(self, parts: list[str]) -> tuple[int, str, bytes]:
             if len(parts) >= 2 and parts[0] == 'stats':
                 from .statistics_proxy import route as stats_route

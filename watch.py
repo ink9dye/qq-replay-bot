@@ -1004,6 +1004,8 @@ def arena_rank_number(name: str) -> Optional[int]:
     if observed and 0<=time.time()-observed[1]<120:return observed[0]
     if name in _rank_cache:
         return _rank_cache[name]
+    if os.environ.get("YGOPRO_SKIP_ARENA_RANK") == "1":
+        return None
     url = "https://sapi.moecube.com:444/ygopro/arena/user?username=" + urllib.parse.quote(name)
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
