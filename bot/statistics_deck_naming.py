@@ -16,6 +16,9 @@ CST = timezone(timedelta(hours=8))
 
 def _latest_views(db, now, replay_root=None, only=None):
     """每位玩家最新一条视角；前100按排名页同口径（来源有效、未排除、继承首局）。"""
+    players = sorted(only) if only else []
+    player_clause = ' AND v.player IN (%s)' % ','.join('?' for _ in players) if players else ''
+    params = [float(now)] + players
     rows = db.execute('''WITH ranked AS (
         SELECT v.player, v.build, v.digest, g.recorded_at,
                b.deck_type, b.classification_status, b.classification_source,
@@ -23,9 +26,9 @@ def _latest_views(db, now, replay_root=None, only=None):
         FROM stat_views v
         JOIN stat_games g ON g.digest=v.digest
         JOIN stat_builds b ON b.fingerprint=v.build
-        WHERE g.expires_at>?)
+        WHERE g.expires_at>?''' + player_clause + ''')
         SELECT player,build,digest,recorded_at,deck_type,classification_status,classification_source FROM ranked WHERE rn=1''',
-                       (float(now),))
+                       params)
     views = {row['player'].strip(): dict(row) for row in rows}
     if not views:
         return views
@@ -33,7 +36,7 @@ def _latest_views(db, now, replay_root=None, only=None):
     all_rows = [dict(row) for row in db.execute(
         'SELECT v.player,v.digest,v.build,b.deck_type,b.classification_status,b.classification_source '
         'FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
-        'JOIN stat_builds b ON b.fingerprint=v.build WHERE g.expires_at>?', (float(now),))]
+        'JOIN stat_builds b ON b.fingerprint=v.build WHERE g.expires_at>?' + player_clause, params)]
     inherit_first_game_types(db, all_rows)
     effective = {row['digest']: row for row in all_rows}
     for view in views.values():
@@ -302,7 +305,7 @@ def detail(db, data_dir, now, player, replay_root=None):
     except Exception:
         field_breakdown = []
     inferred = {'cards': [], 'conflict': False, 'reason': None, 'fallback': False}
-    if replay_root is not None:
+    if replay_root is not None and __import__("os").environ.get("DECK_NAMING_SIDE")=="1":
         try:
             from .statistics_build_detail import query as build_query
             info = build_query(db, replay_root, now, view['player'], view['digest'])
