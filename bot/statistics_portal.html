@@ -117,6 +117,27 @@ function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
 function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
 function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
+function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
+function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
+function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
+function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
+function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
+function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
+function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
+function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
+function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
+function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
+function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
+function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
+function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
+function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
+function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
+function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
+function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
+function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
 function renderPie(data){const box=$('deckPie');if(!box)return;const pie=data.deck_pie;if(!pie||!pie.total||!(pie.inner||[]).length){box.textContent='暂无可用的卡组档案。';$('deckPieLegend').replaceChildren();$('deckPieNote').textContent='';return}
  const W=920,H=640,cx=460,cy=320,R=250,tau=Math.PI*2,total=pie.total;
  const middleByPrimary=new Map(),outerByKey=new Map();
@@ -128,7 +149,9 @@ function renderPie(data){const box=$('deckPie');if(!box)return;const pie=data.de
  for(const cat of pie.inner){const span=cat.players/total*tau,end=angle+span;
   const path=annulusPath(cx,cy,rIn[0],rIn[1],angle,end);
   shapes.push('<path d="'+path+'" fill="'+cat.color+'" stroke="#fff" stroke-width="1.5" data-category="'+pieEsc(cat.name)+'"><title>'+pieEsc(cat.name)+' · '+cat.players+'人 · '+cat.percent+'%</title></path>');
-  if(span/tau>=0.04){const mid=(angle+end)/2,r=(rIn[0]+rIn[1])/2;shapes.push('<text x="'+(cx+Math.cos(mid)*r).toFixed(1)+'" y="'+(cy+Math.sin(mid)*r+4).toFixed(1)+'" text-anchor="middle" class="pie-ring-label" fill="'+ringLabelColor(cat.color)+'">'+pieEsc(cat.name)+'</text>')}
+  const mid=(angle+end)/2;
+  if(cat.image&&span/tau>=0.045){const ir=(rIn[0]+rIn[1])/2-8,ix=cx+Math.cos(mid)*ir,iy=cy+Math.sin(mid)*ir;shapes.push('<image href="'+cardArtUrl(cat.image)+'" x="'+(ix-14).toFixed(1)+'" y="'+(iy-19).toFixed(1)+'" width="28" height="38" preserveAspectRatio="xMidYMid meet" pointer-events="none"/><rect x="'+(ix-14).toFixed(1)+'" y="'+(iy-19).toFixed(1)+'" width="28" height="38" rx="3" fill="none" stroke="#fff" stroke-width="1.5" pointer-events="none"/>')}
+  if(span/tau>=0.04){const r=rIn[1]-5;shapes.push('<text x="'+(cx+Math.cos(mid)*r).toFixed(1)+'" y="'+(cy+Math.sin(mid)*r+4).toFixed(1)+'" text-anchor="middle" class="pie-ring-label" fill="'+ringLabelColor(cat.color)+'">'+pieEsc(cat.name)+'</text>')}
   const mids=middleByPrimary.get(cat.name)||[];let b=angle;
   for(const m of mids){const mSpan=(m.players/Math.max(1,cat.players))*span,mEnd=b+mSpan;
    const midPath=annulusPath(cx,cy,rMid[0],rMid[1],b,mEnd);
@@ -137,7 +160,7 @@ function renderPie(data){const box=$('deckPie');if(!box)return;const pie=data.de
    if(showOuter){const names=outerByKey.get(pieKey(cat.name,m.extras))||[];let c=b;
     for(const o of names){const oSpan=(o.players/Math.max(1,m.players))*mSpan,oEnd=c+oSpan;number+=1;
      const oPath=annulusPath(cx,cy,rOut[0],rOut[1],c,oEnd);
-     shapes.push('<path d="'+oPath+'" fill="'+o.color+'" stroke="#fff" stroke-width="1"><title>'+pieEsc(o.name)+' · '+o.players+'人 · '+o.percent+'%</title></path>');
+     shapes.push('<path d="'+oPath+'" fill="'+o.color+'" stroke="#fff" stroke-width="1" data-deck="'+pieEsc(o.name)+'"><title>'+pieEsc(o.name)+' · '+o.players+'人 · '+o.percent+'%</title></path>');
      if(oSpan/tau>=0.018){const mid=(c+oEnd)/2,r=(rOut[0]+rOut[1])/2;shapes.push('<text x="'+(cx+Math.cos(mid)*r).toFixed(1)+'" y="'+(cy+Math.sin(mid)*r+3.5).toFixed(1)+'" text-anchor="middle" class="pie-ring-label pie-outer-num" fill="'+ringLabelColor(o.color)+'">'+number+'</text>')}
      c=oEnd}}
    b=mEnd}
