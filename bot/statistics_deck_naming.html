@@ -110,7 +110,7 @@ function renderMembers(cards){const list=$('gCards');list.replaceChildren();if(!
 async function deleteGroup(name){if(!confirm('删除命名组「'+name+'」？删除后不再参与命名。'))return;setComboStatus('删除中…');try{await post('/statistics/api/deck-naming/groups',{op:'delete',name:name});if(currentGroup&&currentGroup.name===name){currentGroup=null;$('groupDialog').close()}await loadGroups(true)}catch(e){setComboStatus('删除失败：'+e.message)}}
 async function openGroup(name){try{const g=await api('/statistics/api/deck-naming/groups/'+encodeURIComponent(name));currentGroup=g;groupIsNew=false;fillGroupForm(g);$('gTitle').textContent='编辑组：'+g.name;$('gMeta').textContent=groupMeta(g);$('groupDialog').showModal()}catch(e){alert('读取失败：'+e.message)}}
 $('groupNew').onclick=()=>{currentGroup=null;groupIsNew=true;fillGroupForm(null);$('gTitle').textContent='新建命名组';$('gMeta').textContent='填组名、成员卡后保存';$('groupDialog').showModal()};
-$('gClose').onclick=()=>$('\groupDialog.close();
+$('gClose').onclick=()=>$('groupDialog').close();
 $('gSave').onclick=async()=>{const name=$('gName').value.trim();if(!name){$('gStatus').textContent='组名不能为空。';return}
  const payload={op:groupIsNew?'create':'save',name:name,before:currentGroup?currentGroup.name:name,small_name:$('gSmallName').value.trim(),sources:splitList($('gSources').value),includes:includeList,enabled:$('gEnabled').checked,exception:$('gException').checked};
  $('gStatus').textContent='保存中…';try{const r=await post('/statistics/api/deck-naming/groups',payload);$('gStatus').textContent='已保存：'+name;groupIsNew=false;const changedName=name;await loadGroups(true);await openGroup(changedName)}catch(e){$('gStatus').textContent='保存失败：'+e.message}};
