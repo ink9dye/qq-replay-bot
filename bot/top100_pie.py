@@ -101,6 +101,9 @@ def _card_art(code, size):
             return None
     try:
         image = Image.open(path).convert('RGB')
+        width, height = image.size
+        image = image.crop((int(width * 0.14), int(height * 0.165),
+                            int(width * (0.14 + 0.74)), int(height * (0.165 + 0.485))))
         scale = max(size / image.width, size / image.height)
         image = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))),
                              Image.LANCZOS)
