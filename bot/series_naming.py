@@ -771,7 +771,12 @@ def latest_main_builds(db, replay_root, now):
     """每人最新一场的 game1 构筑（与玩家页/饼图同一套选择）。"""
     from .statistics_dashboard import population
     _basis, latest, _people = population(db, Path(replay_root), float(now), resolve_rank=False)
-    return [row['build'] for row in latest.values() if row.get('build')]
+    builds = [row['build'] for row in latest.values() if row.get('build')]
+    # 详情弹窗用的是 SQL 最新视角；把它也纳入，避免弹窗里的构筑没名字。
+    for build in latest_builds(db, now):
+        if build not in builds:
+            builds.append(build)
+    return builds
 
 
 def _filter_pending(db, builds, version, respect_manual):
