@@ -84,7 +84,7 @@ class StatisticsPortal:
             def run(db):
                 return recordings(db,self.replay_root,float(self.clock()),args)
             try:
-                return self._cached_query_reply(('recordings',parsed.query),run)
+                return self._cached_query_reply(('recordings',parsed.query),run,ttl=30.0)
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','recording-zip']:
@@ -225,7 +225,7 @@ class StatisticsPortal:
                 if len(decks)>100 or any(v is not None and (not isinstance(v,str) or not v.strip() or len(v)>128) for v in decks):raise ValueError()
             except (ValueError,TypeError):
                 return self._reply(400,json.dumps({'error':'卡组条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
-            return self._query_reply(lambda db:scoped_query(ranges,lambda:overview(db,self.replay_root,float(self.clock()),basis,decks)))
+            return self._cached_query_reply(('card-table',parsed.query),lambda db:scoped_query(ranges,lambda:overview(db,self.replay_root,float(self.clock()),basis,decks)))
         if parts==['statistics','cards-report']:
             return self._reply(200,Path(__file__).with_name('statistics_cards_report.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','cards-extra']:
@@ -253,7 +253,7 @@ class StatisticsPortal:
                 return self._reply(400,json.dumps({'error':'额外卡筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
             filters=Filters(decks,opponents,(),(),None if seat=='all' else seat=='first',internal)
             try:
-                return self._query_reply(lambda db:scoped_query(ranges,lambda:extra_report(
+                return self._cached_query_reply(('cards-extra',parsed.query),lambda db:scoped_query(ranges,lambda:extra_report(
                     db,self.replay_root,float(self.clock()),filters=filters,phases=phases,phase_none=phase_none,sort=sort)))
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
@@ -458,7 +458,10 @@ class StatisticsPortal:
     def _cached_query_reply(self,key,callback,ttl=10.0):
         """相同条件 + 相同数据库文件版本时复用完整响应；DB 一写就失效。"""
         try:
-            stat=self.database.stat();stamp=(stat.st_mtime_ns,stat.st_size)
+            stat=self.database.stat()
+            # 观战进程会持续写库，按文件 mtime 精确比对会让缓存永远失效；
+            # 用 30 秒粒度做数据版本，最多容忍半分钟旧数据。
+            stamp=int(stat.st_mtime_ns//30_000_000_000)
         except OSError:
             return self._query_reply(callback)
         now=time.monotonic()

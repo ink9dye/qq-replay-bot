@@ -47,6 +47,13 @@ def safe_replay_file(root: Path, rel_path: str, root_resolved: Path = None, dir_
     if rel_path.startswith(("/", "\\")):
         return None
     root_resolved = root_resolved or root.resolve()
+    if ".." not in Path(rel_path).parts:
+        candidate = root_resolved / rel_path
+        try:
+            if candidate.is_file() and not candidate.is_symlink():
+                return candidate
+        except OSError:
+            return None
     candidate = root_resolved / rel_path
     if dir_cache is None:
         candidate = candidate.resolve()

@@ -636,15 +636,28 @@ class BotService:
         return "你的订阅：\n" + "\n".join(self._format_sub(row) for row in rows)
 
     def _stats_text(self, user_id: str) -> str:
-        """统计网页只读入口：2 小时 token，群里所有人可点。"""
+        """统计网页只读入口；有效期由 share.stats_link_hours 控制（0 表示长期）。"""
         if not self._wait_public_url():
             return "统计页已就绪，公网分享暂未连接。请稍后再发送“统计”。"
+        share_cfg = self.config.get("share") or {}
         try:
-            link = self.share.create_stats_link(user_id, hours=2)
+            hours = float(share_cfg.get("stats_link_hours", 2))
+        except (TypeError, ValueError):
+            hours = 2.0
+        # 0 或负数按 10 年处理，等价于固定链接。
+        effective = hours if hours > 0 else 24 * 365 * 10
+        try:
+            link = self.share.create_stats_link(user_id, hours=effective)
         except Exception:
             return "统计链接暂时生成失败，请稍后再试。"
         note = "" if link["public"] else "\n还没有配置公网地址，这个链接只能在本机打开。"
-        return f"统计网页（2 小时内有效）：{link['url']}" + note
+        if hours <= 0:
+            validity = "长期有效"
+        elif hours >= 48:
+            validity = f"{hours / 24:g} 天内有效"
+        else:
+            validity = f"{hours:g} 小时内有效"
+        return f"统计网页（{validity}）：{link['url']}" + note
 
     def visible_replays(self, user_id: str, player: str) -> Optional[list[dict]]:
         sub = self.store.get_subscription(user_id, player)
