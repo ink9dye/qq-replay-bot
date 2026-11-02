@@ -69,6 +69,17 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(codes, [100, 101, 200])
         self.assertTrue(detail['builds'])
 
+    def test_same_name_groups_merge(self):
+        self.save(dict(op='create', name='烙印', sources=['烙印']))
+        self.save(dict(op='create', name='烙印', sources=['烙印']))
+        self.save(dict(op='add_cards', name='烙印', cards=[200]))
+        detail = admin.group_detail(self.db, self.data, 1000.0, '烙印')
+        self.assertEqual(sorted(card['code'] for card in detail['cards']), [100, 101, 200])
+        raw = json.loads((self.data / 'series-naming.json').read_text(encoding='utf-8'))
+        groups = [g for g in raw.get('groups', []) if g.get('name') == '烙印']
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].get('sources'), ['烙印'])
+
     def test_representative_must_be_member_and_can_be_changed(self):
         self.save(dict(op='create', name='烙印', sources=['烙印']))
         self.save(dict(op='representative', name='烙印', card=101))
@@ -87,11 +98,10 @@ class AdminTests(unittest.TestCase):
         codes = sorted(card['code'] for card in detail['cards'])
         self.assertEqual(codes, [200, 201])
 
-    def test_rename_and_duplicate_rejected(self):
+    def test_rename_and_same_name_create(self):
         self.save(dict(op='create', name='烙印', sources=['烙印']))
         self.save(dict(op='save', before='烙印', name='烙印2', sources=['烙印']))
-        with self.assertRaises(ValueError):
-            self.save(dict(op='create', name='烙印2', sources=['烙印']))
+        self.save(dict(op='create', name='烙印2', sources=['烙印']))
         detail = admin.group_detail(self.db, self.data, 1000.0, '烙印2')
         self.assertEqual(detail['cards_total'], 2)
 

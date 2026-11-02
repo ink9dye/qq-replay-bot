@@ -327,8 +327,6 @@ def update_group(db, data_dir, now, payload):
                     config=config_summary(config))
     kind, index = _find_group(raw, before)
     if op in ('create', 'save'):
-        if op == 'create' and kind is not None:
-            raise ValueError('组名已存在：%s' % name)
         if name != before:
             other, _ = _find_group(raw, name)
             if other is not None:
@@ -341,7 +339,14 @@ def update_group(db, data_dir, now, payload):
             registry = series_naming.build_registry(catalog, config, names)
             entry = registry['groups'].get(before) or registry['groups'].get(name) or {}
             item = dict(name=name, sources=sorted(entry.get('sources') or []))
-        item.update(fields)
+        if op == 'create' and kind is not None:
+            # 同名组按合并处理：保留原成员，再并入本次提交的列表。
+            for key in ('sources', 'keywords', 'includes'):
+                item[key] = sorted(set(item.get(key) or []) | set(fields.get(key) or []))
+            for key in ('add', 'remove'):
+                item[key] = sorted(set(item.get(key) or []) | set(fields.get(key) or []))
+        else:
+            item.update(fields)
         item['name'] = name
         toggle = payload.get('exception')
         if toggle is not None and not isinstance(toggle, bool):

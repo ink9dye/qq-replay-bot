@@ -202,17 +202,19 @@ def normalize_config(raw=None):
     seen = set()
     for index, item in enumerate(config['groups'] or []):
         parsed = _group(item, index)
-        if parsed['name'] in seen:
-            raise ConfigError('命名组重名：%s' % parsed['name'])
+        # 允许同名组：小轴/大轴分开维护，注册表按名字合并成一个字段。
         seen.add(parsed['name'])
         groups.append(parsed)
     config['groups'] = groups
     exceptions = []
+    exception_seen = set()
     for index, item in enumerate(config['exceptions'] or []):
         parsed = _group(item, index)
         if parsed['name'] in seen:
             raise ConfigError('例外组与命名组重名：%s' % parsed['name'])
-        seen.add(parsed['name'])
+        if parsed['name'] in exception_seen:
+            raise ConfigError('例外组重名：%s' % parsed['name'])
+        exception_seen.add(parsed['name'])
         exceptions.append(parsed)
     config['exceptions'] = exceptions
     all_names = {item['name'] for item in exceptions} | {item['name'] for item in groups}
