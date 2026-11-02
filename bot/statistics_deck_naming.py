@@ -147,6 +147,9 @@ def _row(name, member, view, rank):
                 in_top100=bool(member))
 
 
+_LIST_CACHE = {}
+
+
 def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
     """scope=100/200/all/unnamed；query/玩家名、deck_query/卡组名非空时跨全部已知玩家搜索。"""
     scope = str(scope or '100')
@@ -156,8 +159,18 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
     deck_query = (deck_query or '').strip()
     if len(query) > 128 or len(deck_query) > 128:
         raise ValueError('搜索词过长。')
+    import os
+    db_path = db.execute('PRAGMA database_list').fetchone()[2] or ''
+    try:
+        stamp = os.stat(db_path).st_mtime_ns
+    except OSError:
+        stamp = 0
+    cache_key = (int(float(now) // 300), scope, query, deck_query, str(replay_root))
+    cached = _LIST_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     roster = _roster(db)
-    views = _latest_views(db, now, replay_root,
+    views = _latest_views(db, now, replay_root if scope == 'unnamed' else None,
                           only=set(roster) if scope == '100' else None)
     names = set(roster) | set(views)
     searched = bool(query or deck_query)
@@ -217,11 +230,15 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
     rows.sort(key=lambda r: (r['rank'] is None, r['rank'] or 0, r['player']))
     total = len(rows)
     rows = rows[:MAX_ROWS]
-    return dict(version=2, scope='search' if searched else scope, query=query, deck_query=deck_query, total=total,
-                shown=len(rows), truncated=total > len(rows),
-                observed=sum(1 for r in rows if r['observed']),
-                recognized=sum(1 for r in rows if r['deck_type']),
-                rows=rows)
+    result = dict(version=2, scope='search' if searched else scope, query=query, deck_query=deck_query, total=total,
+                  shown=len(rows), truncated=total > len(rows),
+                  observed=sum(1 for r in rows if r['observed']),
+                  recognized=sum(1 for r in rows if r['deck_type']),
+                  rows=rows)
+    _LIST_CACHE[cache_key] = result
+    if len(_LIST_CACHE) > 32:
+        _LIST_CACHE.clear()
+    return result
 
 
 def _names(data_dir):
@@ -237,7 +254,7 @@ def detail(db, data_dir, now, player, replay_root=None):
     player = (player or '').strip()
     if not player:
         raise ValueError('player_required')
-    views = _latest_views(db, now, replay_root, only={player})
+    views = _latest_views(db, now, None, only={player})
     view = views.get(player)
     member = db.execute('SELECT rank,player,points FROM stat_current_top100 WHERE player=?',
                         (player,)).fetchone()
