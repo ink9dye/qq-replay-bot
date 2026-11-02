@@ -158,6 +158,15 @@ def wait_port(port, timeout=20):
         time.sleep(1)
 
 
+def http_ok(url, timeout=5):
+    """端口通不代表上游活着：nginx 在、share 挂了时 8787 仍是 502/端口通。"""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
 def docker_running(name):
     out = run(['docker', 'inspect', '-f', '{{.State.Running}}', name])
     return bool(out and out.returncode == 0 and out.stdout.strip() == 'true')
@@ -319,10 +328,14 @@ def main():
             if not docker_running('napcat'):
                 issues.append('NapCat 容器未运行，自动重启失败')
 
-    for port in (8787, 8788):
+    # 8787 由 nginx 监听，8789 才是 share 本体；两个都要在，nginx 在/上游死也算故障。
+    for port in (8787, 8789, 8788):
         # 刚重启的进程可能还在加载（M3 初始化、卡表索引等），不能按立即探测判故障。
         if not (wait_port(port, 30) if restarted else port_open(port)):
             issues.append('端口 %d 未监听' % port)
+
+    if not http_ok('http://127.0.0.1:8787/health'):
+        issues.append('8787 /health 非 200（nginx 上游异常）')
 
     if docker_exists('napcat') and not port_open(3001):
         issues.append('端口 3001（OneBot）未监听')
