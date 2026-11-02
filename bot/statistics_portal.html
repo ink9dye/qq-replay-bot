@@ -211,7 +211,7 @@ function renderPie(data){const box=$('deckPie');if(!box)return;window.__piePaylo
  box.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="前100卡组分布：内环主大类，外环具体卡组">'+'<defs>'+defs.join('')+'</defs>'+shapes.join('')+'</svg>';
  const legend=$('deckPieLegend');if(legend){const nodes=[];
   for(const cat of pie.inner){const details=el('details',undefined,'pie-cat');details.open=nodes.length<3;
-   const summary=el('summary');const dot=el('i');dot.style.background=cat.color;summary.append(dot);summary.append(el('b',cat.name));summary.append(el('span',cat.players+'人 · '+cat.percent+'%','pie-cat-count'));details.append(summary);
+   const summary=el('summary');const dot=el('i');dot.style.background=cat.color;summary.append(dot);summary.append(el('b',cat.name));summary.append(el('span',cat.players+'人 · '+cat.percent+'%','pie-cat-count'));summary.title='点击筛选：包含「'+cat.name+'」的卡组';summary.addEventListener('click',()=>onPieCategory(cat.name));details.append(summary);
    const body=el('div',undefined,'pie-sub');let number=0;
    for(const m of (pie.middle||[]).filter(x=>x.primary===cat.name)){const row=el('div',undefined,'pie-sub-row');const dot2=el('i');dot2.style.background=m.mixed||m.color;row.append(dot2);row.append(el('span',m.label+'  '+m.players+'人 · '+m.percent+'%','pie-sub-mid'));body.append(row)}
    const names=outerByPrimary.get(cat.name)||[];if(names.length){const namesBox=el('div',undefined,'pie-sub-names');for(const o of names){number+=1;const line=el('div',number+'. '+o.name+'  '+o.players+'人 · '+o.percent+'%','pie-sub-name');line.title='点击筛选：'+o.name;line.onclick=()=>onPieClick(o.name);namesBox.append(line)}body.append(namesBox)}

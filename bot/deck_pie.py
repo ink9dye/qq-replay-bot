@@ -182,6 +182,12 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck
 
     inner_players = Counter()
     middle = defaultdict(int)
+    preliminary = Counter()
+    for name, players in rows:
+        preliminary[primaries[name]] += players
+    for name in list(primaries):
+        if primaries[name] not in ('其他', '未识别') and preliminary[primaries[name]] < 3:
+            primaries[name] = '其他'
     for name, players in rows:
         primary = primaries[name]
         inner_players[primary] += players
