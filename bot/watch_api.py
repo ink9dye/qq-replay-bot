@@ -1,7 +1,8 @@
 """远程观战 HTTP 接口（给跑在其他公网 IP 上的小程序用）。
 
 只监听回环，由 8787 的 nginx 反代到公网；所有请求都要带
-`Authorization: Bearer <token>`，token 来自 config.json 的 watch.remote.token。
+`Authorization: Bearer <token>`。token 可以是 config.json 的 remote.token
+（兼容总令牌），也可以是 QQ 机器人签发、存在 SQLite watch_tokens 里的每设备令牌。
 
 接口（详见 docs/REMOTE_WATCH.md）：
     POST /watch-api/claim      {"worker","capacity","ip"} -> {"job":{...}} 或 204
@@ -59,6 +60,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _auth(self) -> bool:
+        # 旧版 remote.token 是兼容总令牌；每设备令牌从 SQLite 哈希表验证。
+        self.auth_worker = ""
         token = getattr(self.server, "app_token", "")
         header = self.headers.get("Authorization") or ""
         if header.lower().startswith("bearer "):
@@ -67,8 +70,26 @@ class _Handler(BaseHTTPRequestHandler):
             got = (self.headers.get("X-Watch-Token") or "").strip()
         if token and got and hmac.compare_digest(got, token):
             return True
+        store = getattr(self.server, "token_store", None)
+        if store is not None and got:
+            try:
+                row = store.verify(got)
+            except Exception as exc:  # 令牌库坏了不能拖垮旧令牌
+                app = getattr(self.server, "app", None)
+                if app is not None and not getattr(app, "_token_store_error_logged", False):
+                    app._token_store_error_logged = True
+                    app.log(f"[远程] 每设备令牌库校验失败：{type(exc).__name__}")
+                row = None
+            if row and str(row.get("worker") or "").strip():
+                self.auth_worker = str(row.get("worker") or "")
+                return True
         self._send(401, dict(ok=False, error="unauthorized"))
         return False
+
+    def _worker_allowed(self, worker: str) -> bool:
+        """总令牌不限制 worker；每设备令牌必须和客户端名称完全一致。"""
+        bound = getattr(self, "auth_worker", "")
+        return not bound or hmac.compare_digest(str(worker), bound)
 
     def _json(self) -> dict:
         try:
@@ -104,6 +125,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not worker:
                 self._send(400, dict(ok=False, error="worker_required"))
                 return
+            if not self._worker_allowed(worker):
+                self._send(403, dict(ok=False, error="worker_mismatch"))
+                return
             # 并发上限按“公网 IP”算：nginx 会带 X-Real-IP；云端客户端直连 8791 时是 127.0.0.1。
             # 不用请求体里的 ip，避免客户端伪造。
             client_ip = (self.headers.get("X-Real-IP") or "").strip() or (self.client_address[0] if self.client_address else "")
@@ -120,6 +144,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not worker:
                 self._send(400, dict(ok=False, error="worker_required"))
                 return
+            if not self._worker_allowed(worker):
+                self._send(403, dict(ok=False, error="worker_mismatch"))
+                return
             active = data.get("active")
             active = [str(item) for item in active] if isinstance(active, list) else None
             client_ip = (self.headers.get("X-Real-IP") or "").strip() or (self.client_address[0] if self.client_address else "")
@@ -132,6 +159,9 @@ class _Handler(BaseHTTPRequestHandler):
             job = str(data.get("job") or "").strip()
             if not worker or not job:
                 self._send(400, dict(ok=False, error="worker_and_job_required"))
+                return
+            if not self._worker_allowed(worker):
+                self._send(403, dict(ok=False, error="worker_mismatch"))
                 return
             ok = self.server.app.report(worker, job, str(data.get("outcome") or ""),
                                         data.get("detail") if isinstance(data.get("detail"), dict) else {})
@@ -151,6 +181,16 @@ class _Handler(BaseHTTPRequestHandler):
         if not job_id or not allowed or len(name) > 200 or "/" in name or "\\" in name:
             self._send(400, dict(ok=False, error="bad_upload_name"))
             return
+        bound = getattr(self, "auth_worker", "")
+        if bound:
+            try:
+                source = str(self.server.app.jobs.upload_source(job_id) or "")
+            except Exception:
+                source = ""
+            # collector 重启后任务板可能为空；此时允许继续上传已认领的旧任务。
+            if source and not hmac.compare_digest(source, bound):
+                self._send(403, dict(ok=False, error="worker_mismatch"))
+                return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -188,10 +228,12 @@ class WatchApiServer:
     """把 RemoteJobs 暴露成 HTTP。start()/stop() 幂等，可从任意线程调用。"""
 
     def __init__(self, jobs, replay_root, token: str, log=print,
-                 bind=("127.0.0.1", 8791), max_upload: int = MAX_UPLOAD, receipt_path=None):
+                 bind=("127.0.0.1", 8791), max_upload: int = MAX_UPLOAD, receipt_path=None,
+                 token_store=None):
         self.jobs = jobs
         self.replay_root = Path(replay_root)
         self.token = str(token or "")
+        self.token_store = token_store
         self.log = log
         self.bind = bind
         self.max_upload = max_upload
@@ -258,12 +300,13 @@ class WatchApiServer:
     def start(self) -> bool:
         if self._httpd is not None:
             return True
-        if not self.token:
-            self.log("[远程] 未配置 token，接口不启动")
+        if not self.token and self.token_store is None:
+            self.log("[远程] 未配置 token 且没有每设备令牌库，接口不启动")
             return False
         httpd = _Server(self.bind, _Handler)
         httpd.app = self
         httpd.app_token = self.token
+        httpd.token_store = self.token_store
         self._httpd = httpd
         self._thread = threading.Thread(target=httpd.serve_forever, name="watch-api", daemon=True)
         self._thread.start()

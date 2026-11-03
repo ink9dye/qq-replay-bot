@@ -37,6 +37,10 @@
 "remote": {
   "enabled": true,
   "token": "<随机长串，单独的接口令牌>",
+  "public_url": "http://101.201.108.188:8787",
+  "device_token_hours": 720,
+  "token_groups": [],
+  "token_users": [],
   "bind_host": "127.0.0.1",
   "bind_port": 8791,
   "claim_wait_seconds": 3,
@@ -50,7 +54,9 @@
 - `watch.local_watch=false`：collector 只发现/派发，不进房；缺省 `true` 保持旧行为。
 - `enabled=false` 或缺省：完全不启用，行为与旧版一致。
 - 接口只监听回环，由 8787 的 nginx 反代：`location /watch-api/ { proxy_pass http://127.0.0.1:8791; }`。
-- `token` 是独立令牌，**不要复用** QQ/NapCat/统计的 token。
+- `token` 是兼容总令牌，**不要复用** QQ/NapCat/统计的 token。
+- 每设备令牌（2026-11-03）：QQ 群/私聊发 `令牌分发`，机器人自动签发。数据库只存 SHA-256，令牌绑定 `worker`（客户端名称），默认 720 小时（`device_token_hours`，0=长期），可过期/吊销；`public_url` 是机器人回复给用户的服务器地址。旧 `token` 继续有效，现有 PC/云端客户端不受影响。
+- `令牌分发` 只对保密名单开放：优先读 `remote.token_groups` / `remote.token_users`，留空则沿用 `statistics.allowed_groups` / `statistics.private_users`；群聊不会因为管理员身份绕过群名单。管理员私聊可用 `令牌分发 列表` / `令牌分发 吊销 ...`。
 - `single_ip_max` / `multi_ip_max`：**单个公网 IP** 的并发上限。在线客户端只有 1 个 IP 时
   上限 7；出现第二个 IP 时每个 IP **各自**降到 6（两个 IP 合计最多 12，不是总共 6）。按 claim
   请求的 `X-Real-IP`（云端直连则是 `127.0.0.1`）统计，客户端伪造请求体里的 `ip` 无效。
@@ -59,6 +65,8 @@
 - nginx 的 `/watch-api/` 需要 `client_max_body_size` ≥ 录像大小（线上 8m），否则大录像 413。
 
 ## 3. 接口（全部需要 `Authorization: Bearer <token>`）
+
+`token` 可以是 `remote.token`（兼容总令牌），也可以是 QQ 机器人签发的每设备令牌。每设备令牌绑定 `worker`，请求体/心跳里的 `worker` 必须与它完全一致；`/watch-api/status` 不校验 `worker`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

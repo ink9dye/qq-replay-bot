@@ -46,6 +46,22 @@
     "_require_schema_version": "独立分享进程的 schema 版本门；0=不检查，等 collector 上线后再填。",
     "require_schema_version": 0
   },
+  "remote": {
+    "_comment": "远程观战接口；token 是兼容总令牌，device_token_hours 是 QQ 每设备令牌有效期（0=长期）。token_groups/token_users 是“令牌分发”的保密名单，留空则沿用 statistics 的 allowed_groups/private_users。",
+    "enabled": false,
+    "token": "",
+    "public_url": "http://101.201.108.188:8787",
+    "device_token_hours": 720,
+    "token_groups": [],
+    "token_users": [],
+    "bind_host": "127.0.0.1",
+    "bind_port": 8791,
+    "claim_wait_seconds": 3,
+    "lease_seconds": 120,
+    "job_ttl_seconds": 180,
+    "single_ip_max": 7,
+    "multi_ip_max": 6
+  },
   "m3": {
     "_comment": "D26 候选：collector 单写者。enabled=false 时保持现状（多进程直连），调用方只在 GET /m3/mode 看到开关。",
     "enabled": false,

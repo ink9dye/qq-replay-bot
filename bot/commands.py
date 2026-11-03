@@ -69,6 +69,8 @@ def parse_command(text: str) -> dict:
         return {"op":"game_counts","keyword":value}
     if head == "观战设备":
         return {"op": "error", "message": "直接发送“观战设备”即可。"} if rest else {"op": "watch_devices"}
+    if head in ("令牌分发", "观战令牌", "接口令牌", "端口令牌"):
+        return {"op": "watch_token", "args": list(rest)}
     if head == "历史":
         player = " ".join(rest).strip()
         if not player or len(player) > 100:

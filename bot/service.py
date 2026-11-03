@@ -602,6 +602,9 @@ class BotService:
         if op == "watch_devices":
             from .watch_devices import device_message
             return device_message(self)
+        if op == "watch_token":
+            from .watch_token_command import handle as handle_watch_token
+            return handle_watch_token(self, user, command.get("args") or [], conversation)
         if op == "stats_page":
             if not self._statistics_allowed(user, conversation):
                 return None

@@ -115,6 +115,21 @@ class Store:
                 created_at REAL NOT NULL,
                 expires_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS watch_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_hash TEXT NOT NULL UNIQUE,
+                token_hint TEXT NOT NULL,
+                worker TEXT NOT NULL,
+                owner TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                revoked_at REAL,
+                revoked_by TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS watch_tokens_worker ON watch_tokens(worker);
+            CREATE INDEX IF NOT EXISTS watch_tokens_owner ON watch_tokens(owner);
+            CREATE INDEX IF NOT EXISTS watch_tokens_expires ON watch_tokens(expires_at);
             """
         )
         columns = {row[1] for row in self._db.execute("PRAGMA table_info(replays)")}

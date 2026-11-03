@@ -2790,6 +2790,14 @@ async def serve(
     if remote_cfg.get("enabled"):
         from bot.watch_jobs import RemoteJobs
         from bot.watch_api import WatchApiServer
+        # 每设备令牌：collector 只负责验证；签发/吊销在 ygo-qq 进程完成。
+        token_store = None
+        try:
+            from bot.watch_tokens import WatchTokenStore
+            token_store = WatchTokenStore(Path(config.get("data_dir") or DATA_DIR) / "bot.sqlite3",
+                                          migrate=True)
+        except Exception as exc:
+            log(f"[远程] 每设备令牌库不可用，仅使用 remote.token：{type(exc).__name__}")
         jobs = RemoteJobs(lease=float(remote_cfg.get("lease_seconds") or 120),
                           job_ttl=float(remote_cfg.get("job_ttl_seconds") or 180),
                           single_ip_max=int(remote_cfg.get("single_ip_max") or 7),
@@ -2797,10 +2805,13 @@ async def serve(
         api = WatchApiServer(jobs, Path(config["replay_dir"]), str(remote_cfg.get("token") or ""),
                              receipt_path=Path(config.get("data_dir") or DATA_DIR)/"watch-receipts.json",
                              log=log, bind=(str(remote_cfg.get("bind_host") or "127.0.0.1"),
-                                            int(remote_cfg.get("bind_port") or 8791)))
+                                            int(remote_cfg.get("bind_port") or 8791)),
+                             token_store=token_store)
         if api.start():
             remote = dict(jobs=jobs, api=api, wait=float(remote_cfg.get("claim_wait_seconds") or 3.0))
             log(f"远程观战：已启用，等待间隔 {remote['wait']:g} 秒，任务租期 {jobs.lease:g} 秒")
+            if token_store is not None:
+                log("[远程] 每设备令牌：已启用（SQLite 哈希）")
     local_watch = bool(config.get("local_watch", True))
     if not local_watch and remote is None:
         log("local_watch=false 但远程接口未启用，回退为本地观战")
