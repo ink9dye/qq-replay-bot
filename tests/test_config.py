@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from app.config import AppConfig, ConfigStore, normalize_server, validate
+from app.config import AccountConfig, AppConfig, ConfigStore, MAX_ACCOUNTS, normalize_server, validate
 from app.redact import Redactor
 from app.secrets import protect, unprotect
+
+
+def _accounts(*pairs: tuple[str, str]) -> list[AccountConfig]:
+    return [AccountConfig(account=account, password=password) for account, password in pairs]
 
 
 class ConfigTests(unittest.TestCase):
@@ -26,19 +31,34 @@ class ConfigTests(unittest.TestCase):
             normalize_server("http://")
 
     def test_validation_reports_all_missing_fields(self):
-        cfg = AppConfig(server="", token="", name="", capacity=1,
-                        account="", password="")
+        cfg = AppConfig(server="", token="", name="", accounts=[])
         errors = validate(cfg)
         self.assertTrue(any("服务器" in item for item in errors))
         self.assertTrue(any("令牌" in item for item in errors))
         self.assertTrue(any("客户端名称" in item for item in errors))
         self.assertTrue(any("萌卡账号" in item for item in errors))
-        self.assertTrue(any("萌卡密码" in item for item in errors))
 
-    def test_capacity_is_bounded_by_validation_not_silently(self):
+    def test_capacity_equals_account_count(self):
         cfg = AppConfig(server="http://example.test", token="x", name="pc",
-                        capacity=9, account="a", password="p")
-        self.assertTrue(any("并发" in item for item in validate(cfg)))
+                        accounts=_accounts(("a", "p"), ("b", "p"), ("c", "p")))
+        self.assertEqual(cfg.capacity, 3)
+        self.assertEqual([], validate(cfg))
+
+    def test_too_many_accounts_rejected(self):
+        pairs = tuple((f"acc{index}", "p") for index in range(MAX_ACCOUNTS + 1))
+        cfg = AppConfig(server="http://example.test", token="x", name="pc",
+                        accounts=_accounts(*pairs))
+        self.assertTrue(any("最多支持" in item for item in validate(cfg)))
+
+    def test_duplicate_account_rejected(self):
+        cfg = AppConfig(server="http://example.test", token="x", name="pc",
+                        accounts=_accounts(("same", "p"), ("SAME", "p")))
+        self.assertTrue(any("重复" in item for item in validate(cfg)))
+
+    def test_account_without_password_rejected(self):
+        cfg = AppConfig(server="http://example.test", token="x", name="pc",
+                        accounts=_accounts(("lonely", "")))
+        self.assertTrue(any("密码" in item for item in validate(cfg)))
 
 
 class RedactTests(unittest.TestCase):
@@ -64,31 +84,61 @@ class SecretStorageTests(unittest.TestCase):
         self.assertEqual(unprotect(encrypted), "token-value-123")
         self.assertIsNone(unprotect("not-a-dpapi-value"))
 
-    def test_config_store_encrypts_token_and_password(self):
+    def test_config_store_encrypts_token_and_passwords(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "config.json"
             store = ConfigStore(path)
             config = AppConfig(server="http://example.test", token="secret-token",
-                               name="pc-test", capacity=1, account="account",
-                               password="secret-password", remember_password=True)
+                               name="pc-test", remember_password=True,
+                               accounts=_accounts(("first", "secret-password-1"),
+                                                  ("second", "secret-password-2")))
             self.assertEqual(store.save(config), [])
             raw = path.read_text(encoding="utf-8")
             self.assertNotIn("secret-token", raw)
-            self.assertNotIn("secret-password", raw)
+            self.assertNotIn("secret-password-1", raw)
+            self.assertNotIn("secret-password-2", raw)
             loaded = store.load()
             self.assertEqual(loaded.config.token, "secret-token")
-            self.assertEqual(loaded.config.password, "secret-password")
+            self.assertEqual([item.account for item in loaded.config.accounts],
+                             ["first", "second"])
+            self.assertEqual([item.password for item in loaded.config.accounts],
+                             ["secret-password-1", "secret-password-2"])
+            self.assertEqual(loaded.config.capacity, 2)
 
     def test_password_is_not_saved_when_remember_is_off(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "config.json"
             store = ConfigStore(path)
             config = AppConfig(server="http://example.test", token="secret-token",
-                               name="pc-test", capacity=1, account="account",
-                               password="secret-password", remember_password=False)
+                               name="pc-test", remember_password=False,
+                               accounts=_accounts(("account", "secret-password")))
             store.save(config)
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(raw["accounts"][0]["password_enc"], "")
             loaded = store.load()
-            self.assertEqual(loaded.config.password, "")
+            self.assertEqual([item.account for item in loaded.config.accounts], ["account"])
+            self.assertEqual(loaded.config.accounts[0].password, "")
+
+    def test_old_single_account_config_is_migrated(self):
+        """旧版本只有一个 account/password_enc，读取后应变成一条账号。"""
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "config.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "server": "http://example.test",
+                "token_enc": protect("old-token"),
+                "name": "pc-old",
+                "capacity": 2,
+                "account": "legacy",
+                "password_enc": protect("legacy-pass"),
+                "remember_password": True,
+                "keep_local": False,
+            }, ensure_ascii=False), encoding="utf-8")
+            loaded = ConfigStore(path).load()
+            self.assertTrue(loaded.migrated)
+            self.assertEqual([item.account for item in loaded.config.accounts], ["legacy"])
+            self.assertEqual(loaded.config.accounts[0].password, "legacy-pass")
+            self.assertEqual(loaded.config.token, "old-token")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
 
 from app.config import ConfigStore  # noqa: E402
 from app.paths import (APP_NAME, APP_TITLE, APP_VERSION, default_data_dir,  # noqa: E402
-                       executable_dir, prepare_data_dir, resource_path)
+                       fallback_data_dir, prepare_data_dir, resource_path)
 from app.ui import App  # noqa: E402
 
 
@@ -95,7 +95,7 @@ def _acquire_single_instance(data_dir: Path) -> bool:
 def _choose_data_dir(preferred: Path) -> tuple[Path, str]:
     """首选目录不可写时，自动退到 LocalAppData/临时目录，并返回提示。"""
     candidates: list[Path] = [Path(preferred)]
-    fallback = default_data_dir()
+    fallback = fallback_data_dir()
     if fallback not in candidates:
         candidates.append(fallback)
     temp_fallback = Path(tempfile.gettempdir()) / APP_NAME
@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=f"{APP_TITLE} {APP_VERSION}")
     parser.add_argument("--data-dir", default="", help="自定义数据目录")
     parser.add_argument("--portable", action="store_true",
-                        help="把数据保存在 exe/项目同目录的 data 下")
+                        help="兼容旧参数；数据现在默认就写在 exe 同级的 data 目录")
     parser.add_argument("--smoke-test", action="store_true", help="创建窗口后自动退出（自检）")
     parser.add_argument("--version", action="store_true", help="显示版本")
     args = parser.parse_args(argv)
@@ -149,8 +149,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.data_dir:
         requested_dir = Path(args.data_dir).expanduser()
-    elif args.portable:
-        requested_dir = executable_dir() / "data"
     else:
         requested_dir = default_data_dir()
     data_dir, dir_warning = _choose_data_dir(requested_dir)

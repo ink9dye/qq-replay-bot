@@ -47,6 +47,29 @@ class Timeouts:
 
 
 @dataclass
+class AccountSlot:
+    """一个萌卡账号占用的并发槽位。同一账号同一时刻只进一间房。"""
+
+    account: str
+    password: str
+    secret: int = 0
+    secret_at: float = 0.0
+    nickname: str = ""
+    job_id: str = ""
+    state: str = "idle"          # idle 空闲 / busy 观战中 / login 登录中 / error 不可用
+    error: str = ""
+
+    def as_dict(self) -> dict:
+        return {
+            "account": self.account,
+            "nickname": self.nickname or self.account,
+            "state": self.state,
+            "job_id": self.job_id,
+            "error": self.error,
+        }
+
+
+@dataclass
 class Job:
     id: str
     room_key: str
@@ -57,6 +80,7 @@ class Job:
     stage: str = "queued"
     status: str = "准备中"
     detail: str = ""
+    account: str = ""
     saved: int = 0
     uploaded: int = 0
     uploaded_bytes: int = 0
@@ -69,6 +93,7 @@ class Job:
             "room_key": self.room_key,
             "title": self.title,
             "players": list(self.players),
+            "account": self.account,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "elapsed": max(0.0, end - self.started_at),
@@ -125,11 +150,12 @@ class WatchClient:
         self.spectator_factory = spectator_factory or watch_module.Spectator
 
         self._log_file = RotatingLog(self.data_dir / "logs", "client.log")
-        self._redactor = Redactor([config.token, config.password])
+        self._redactor = Redactor([config.token] + [item.password for item in config.real_accounts()])
         self.watch.log = self._log
 
         self._thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
+        self._job_threads: list[threading.Thread] = []
         self._stop = threading.Event()
         self._state = "stopped"
         self._state_detail = ""
@@ -138,10 +164,12 @@ class WatchClient:
         self._stats_lock = threading.Lock()
         self._stats = {"saved": 0, "uploaded": 0, "bytes": 0, "jobs": 0, "failed": 0}
         self._session_started_at = 0.0
-        self._secret = 0
-        self._secret_at = 0.0
-        self._nickname = ""
-        self._account_lock = threading.Lock()
+        # 每个账号一份独立凭据/昵称/占用状态，一个账号只负责一间房。
+        self._slots: list[AccountSlot] = [
+            AccountSlot(account=item.account.strip(), password=item.password)
+            for item in config.real_accounts()
+        ]
+        self._slots_lock = threading.Lock()
 
         self._room_lock = threading.Lock()
         self._room_active: set[str] = set()
@@ -162,7 +190,9 @@ class WatchClient:
 
     @property
     def nickname(self) -> str:
-        return self._nickname
+        with self._slots_lock:
+            names = [slot.nickname or slot.account for slot in self._slots]
+        return "、".join(names)
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -172,11 +202,16 @@ class WatchClient:
             return [job.as_dict() for job in sorted(self._jobs.values(),
                                                     key=lambda item: item.started_at, reverse=True)]
 
+    def accounts_snapshot(self) -> list[dict]:
+        with self._slots_lock:
+            return [slot.as_dict() for slot in self._slots]
+
     def stats_snapshot(self) -> dict:
         with self._stats_lock:
             stats = dict(self._stats)
         stats.update(active=self._active_count(), capacity=self.config.capacity,
-                     worker=self.config.name, nickname=self._nickname,
+                     worker=self.config.name, nickname=self.nickname,
+                     accounts=self.accounts_snapshot(),
                      session_started_at=self._session_started_at)
         return stats
 
@@ -189,7 +224,7 @@ class WatchClient:
         self._state_detail = "正在检查服务器…"
         self._session_started_at = time.time()
         self._stats = {"saved": 0, "uploaded": 0, "bytes": 0, "jobs": 0, "failed": 0}
-        self._account_lock_state()
+        self._reset_slots()
         self._emit_state()
         self._emit_stats()
         self._thread = threading.Thread(target=self._run, name="watch-client", daemon=True)
@@ -206,18 +241,31 @@ class WatchClient:
         self._log("正在停止观战客户端…", "warn")
 
     def wait(self, timeout: float | None = None) -> bool:
-        thread = self._thread
-        if not thread:
-            return True
-        thread.join(timeout)
-        return not thread.is_alive()
+        """等领任务线程和所有任务线程都结束。
+
+        只等领任务线程是不够的：临时目录清理、证据补传都在任务线程里，
+        上一版停止后立刻断言会看到残留的 work/job-* 目录。
+        """
+        deadline = None if timeout is None else time.time() + timeout
+        threads = [self._thread]
+        with self._jobs_lock:
+            threads.extend(self._job_threads)
+        for thread in [item for item in threads if item]:
+            remaining = None if deadline is None else max(0.0, deadline - time.time())
+            thread.join(remaining)
+        alive = [item for item in threads if item and item.is_alive()]
+        return not alive
 
     # ------------------------------------------------------------------ 事件/日志
-    def _account_lock_state(self) -> None:
-        with self._account_lock:
-            self._secret = 0
-            self._secret_at = 0.0
-            self._nickname = ""
+    def _reset_slots(self) -> None:
+        with self._slots_lock:
+            for slot in self._slots:
+                slot.secret = 0
+                slot.secret_at = 0.0
+                slot.nickname = ""
+                slot.job_id = ""
+                slot.state = "idle"
+                slot.error = ""
 
     def _emit(self, kind: str, **data) -> None:
         try:
@@ -262,26 +310,16 @@ class WatchClient:
             if self._stop.is_set():
                 return
 
-            self._set_state("authenticating", "正在登录萌卡账号…")
-            try:
-                secret, username = self.watch.sign_in(self.config.account.strip(), self.config.password)
-            except PermissionError as exc:
-                raise AuthError(f"萌卡登录失败：{exc}") from exc
-            except RuntimeError as exc:
-                raise AuthError(f"萌卡登录失败：{exc}") from exc
-            except (urllib.error.URLError, OSError, TimeoutError) as exc:
-                raise ClientError(f"萌卡登录网络异常：{exc}") from exc
-            with self._account_lock:
-                self._secret = int(secret)
-                self._secret_at = time.time()
-                self._nickname = str(username or self.config.account.strip())
-            self.watch._SECRET_REFRESHED_AT = time.time()
-            self._log(f"萌卡账号已登录：{self._nickname}", "success")
-            self._emit("account", ok=True, username=self._nickname)
+            count = len(self._slots)
+            self._set_state("authenticating", f"正在登录 {count} 个萌卡账号…")
+            usable = self._login_all()
+            if not usable:
+                raise AuthError("所有萌卡账号都登录失败，请检查账号密码或网络")
             if self._stop.is_set():
                 return
 
-            self._set_state("running", f"在线待命 · {self.config.name}")
+            self._set_state("running", f"在线待命 · {self.config.name} · {usable} 个账号")
+            self._log(f"{usable}/{count} 个账号可用，最多同时观战 {usable} 间", "success")
             self._start_heartbeat()
             self._claim_loop()
         except AuthError as exc:
@@ -384,7 +422,7 @@ class WatchClient:
                 job = self._claim()
                 errors = 0
                 if self._state == "reconnecting":
-                    self._set_state("running", f"在线待命 · {self.config.name}")
+                    self._set_state("running", f"在线待命 · {self.config.name} · {self.config.capacity} 个账号")
                     self._log("服务器连接已恢复", "success")
                 if self._stop.is_set():
                     if job:
@@ -437,18 +475,32 @@ class WatchClient:
         room = payload.get("room") if isinstance(payload.get("room"), dict) else {}
         players = [str(name) for name in (room.get("players") or []) if str(name).strip()]
         title = str(room.get("title") or room.get("join_id") or room.get("key") or "未知房间")
-        job = Job(id=job_id, room_key=str(room.get("key") or job_id), title=title, players=players)
         with self._jobs_lock:
             existing = self._jobs.get(job_id)
             if existing and existing.stage not in DONE_STAGES:
                 self._log(f"忽略重复派发的任务：{title}（{job_id[:8]}）", "warn")
                 return
+
+        slot = self._take_slot(job_id)
+        if slot is None:
+            # 并发等于账号数，正常不会走到这里；真出现就退回给服务器重派。
+            self._log(f"没有空闲账号，暂不接收任务：{title}", "warn")
+            self._report(job_id, "retry", {"reason": "no_idle_account"})
+            return
+
+        job = Job(id=job_id, room_key=str(room.get("key") or job_id), title=title,
+                  players=players, account=slot.account)
+        with self._jobs_lock:
             self._jobs[job_id] = job
             self._trim_jobs_locked()
         self._emit_jobs()
-        self._log(f"认领任务：{title}" + (f"（{' vs '.join(players)}）" if players else ""))
-        thread = threading.Thread(target=self._run_job, args=(payload, job),
+        self._log(f"认领任务：{title}" + (f"（{' vs '.join(players)}）" if players else "")
+                  + f" · 账号 {slot.account}")
+        thread = threading.Thread(target=self._run_job, args=(payload, job, slot),
                                   name=f"watch-job-{job_id[:8]}", daemon=True)
+        with self._jobs_lock:
+            self._job_threads = [item for item in self._job_threads if item.is_alive()]
+            self._job_threads.append(thread)
         thread.start()
 
     def _trim_jobs_locked(self) -> None:
@@ -469,7 +521,7 @@ class WatchClient:
         with self._jobs_lock:
             return self._jobs.get(job_id)
 
-    def _run_job(self, payload: dict, job: Job) -> None:
+    def _run_job(self, payload: dict, job: Job, slot: AccountSlot) -> None:
         room = self._room_from_job(payload)
         job_id = job.id
         claimed = False
@@ -527,10 +579,10 @@ class WatchClient:
                 outcome = "stopped"
                 return
             try:
-                state = self._refresh_account()
+                state = self._refresh_account(slot)
             except Exception as exc:
                 error = f"凭据准备失败：{type(exc).__name__}: {exc}"
-                self._log(f"任务 {job_id[:8]} {error}", "error")
+                self._log(f"任务 {job_id[:8]} 账号 {slot.account} {error}", "error")
                 outcome = "failed"
                 return
 
@@ -543,7 +595,7 @@ class WatchClient:
                 self._log(f"跳过重复任务：{job.title}（{why}）", "warn")
                 return
 
-            config = self._job_config(payload, room, state)
+            config = self._job_config(payload, room, state, slot)
             target_dir.mkdir(parents=True, exist_ok=True)
             writer = self.writer_factory(target_dir,
                                           [str(item) for item in (payload.get("focus") or [])],
@@ -560,9 +612,11 @@ class WatchClient:
                 outcome = "stopped"
                 return
 
-            self._update_job(job, stage="connecting", status="连接中", detail="正在连接萌卡房间…")
+            self._update_job(job, stage="connecting", status="连接中",
+                             detail=f"正在用账号 {slot.account} 连接萌卡房间…")
             self._log(f"进入房间：{room.title or room.key}"
-                      + (f"（{' vs '.join(room.players)}）" if room.players else ""))
+                      + (f"（{' vs '.join(room.players)}）" if room.players else "")
+                      + f" · 账号 {slot.account}")
             outcome = asyncio.run(self._run_spectator(spectator, job)) or "failed"
         except asyncio.CancelledError:
             outcome = "stopped"
@@ -573,6 +627,8 @@ class WatchClient:
         finally:
             if self._stop.is_set() and outcome not in ("saved", "noreplay"):
                 outcome = "stopped"
+            # 先还账号再收尾：任务线程结束前把槽位放回去，认领循环才能接下一间。
+            self._release_slot(slot)
             # 胜负证据由 Spectator 在 save() 返回后补写；此时再统一上传，
             # 避免在 on_saved 回调里提前删掉 .yrp 导致证据永远写不出来。
             self._upload_evidence(target_dir, job_id, room.players)
@@ -698,34 +754,99 @@ class WatchClient:
             self._log(f"上报任务 {job_id[:8]} 网络失败：{exc}", "warn")
 
     # ------------------------------------------------------------------ 账号/房间
-    def _refresh_account(self) -> dict:
-        with self._account_lock:
-            if self._secret and time.time() - self._secret_at <= 150:
-                return {"secret": self._secret, "nickname": self._nickname}
-            temp = {"account": self.config.account.strip(), "password": self.config.password,
-                    "mycard_secret": self._secret or None, "nickname": self._nickname,
-                    "join_mode": "mycard"}
-            try:
-                self.watch.refresh_secret(temp)
-                self._secret = int(temp.get("mycard_secret") or self._secret or 0)
-                self._nickname = str(temp.get("nickname") or self._nickname or self.config.account.strip())
-                self._secret_at = time.time()
-            except Exception as exc:
-                if self._secret:
-                    self._log(f"凭据刷新失败，沿用现有登录：{type(exc).__name__}", "warn")
-                else:
-                    raise
-            return {"secret": self._secret, "nickname": self._nickname}
+    def _take_slot(self, job_id: str) -> AccountSlot | None:
+        """借一个空闲且可用的账号给这个任务；借不到返回 None。"""
+        with self._slots_lock:
+            for slot in self._slots:
+                if slot.state == "idle" and not slot.job_id:
+                    slot.state = "busy"
+                    slot.job_id = job_id
+                    return slot
+        return None
 
-    def _job_config(self, payload: dict, room, state: dict) -> dict:
+    def _release_slot(self, slot: AccountSlot) -> None:
+        with self._slots_lock:
+            slot.job_id = ""
+            if slot.state == "busy":
+                slot.state = "idle"
+        self._emit_stats()
+
+    @staticmethod
+    def _sign_in(watch_module, account: str, password: str) -> tuple[int, str]:
+        try:
+            secret, username = watch_module.sign_in(account, password)
+        except PermissionError as exc:
+            raise AuthError(f"萌卡登录失败：{exc}") from exc
+        except RuntimeError as exc:
+            raise AuthError(f"萌卡登录失败：{exc}") from exc
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            raise ClientError(f"萌卡登录网络异常：{exc}") from exc
+        return int(secret), str(username or account)
+
+    def _login(self, slot: AccountSlot, quiet: bool = False) -> bool:
+        with self._slots_lock:
+            slot.state = "login"
+        try:
+            secret, nickname = self._sign_in(self.watch, slot.account, slot.password)
+        except (AuthError, ClientError) as exc:
+            with self._slots_lock:
+                slot.error = str(exc)
+                # 手里还有旧口令就继续把这间录完，别把正在跑的任务一起废掉。
+                slot.state = "error" if not slot.secret else ("busy" if slot.job_id else "idle")
+            if not quiet:
+                self._log(f"账号 {slot.account} 登录失败：{exc}", "error")
+            self._emit("account", ok=False, account=slot.account, error=str(exc))
+            self._emit_stats()
+            return False
+        with self._slots_lock:
+            slot.secret = secret
+            slot.secret_at = time.time()
+            slot.nickname = nickname
+            slot.error = ""
+            slot.state = "busy" if slot.job_id else "idle"
+        self._log(f"萌卡账号已登录：{slot.account}（{nickname}）", "success")
+        self._emit("account", ok=True, account=slot.account, username=nickname)
+        self._emit_stats()
+        return True
+
+    def _login_all(self) -> int:
+        """逐个登录所有账号，返回可用账号数。账号之间留一点间隔，别一起打萌卡。"""
+        usable = 0
+        for index, slot in enumerate(list(self._slots)):
+            if self._stop.is_set():
+                break
+            if index:
+                self._stop.wait(0.4)
+            if self._login(slot):
+                usable += 1
+        return usable
+
+    def _refresh_account(self, slot: AccountSlot) -> dict:
+        """取这个账号的入房口令；凭据约 4 分钟轮换，超过 150 秒就重新登录。"""
+        with self._slots_lock:
+            fresh = bool(slot.secret) and (time.time() - slot.secret_at) <= 150
+            secret, nickname = slot.secret, slot.nickname
+        if fresh:
+            return {"secret": secret, "nickname": nickname}
+        try:
+            self._login(slot, quiet=True)
+        except Exception as exc:  # 兜底：登录流程本身崩了也别让任务线程裸奔
+            self._log(f"账号 {slot.account} 凭据刷新异常：{type(exc).__name__}: {exc}", "warn")
+        with self._slots_lock:
+            if slot.secret:
+                return {"secret": slot.secret, "nickname": slot.nickname}
+            error = slot.error or "账号不可用"
+        raise ClientError(f"账号 {slot.account} {error}")
+
+    def _job_config(self, payload: dict, room, state: dict, slot: AccountSlot) -> dict:
         server = payload.get("server") if isinstance(payload.get("server"), dict) else {}
         return {
             "host": str(server.get("host") or "tiramisu.moenext.com"),
             "port": int(server.get("port") or 8911),
             "version": self.watch.parse_version(server.get("version") or self.watch.DEFAULT_VERSION),
-            "nickname": str(state.get("nickname") or self.config.name or "Spectator"),
-            "account": self.config.account.strip(),
-            "password": self.config.password,
+            "nickname": str(state.get("nickname") or slot.nickname or slot.account or self.config.name),
+            "account": slot.account,
+            "password": slot.password,
             "mycard_secret": int(state.get("secret") or 0),
             "join_mode": "mycard",
             "deck_dir": str(self.data_dir / "decks"),
@@ -907,3 +1028,15 @@ class WatchClient:
             return {"ok": False, "error": f"网络请求失败：{exc}"}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    @staticmethod
+    def verify_accounts(accounts: list[tuple[str, str]]) -> list[dict]:
+        """逐个验证多组账号，返回每组的结果（顺序与传入一致）。"""
+        results: list[dict] = []
+        for index, (account, password) in enumerate(accounts):
+            if index:
+                time.sleep(0.4)
+            result = WatchClient.verify_account(account, password)
+            result["account"] = account
+            results.append(result)
+        return results

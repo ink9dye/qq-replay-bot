@@ -11,7 +11,8 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from .client import WatchClient, format_bytes
-from .config import AppConfig, ConfigStore, MAX_CAPACITY, normalize_server, validate
+from .config import (AccountConfig, AppConfig, ConfigStore, MAX_ACCOUNTS, MAX_CAPACITY,
+                     normalize_server, validate)
 from .paths import APP_TITLE, APP_VERSION
 
 BG = "#F3F6FB"
@@ -279,28 +280,26 @@ class App:
         self.server_var = tk.StringVar()
         self.token_var = tk.StringVar()
         self.name_var = tk.StringVar()
-        self.capacity_var = tk.StringVar(value="1")
-        self.account_var = tk.StringVar()
-        self.password_var = tk.StringVar()
         self.show_token_var = tk.BooleanVar(value=False)
         self.show_password_var = tk.BooleanVar(value=False)
         self.remember_var = tk.BooleanVar(value=True)
-        self.keep_local_var = tk.BooleanVar(value=False)
+        self.keep_local_var = tk.BooleanVar(value=True)
         self.auto_start_var = tk.BooleanVar(value=False)
+        self._account_rows: list[dict] = []
 
         self.server_entry = self._field(content, "服务器地址", self.server_var)
         self.token_entry = self._field(content, "接口令牌", self.token_var, show="•",
                                        toggle=(self.show_token_var, "显示"))
         self._name_capacity_row(content)
         self._separator(content)
-        self.account_entry = self._field(content, "萌卡账号", self.account_var)
-        self.password_entry = self._field(content, "萌卡密码", self.password_var, show="•",
-                                          toggle=(self.show_password_var, "显示"))
+        self._accounts_section(content)
 
-        checks = tk.Frame(bottom, bg=CARD)
-        checks.pack(fill="x", pady=(2, 6))
+        # 选项跟着账号一起放在可滚动区，账号多时才不会把按钮挤出屏幕。
+        self._separator(content)
+        checks = tk.Frame(content, bg=CARD)
+        checks.pack(fill="x", pady=(0, 4))
         for text, var in (("记住密码（DPAPI 加密）", self.remember_var),
-                          ("在本机保留一份录像（.yrp）", self.keep_local_var),
+                          ("在本机保存一份录像（可用 YGOPro 打开）", self.keep_local_var),
                           ("启动后自动开始观战", self.auto_start_var)):
             cb = ttk.Checkbutton(checks, text=text, variable=var, style="Card.TCheckbutton")
             cb.pack(anchor="w", pady=0)
@@ -412,15 +411,16 @@ class App:
 
         table = tk.Frame(inner, bg=CARD)
         table.pack(fill="both", expand=True, pady=(6, 0))
-        columns = ("room", "players", "status", "saved", "uploaded")
+        columns = ("room", "players", "account", "status", "saved", "uploaded")
         self.tree = ttk.Treeview(table, columns=columns, show="headings",
                                  selectmode="browse")
-        headings = {"room": "房间", "players": "玩家", "status": "状态",
+        headings = {"room": "房间", "players": "玩家", "account": "账号", "status": "状态",
                     "saved": "录像", "uploaded": "上传"}
-        widths = {"room": 150, "players": 138, "status": 78, "saved": 43, "uploaded": 43}
+        widths = {"room": 138, "players": 116, "account": 92, "status": 72,
+                  "saved": 40, "uploaded": 40}
         for col in columns:
             self.tree.heading(col, text=headings[col])
-            self.tree.column(col, width=widths[col], minwidth=38,
+            self.tree.column(col, width=widths[col], minwidth=36,
                              anchor="center" if col in ("saved", "uploaded") else "w")
         self.tree.tag_configure("active", foreground="#1570EF")
         self.tree.tag_configure("ok", foreground="#067647")
@@ -476,6 +476,10 @@ class App:
                               font=(FONT, 7), cursor="hand2")
         path_label.pack(side="left")
         path_label.bind("<Button-1>", lambda _event: self._open_data_dir())
+        replays_label = tk.Label(footer, text="录像目录", bg=BG, fg=PRIMARY,
+                                 font=(FONT, 7), cursor="hand2")
+        replays_label.pack(side="left", padx=(10, 0))
+        replays_label.bind("<Button-1>", lambda _event: self._open_replays_dir())
         tk.Label(footer, text=f"v{APP_VERSION}", bg=BG, fg=FAINT,
                  font=(FONT, 7)).pack(side="right")
 
@@ -524,13 +528,112 @@ class App:
 
         right = tk.Frame(wrapper, bg=CARD)
         right.pack(side="right")
-        tk.Label(right, text="并发", bg=CARD, fg=MUTED, font=(FONT, 8),
+        tk.Label(right, text="同时观战", bg=CARD, fg=MUTED, font=(FONT, 8),
                  anchor="w").pack(fill="x")
-        self.capacity_spin = ttk.Spinbox(right, from_=1, to=MAX_CAPACITY, width=4,
-                                         textvariable=self.capacity_var, state="readonly",
-                                         justify="center")
-        self.capacity_spin.pack(pady=(3, 0))
-        self._ttk_fields.append(self.capacity_spin)
+        self.capacity_label = tk.Label(right, text="1 间", bg=CARD, fg=TEXT,
+                                       font=(FONT, 11, "bold"), anchor="w")
+        self.capacity_label.pack(fill="x", pady=(7, 0))
+
+    def _accounts_section(self, parent: tk.Frame) -> None:
+        """多账号列表：一行一个账号，账号数就是并发路数。"""
+        wrapper = tk.Frame(parent, bg=CARD)
+        wrapper.pack(fill="x", pady=(0, 4))
+        head = tk.Frame(wrapper, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text="萌卡账号", bg=CARD, fg=MUTED, font=(FONT, 8),
+                 anchor="w").pack(side="left")
+        self.btn_add_account = ttk.Button(head, text="＋账号", style="Ghost.TButton", width=6,
+                                          command=self._add_account_row)
+        self.btn_add_account.pack(side="right")
+        self._ttk_fields.append(self.btn_add_account)
+        self.account_count_label = tk.Label(head, text="0 个", bg=CARD, fg=FAINT,
+                                            font=(FONT, 8))
+        self.account_count_label.pack(side="right", padx=(0, 4))
+        check = tk.Checkbutton(head, text="显示密码", variable=self.show_password_var,
+                               bg=CARD, activebackground=CARD, fg=FAINT,
+                               activeforeground=MUTED, selectcolor=CARD,
+                               font=(FONT, 7), bd=0, highlightthickness=0, cursor="hand2",
+                               command=self._toggle_all_passwords)
+        check.pack(side="right", padx=(0, 4))
+        self._tk_checks.append(check)
+
+        self._account_box = tk.Frame(wrapper, bg=CARD)
+        self._account_box.pack(fill="x", pady=(4, 0))
+
+        tk.Label(wrapper, text="左边账号 / 右边密码，一个账号看一间房",
+                 bg=CARD, fg=FAINT, font=(FONT, 7), anchor="w", justify="left",
+                 wraplength=max(220, self.sidebar_width - 48)).pack(fill="x", pady=(4, 0))
+
+    def _add_account_row(self, account: str = "", password: str = "",
+                         refresh: bool = True) -> None:
+        rows = [item for item in self._account_rows if item["frame"].winfo_exists()]
+        self._account_rows = rows
+        if len(rows) >= MAX_ACCOUNTS:
+            self._feedback_text(f"最多 {MAX_ACCOUNTS} 个账号（一个账号一间房）。", WARNING)
+            return
+        row = tk.Frame(self._account_box, bg=CARD)
+        row.pack(fill="x", pady=(0, 4))
+        account_var = tk.StringVar(value=account)
+        account_entry = ttk.Entry(row, textvariable=account_var)
+        account_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        password_var = tk.StringVar(value=password)
+        password_entry = ttk.Entry(row, textvariable=password_var, width=9,
+                                   show="" if self.show_password_var.get() else "•")
+        password_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        delete_btn = ttk.Button(row, text="×", style="Ghost.TButton", width=3,
+                               command=lambda: self._remove_account_row(item))
+        delete_btn.pack(side="right")
+        item = {"frame": row, "account_var": account_var, "password_var": password_var,
+                "account_entry": account_entry, "password_entry": password_entry,
+                "delete_btn": delete_btn}
+        self._account_rows.append(item)
+        self._ttk_fields.extend([account_entry, password_entry, delete_btn])
+        if refresh:
+            self._refresh_account_summary()
+
+    def _remove_account_row(self, item: dict) -> None:
+        if item in self._account_rows:
+            self._account_rows.remove(item)
+        for key in ("account_entry", "password_entry", "delete_btn"):
+            widget = item.get(key)
+            if widget in self._ttk_fields:
+                self._ttk_fields.remove(widget)
+        try:
+            item["frame"].destroy()
+        except (KeyError, tk.TclError):
+            pass
+        if not self._account_rows:
+            self._add_account_row(refresh=False)
+        self._refresh_account_summary()
+
+    def _clear_account_rows(self) -> None:
+        for item in list(self._account_rows):
+            for key in ("account_entry", "password_entry", "delete_btn"):
+                widget = item.get(key)
+                if widget in self._ttk_fields:
+                    self._ttk_fields.remove(widget)
+            try:
+                item["frame"].destroy()
+            except (KeyError, tk.TclError):
+                pass
+        self._account_rows = []
+
+    def _toggle_all_passwords(self) -> None:
+        show = "" if self.show_password_var.get() else "•"
+        for item in self._account_rows:
+            try:
+                item["password_entry"].configure(show=show)
+            except tk.TclError:
+                pass
+
+    def _refresh_account_summary(self) -> None:
+        count = len([item for item in self._account_rows
+                     if item["account_var"].get().strip()])
+        try:
+            self.account_count_label.configure(text=f"{count} 个")
+            self.capacity_label.configure(text=f"{max(1, min(MAX_CAPACITY, count))} 间")
+        except tk.TclError:
+            pass
 
     @staticmethod
     def _separator(parent: tk.Frame) -> None:
@@ -547,29 +650,34 @@ class App:
         self.server_var.set(config.server)
         self.token_var.set(config.token)
         self.name_var.set(config.name)
-        self.capacity_var.set(str(config.capacity))
-        self.account_var.set(config.account)
-        self.password_var.set(config.password)
         self.remember_var.set(config.remember_password)
         self.keep_local_var.set(config.keep_local)
         self.auto_start_var.set(config.auto_start)
+        self._clear_account_rows()
+        for item in (config.accounts or [AccountConfig()]):
+            self._add_account_row(item.account, item.password, refresh=False)
+        self._refresh_account_summary()
         self._render_status()
         self._on_stats({"active": 0, "capacity": config.capacity,
                         "worker": config.name, "saved": 0, "uploaded": 0,
-                        "bytes": 0, "jobs": 0, "failed": 0, "nickname": ""})
+                        "bytes": 0, "jobs": 0, "failed": 0, "nickname": "",
+                        "accounts": []})
 
     def _collect(self) -> AppConfig:
-        try:
-            capacity = int(self.capacity_var.get() or 1)
-        except ValueError:
-            capacity = 1
+        accounts: list[AccountConfig] = []
+        for item in self._account_rows:
+            try:
+                account = item["account_var"].get().strip()
+                password = item["password_var"].get()
+            except (KeyError, tk.TclError):
+                continue
+            if account or password:
+                accounts.append(AccountConfig(account=account, password=password))
         return AppConfig(
             server=self.server_var.get().strip(),
             token=self.token_var.get().strip(),
             name=self.name_var.get().strip(),
-            capacity=max(1, min(MAX_CAPACITY, capacity)),
-            account=self.account_var.get().strip(),
-            password=self.password_var.get(),
+            accounts=accounts,
             remember_password=bool(self.remember_var.get()),
             keep_local=bool(self.keep_local_var.get()),
             auto_start=bool(self.auto_start_var.get()),
@@ -706,16 +814,18 @@ class App:
         if self._verifying:
             return
         cfg = self._collect()
-        if not cfg.account or not cfg.password:
-            messagebox.showerror("缺少账号信息", "请填写萌卡账号和密码。")
+        pairs = [(item.account.strip(), item.password) for item in cfg.real_accounts()
+                 if item.account.strip() and item.password]
+        if not pairs:
+            messagebox.showerror("缺少账号信息", "请至少填写一个萌卡账号和密码。")
             return
         self._verifying = True
         self.btn_verify.state(["disabled"])
-        self._feedback_text("正在登录萌卡验证账号…", WARNING)
+        self._feedback_text(f"正在逐个登录验证 {len(pairs)} 个账号…", WARNING)
 
         def run() -> None:
-            result = WatchClient.verify_account(cfg.account, cfg.password)
-            self.bus.put({"type": "verify_result", "result": result})
+            results = WatchClient.verify_accounts(pairs)
+            self.bus.put({"type": "verify_result", "results": results})
 
         threading.Thread(target=run, name="verify-account", daemon=True).start()
 
@@ -795,7 +905,9 @@ class App:
         elif kind == "test_result":
             self._handle_test(event.get("result") or {})
         elif kind == "verify_result":
-            self._handle_verify(event.get("result") or {})
+            results = event.get("results")
+            if isinstance(results, list):
+                self._handle_verify(results)
 
     def _handle_test(self, result: dict) -> None:
         self._testing = False
@@ -816,22 +928,28 @@ class App:
             if not self.smoke:
                 messagebox.showerror("连接测试失败", error)
 
-    def _handle_verify(self, result: dict) -> None:
+    def _handle_verify(self, results: list[dict]) -> None:
         self._verifying = False
         if not (self.client and self.client.is_running()):
             self.btn_verify.state(["!disabled"])
-        if result.get("ok"):
-            username = str(result.get("username") or "")
-            self._feedback_text(f"账号有效：{username}", SUCCESS)
-            self._append_log(f"萌卡账号验证成功：{username}", "success")
+        if not results:
+            return
+        ok = [item for item in results if item.get("ok")]
+        bad = [item for item in results if not item.get("ok")]
+        if not bad:
+            names = "、".join(str(item.get("username") or item.get("account")) for item in ok)
+            self._feedback_text(f"{len(ok)} 个账号全部有效", SUCCESS)
+            self._append_log(f"萌卡账号验证成功：{names}", "success")
             if not self.smoke:
-                messagebox.showinfo("账号验证", f"萌卡账号有效。\n登录名：{username}")
-        else:
-            error = str(result.get("error") or "未知错误")
-            self._feedback_text(error, DANGER)
-            self._append_log(f"萌卡账号验证失败：{error}", "error")
-            if not self.smoke:
-                messagebox.showerror("账号验证失败", error)
+                messagebox.showinfo("账号验证", f"{len(ok)} 个萌卡账号全部有效。\n{names}")
+            return
+        lines = [f"• {item.get('account') or '—'}：{item.get('error') or '登录失败'}" for item in bad]
+        self._feedback_text(f"{len(bad)} 个账号验证失败", DANGER)
+        for item in bad:
+            self._append_log(f"萌卡账号验证失败：{item.get('account')} · {item.get('error')}", "error")
+        if not self.smoke:
+            head = f"{len(ok)} 个有效，{len(bad)} 个失败。\n" if ok else ""
+            messagebox.showerror("账号验证失败", head + "\n".join(lines))
 
     # ------------------------------------------------------------------ 列表/日志
     def _refresh_jobs(self) -> None:
@@ -844,6 +962,7 @@ class App:
             job_id = str(job.get("id") or "")
             room = str(job.get("title") or job.get("room_key") or "未知房间")
             players = " vs ".join(str(item) for item in (job.get("players") or [])) or "—"
+            account = str(job.get("account") or "") or "—"
             status = str(job.get("status") or "")
             saved = str(job.get("saved") or 0) if job.get("saved") else "—"
             uploaded = str(job.get("uploaded") or 0) if job.get("uploaded") else "—"
@@ -853,7 +972,8 @@ class App:
                    else "ok" if stage == "done" else "err" if stage == "error"
                    else "muted")
             self.tree.insert("", "end", iid=job_id,
-                             values=(room[:28], players[:28], status, saved, uploaded),
+                             values=(room[:26], players[:26], account[:18], status,
+                                     saved, uploaded),
                              tags=(tag,))
         if selected_id and self.tree.exists(selected_id):
             self.tree.selection_set(selected_id)
@@ -875,10 +995,16 @@ class App:
         else:
             service, color = "离线", FAINT
         worker = str(stats.get("worker") or self.name_var.get() or "—")
-        self.stat_service.set(service, worker[:28], color)
+        accounts = stats.get("accounts") if isinstance(stats.get("accounts"), list) else []
+        if accounts:
+            ready = sum(1 for item in accounts if item.get("state") in ("idle", "busy"))
+            sub = f"{ready}/{len(accounts)} 个账号可用"
+        else:
+            sub = worker[:28]
+        self.stat_service.set(service, sub, color)
         active = int(stats.get("active") or 0)
         capacity = int(stats.get("capacity") or 1)
-        self.stat_active.set(f"{active} / {capacity}", f"并发上限 {capacity}")
+        self.stat_active.set(f"{active} / {capacity}", f"{capacity} 个账号并行")
         self.stat_saved.set(str(int(stats.get("saved") or 0)), "本次运行")
         self.stat_uploaded.set(str(int(stats.get("uploaded") or 0)),
                                format_bytes(int(stats.get("bytes") or 0)))
@@ -922,6 +1048,15 @@ class App:
     def _open_log_dir(self) -> None:
         self._open_path(self.data_dir / "logs")
 
+    def _open_replays_dir(self) -> None:
+        folder = self.data_dir / "local-replays"
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror("打开录像目录失败", str(exc))
+            return
+        self._open_path(folder)
+
     def _open_data_dir(self) -> None:
         self._open_path(self.data_dir)
 
@@ -944,6 +1079,7 @@ class App:
         players = " vs ".join(str(item) for item in (job.get("players") or [])) or "—"
         text = (f"房间：{job.get('title') or '—'}\n"
                 f"玩家：{players}\n"
+                f"账号：{job.get('account') or '—'}\n"
                 f"状态：{job.get('status') or '—'}\n"
                 f"已保存：{job.get('saved') or 0} 个小局\n"
                 f"已上传：{job.get('uploaded') or 0} 个（{format_bytes(int(job.get('uploaded_bytes') or 0))}）\n"
@@ -981,21 +1117,25 @@ class App:
         content = (
             "第一次使用\n"
             "1. 向服务器管理员获取“服务器地址”和“接口令牌”。\n"
-            "2. 填写自己的萌卡账号和密码。账号只在本机登录，不上传服务器。\n"
+            "2. 在“萌卡账号”里填 1 个或多个账号和密码；账号只在本机登录，不上传服务器。\n"
             "3. 客户端名称在同一令牌下必须唯一，例如 pc-你的名字。\n"
-            "4. 并发建议先填 1；确认账号稳定后再考虑提高。\n"
+            "4. 一个账号同时只进一间房：填 3 个账号，就并行观战 3 间。\n"
             "5. 点击“开始观战”，程序会自动领任务、进房录制并上传。\n\n"
             "界面说明\n"
             "• 服务状态：服务器接口是否可连；在线待命表示正在等任务。\n"
-            "• 观战任务：当前和历史任务，双击可看房间、玩家、保存/上传数量。\n"
+            "• 观战任务：当前和历史任务，双击可看房间、玩家、用的哪个账号。\n"
             "• 运行日志：出问题时先看这里，日志里不会出现令牌和密码。\n"
             "• 已上传：本次运行成功上传的录像数量；小局数按录像包统计。\n\n"
+            "数据放在哪\n"
+            "• 全部数据都在 exe 同级的 data 目录里：config.json（配置）、logs（日志）、\n"
+            "  local-replays（录像，按日期分文件夹）、decks（临时卡组）。\n"
+            "• 界面底部“数据目录”“录像目录”可以直接点开。\n"
+            "• 录像直接复制给别人用 YGOPro 打开即可；换电脑时整个 data 目录一起拷走，\n"
+            "  但密码是 DPAPI 密文，新电脑上需要重新填写。\n\n"
             "注意事项\n"
-            "• 同一萌卡账号同时进多个房间时，平台可能拒发回放；建议并发保持 1。\n"
+            "• 同一个账号不要同时进多个房间，平台可能拒发回放；多开请用多个账号。\n"
             "• 两次进场至少间隔约 20–25 秒，这是客户端主动限速，避免被平台限制。\n"
             "• 停止或关闭窗口会断开当前观战；已上传的录像不受影响。\n"
-            "• 勾选“在本机保留一份录像”后，录像也会复制到数据目录的 local-replays 下，\n"
-            "  可用 YGOPro 打开；不勾选则上传成功后就删除临时文件。\n"
             "• 令牌、密码使用 Windows DPAPI 加密保存，换 Windows 用户或换电脑后需要重新填写。\n"
             "• 服务器地址当前为 HTTP；请只使用管理员提供的地址，不要在公共网络泄露令牌。\n\n"
             "常见错误\n"

@@ -1,5 +1,5 @@
 ﻿<#
-构建 MoeCardWatch.exe 和可分发 zip。
+构建 MoeCardWatch.exe，输出到 release\v1.0（唯一产物，不带重复目录和 zip）。
 
 示例：
     .\build.ps1
@@ -9,6 +9,7 @@
 param(
     [string]$Python = "",
     [string]$PyInstallerSite = "",
+    [string]$ReleaseName = "v1.0",
     [switch]$SkipTests
 )
 
@@ -70,45 +71,59 @@ if (-not $SkipTests) {
     if ($LASTEXITCODE -ne 0) { throw "单元测试失败，停止打包。" }
 }
 
-Get-ChildItem $Root -Filter "__pycache__" -Recurse -Directory -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-if (Test-Path "$Root\build") { Remove-Item "$Root\build" -Recurse -Force }
-if (Test-Path "$Root\dist") { Remove-Item "$Root\dist" -Recurse -Force }
-New-Item -ItemType Directory -Path "$Root\dist" | Out-Null
+# 清掉所有历史产物：重复的 dist/build、PyInstaller 残留解包目录、旧 release。
+Write-Host "清理历史产物..."
+Get-ChildItem $Root -Filter "__pycache__" -Recurse -Directory -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($name in @("build", "dist", "release", "hello", "temp-run", "temp-run2")) {
+    $path = Join-Path $Root $name
+    if (Test-Path $path) { Remove-Item $path -Recurse -Force }
+}
+Get-ChildItem $Root -Directory -Filter "temp-run*" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem $Root -Directory -Filter "_MEI*" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $Root -Filter "*.zip" -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like "MoeCardWatch*" } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
+$StageDir = Join-Path $Root "build\dist"
+$WorkDir = Join-Path $Root "build\work"
+New-Item -ItemType Directory -Path $StageDir -Force | Out-Null
 
 $oldPythonPath = $env:PYTHONPATH
 $env:PYTHONPATH = $PyInstallerSite
 try {
     Write-Host "PyInstaller 打包中..."
-    & $PythonExe -m PyInstaller --noconfirm --clean "$Root\MoeCardWatch.spec"
+    & $PythonExe -m PyInstaller --noconfirm --clean --distpath $StageDir --workpath $WorkDir "$Root\MoeCardWatch.spec"
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller 打包失败。" }
 }
 finally {
     $env:PYTHONPATH = $oldPythonPath
 }
 
-$appDir = Join-Path $Root "dist\MoeCardWatch"
+$appDir = Join-Path $StageDir "MoeCardWatch"
 $exe = Join-Path $appDir "MoeCardWatch.exe"
 if (-not (Test-Path $exe)) { throw "没有生成 $exe" }
 
-# 生成一个“便携版”目录：数据写在 exe 旁，解压即用。
-$release = Join-Path $Root "dist\MoeCardWatch-win64"
-if (Test-Path $release) { Remove-Item $release -Recurse -Force }
-New-Item -ItemType Directory -Path $release | Out-Null
-Copy-Item (Join-Path $appDir "*") $release -Recurse
-Copy-Item "$Root\README.md" $release
-Copy-Item "$Root\NOTICE.md" $release
-New-Item -ItemType Directory -Path (Join-Path $release "assets") -Force | Out-Null
-Copy-Item "$Root\assets\preview.png" (Join-Path $release "assets\preview.png")
-New-Item -ItemType File -Path (Join-Path $release "portable.flag") | Out-Null
+# 唯一的发布目录：release\<版本>\，数据目录 data 运行时才生成，不会被打进去。
+$releaseDir = Join-Path (Join-Path $Root "release") $ReleaseName
+New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+Copy-Item (Join-Path $appDir "*") $releaseDir -Recurse
+Copy-Item "$Root\README.md" $releaseDir
+Copy-Item "$Root\NOTICE.md" $releaseDir
+$assetsDir = Join-Path $releaseDir "assets"
+New-Item -ItemType Directory -Path $assetsDir -Force | Out-Null
+Copy-Item "$Root\assets\preview.png" (Join-Path $assetsDir "preview.png")
 
-$zip = Join-Path $Root "dist\MoeCardWatch-win64.zip"
-if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path (Join-Path $release "*") -DestinationPath $zip -CompressionLevel Optimal
+# 打包中间产物不再保留，仓库里只留 release 下的一个目录。
+Remove-Item (Join-Path $Root "build") -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem $Root -Filter "__pycache__" -Recurse -Directory -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+$sizeMb = [math]::Round(((Get-ChildItem $releaseDir -Recurse -File |
+    Measure-Object -Property Length -Sum).Sum / 1MB), 1)
 
 Write-Host ""
-Write-Host "完成："
-Write-Host "  exe: $exe"
-Write-Host "  zip: $zip"
-Write-Host "  dir: $release"
-Write-Host ""
-Write-Host "校验：运行 exe --smoke-test（窗口自动关闭即正常）。"
+Write-Host "完成：$releaseDir（$sizeMb MB）"
+Write-Host "自检：& '$releaseDir\MoeCardWatch.exe' --smoke-test"

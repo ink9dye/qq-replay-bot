@@ -30,14 +30,16 @@ def resource_path(*parts: str) -> Path:
 
 
 def default_data_dir() -> Path:
-    """默认写入当前用户的 LocalAppData，避免 Program Files 只读。
+    """数据（配置、录像、日志）固定放在 exe 同级的 data 目录，方便直接翻看和备份。
 
-    如果 exe 同目录存在 ``portable.flag``，则使用 exe 同目录的 data，
-    方便放进 U 盘或整个文件夹拷走。
+    源码运行时就是项目根目录下的 data。该目录不可写时，调用方回退到
+    :func:`fallback_data_dir`（LocalAppData）。
     """
-    exe_dir = executable_dir()
-    if (exe_dir / "portable.flag").is_file():
-        return exe_dir / "data"
+    return executable_dir() / "data"
+
+
+def fallback_data_dir() -> Path:
+    """exe 所在目录不可写时（例如装在 Program Files）退到这里。"""
     local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
     if local:
         return Path(local) / APP_NAME

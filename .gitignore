@@ -3,6 +3,7 @@ __pycache__/
 build/
 dist/
 data/
+release/
 *.log
 run-*.txt
 preview*.png

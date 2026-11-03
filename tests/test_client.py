@@ -14,7 +14,7 @@ from unittest.mock import patch
 import watch
 
 from app.client import Timeouts, WatchClient
-from app.config import AppConfig
+from app.config import AccountConfig, AppConfig
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -45,18 +45,11 @@ class _Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         if self.path == "/watch-api/claim":
             with state["lock"]:
-                if state["served"]:
-                    self._send(204)
-                    return
-                state["served"] = True
-            self._send(200, {"ok": True, "job": {
-                "id": "job-1",
-                "room": {"key": "M#1", "title": "测试房间", "join_id": "room",
-                         "players": ["甲", "乙"], "seats": {"0": "甲", "1": "乙"},
-                         "started": True},
-                "server": {"host": "127.0.0.1", "port": 1, "version": 5463},
-                "focus": ["甲"],
-            }})
+                job = state["jobs"].pop(0) if state["jobs"] else None
+            if job:
+                self._send(200, {"ok": True, "job": job})
+            else:
+                self._send(204)
         elif self.path == "/watch-api/heartbeat":
             self._send(200, {"ok": True})
         elif self.path == "/watch-api/report":
@@ -121,9 +114,21 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _job(job_id: str, key: str, title: str, players: tuple[str, str] = ("甲", "乙")) -> dict:
+    return {
+        "id": job_id,
+        "room": {"key": key, "title": title, "join_id": key,
+                 "players": list(players), "seats": {"0": players[0], "1": players[1]},
+                 "started": True},
+        "server": {"host": "127.0.0.1", "port": 1, "version": 5463},
+        "focus": [players[0]],
+    }
+
+
 class ClientFlowTests(unittest.TestCase):
     def setUp(self):
-        self.state = {"served": False, "uploads": [], "reports": [], "lock": threading.Lock()}
+        self.state = {"jobs": [_job("job-1", "M#1", "测试房间")],
+                      "uploads": [], "reports": [], "lock": threading.Lock()}
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.httpd.owner = self.state
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -132,7 +137,7 @@ class ClientFlowTests(unittest.TestCase):
         self.data_dir = Path(self.temp.name)
         self.events: list[tuple[str, dict]] = []
         self._patches = [
-            patch.object(watch, "sign_in", return_value=(123456, "tester")),
+            patch.object(watch, "sign_in", side_effect=lambda account, _password: (123456, account)),
             patch.object(watch, "ReplayWriter", _FakeWriter),
             patch.object(watch, "Spectator", _FakeSpectator),
         ]
@@ -157,7 +162,7 @@ class ClientFlowTests(unittest.TestCase):
     def test_claim_spectate_upload_evidence_and_report(self):
         port = self.httpd.server_address[1]
         cfg = AppConfig(server=f"http://127.0.0.1:{port}", token="token-123",
-                        name="tester", capacity=1, account="acct", password="pw")
+                        name="tester", accounts=[AccountConfig("acct", "pw")])
         self.client = WatchClient(cfg, self.data_dir, emit=self._emit,
                                   timeouts=Timeouts(request=5, claim_wait=0.2,
                                                     heartbeat=30, join_interval=0,
@@ -192,6 +197,52 @@ class ClientFlowTests(unittest.TestCase):
         self.assertEqual(last_job["status"], "已完成")
         self.assertEqual(last_job["saved"], 1)
         self.assertEqual(last_job["uploaded"], 1)
+
+    def test_two_accounts_record_two_rooms_at_the_same_time(self):
+        """两个账号各看一间：两间房都要录到，且用的是不同账号。"""
+        port = self.httpd.server_address[1]
+        with self.state["lock"]:
+            self.state["jobs"] = [_job("job-a", "M#A", "房间A", ("甲", "乙")),
+                                  _job("job-b", "M#B", "房间B", ("丙", "丁"))]
+        cfg = AppConfig(server=f"http://127.0.0.1:{port}", token="token-123", name="tester",
+                        accounts=[AccountConfig("acct-1", "pw"), AccountConfig("acct-2", "pw")])
+        self.assertEqual(cfg.capacity, 2)
+        self.client = WatchClient(cfg, self.data_dir, emit=self._emit,
+                                  timeouts=Timeouts(request=5, claim_wait=0.2,
+                                                    heartbeat=30, join_interval=0,
+                                                    join_jitter=0))
+        self.assertTrue(self.client.start())
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            with self.state["lock"]:
+                reports = list(self.state["reports"])
+                uploads = list(self.state["uploads"])
+            if len(reports) >= 2 and len(uploads) >= 4:
+                break
+            time.sleep(0.05)
+        self.client.stop()
+        self.assertTrue(self.client.wait(5))
+
+        with self.state["lock"]:
+            reports = list(self.state["reports"])
+            uploads = list(self.state["uploads"])
+        self.assertEqual(len(reports), 2, reports)
+        self.assertEqual(sorted(str(item["job"]) for item in reports), ["job-a", "job-b"])
+        self.assertTrue(all(item["outcome"] == "saved" for item in reports), reports)
+        self.assertEqual(len(uploads), 4, uploads)
+        self.assertFalse((self.data_dir / "work" / "job-a").exists())
+        self.assertFalse((self.data_dir / "work" / "job-b").exists())
+
+        # 两间房必须落在两个不同账号上，不能挤同一个账号
+        accounts: dict[str, str] = {}
+        for kind, data in self.events:
+            if kind != "jobs":
+                continue
+            for job in data.get("jobs") or []:
+                if job.get("stage") == "done":
+                    accounts[job["id"]] = str(job.get("account") or "")
+        self.assertEqual(set(accounts), {"job-a", "job-b"})
+        self.assertEqual(set(accounts.values()), {"acct-1", "acct-2"})
 
     def test_test_connection_rejects_bad_token(self):
         # 当前假服务器不校验 token；这里验证成功分支的字段解析。
