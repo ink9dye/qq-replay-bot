@@ -63,3 +63,15 @@ class CaptureMonitorTests(unittest.TestCase):
             self.assertEqual(status['active_observations'],2)
             self.assertEqual(status['saved_games'],0)
             self.assertNotIn('account',status)
+
+    def test_remote_assigned_rooms_are_not_counted_again_as_waiting(self):
+        monitor=watch.CaptureMonitor()
+        rooms=[room(str(i)) for i in range(13)]
+        assigned={str(i):100 for i in range(11)}
+        waiting=monitor.candidates(rooms,rooms,{}, {},10,remote_until=assigned)
+        self.assertEqual(monitor.waiting,2)
+        self.assertEqual({r.key for r in waiting},{'11','12'})
+        monitor.candidates(rooms,rooms,{}, {},11,remote_until=assigned)
+        self.assertEqual(monitor.waiting,2)
+        monitor.candidates(rooms,rooms,{}, {},101,remote_until=assigned)
+        self.assertEqual(monitor.waiting,13)

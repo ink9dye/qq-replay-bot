@@ -2476,7 +2476,7 @@ class CaptureMonitor:
                            noreplay_observations=0, gone_silent=0, gone_stale=0)
         self.waiting = self.overflow = self.cooling = 0
 
-    def candidates(self, rooms, matched, active, cooldown, now, starts=None):
+    def candidates(self, rooms, matched, active, cooldown, now, starts=None, remote_until=None):
         """排队顺序：先按开局时间早的分组；同一 5 分钟窗口内的，按双方排名之和更小优先。"""
         matched = list({room.key:room for room in matched}.values())
         current = {r.key for r in rooms}
@@ -2490,7 +2490,8 @@ class CaptureMonitor:
                 self.rooms[room.key] = dict(first_seen=now, started=room.started, joined=False)
                 self.counts['discovered_rooms'] += 1
             self.rooms[room.key]['started'] |= room.started
-        pending = [r for r in matched if r.key not in active]
+        reserved = {key for key, until in (remote_until or {}).items() if until > now}
+        pending = [r for r in matched if r.key not in active and r.key not in reserved]
         self.cooling = sum(cooldown.get(r.key, 0) > now for r in pending)
         pending = [r for r in pending if cooldown.get(r.key, 0) <= now]
         starts = starts or {}
@@ -2856,6 +2857,7 @@ async def serve(
     remote_dispatched = 0
     remote_reported = 0
     remote_rooms: dict[str, float] = {}
+    remote_assigned_rooms: set[str] = set()
     last_remote_dispatch = 0.0
     silent_tracker = SilentWindowTracker()
     probation_enabled = config_flag(config, "probation_enabled", True) and gate.min_interval > 0
@@ -3140,8 +3142,12 @@ async def serve(
                 limit = min(limit, PROBATION_MAX_CONCURRENT)
             current_keys = {room.key for room in rooms}
             dead_rooms.intersection_update(current_keys)
-            matched = monitor.candidates(rooms, matched, active, cooldown_until, time.monotonic(), starts)
+            # Already assigned/reserved remote rooms are not a second waiting queue.
+            queue_now = time.monotonic()
+            remote_assigned_rooms.intersection_update(key for key, until in remote_rooms.items() if until > queue_now)
             matched = [room for room in matched if room.key not in dead_rooms]
+            assigned_until = {key:remote_rooms[key] for key in remote_assigned_rooms}
+            matched = monitor.candidates(rooms, matched, active, cooldown_until, queue_now, starts, remote_until=assigned_until)
             now = time.time()
             for room in matched:
                 if room.key in active or cooldown_until.get(room.key, 0) > time.monotonic():
@@ -3244,6 +3250,7 @@ async def serve(
                             if until <= now_remote:
                                 remote_rooms.pop(key, None)
                         remote_rooms[room.key] = now_remote + REMOTE_ROOM_TTL
+                        remote_assigned_rooms.add(room.key)
                         monitor.joined(room.key)
                         continue
                 if not local_watch:

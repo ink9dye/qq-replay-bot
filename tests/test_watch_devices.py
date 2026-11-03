@@ -47,13 +47,13 @@ class WatchDevicesTests(unittest.TestCase):
         s=dict(remote_ok=True,summary=dict(active=3,pending=2),workers=[dict(name='pc-a',online=True,active=2,capacity=6,ip='a')],ips=[dict(ip='a',limit=6,active=5)])
         games=[dict(players=['A','B'],worker='pc-a',received_at=1000)]
         text=format_status(s,games,dict(updated_at=1000,active_observations=1,waiting_rooms=7),1000)
-        self.assertIn('当前观战：4',text);self.assertIn('等待入场：7',text);self.assertIn('待认领任务：2',text)
+        self.assertIn('当前观战：4',text);self.assertIn('待派发对战：7',text);self.assertIn('派发中待接单：2',text)
         self.assertIn('当前最多再接 1',text);self.assertIn('来源：pc-a',text);self.assertIn('A vs B',text)
 
     def test_stale_metrics_are_not_displayed_as_zero_or_current(self):
         s=dict(remote_ok=False,workers=[],summary={},ips=[])
         text=format_status(s,[],{},1000)
-        self.assertIn('当前观战：未知',text);self.assertIn('等待入场：未知',text)
+        self.assertIn('当前观战：未知',text);self.assertIn('待派发对战：未知',text)
         self.assertIn('未把旧状态当作当前在线',text)
 
     def test_legacy_games_do_not_invent_source_or_receipt_time(self):
@@ -121,3 +121,10 @@ class WatchDevicesTests(unittest.TestCase):
                 self.assertIsNone(service.handle_text('10000','观战设备','group:99999'))
                 self.assertNotIn('观战设备：',service.handle_text('10000','帮助','group:99999'))
                 fetch.assert_called_once()
+
+    def test_explicit_empty_private_list_does_not_restore_default_owner(self):
+        from test_bot import temporary_service
+        with temporary_service() as service:
+            service.config['statistics']={'private_users':[]}
+            self.assertFalse(service._statistics_allowed('10000'))
+            self.assertIsNone(service.handle_text('10000','观战设备'))

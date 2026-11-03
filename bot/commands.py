@@ -56,6 +56,13 @@ def parse_command(text: str) -> dict:
     if not tokens:
         return {"op": "empty"}
     head, rest = tokens[0], tokens[1:]
+    if head == "统计对局":
+        value=" ".join(rest).strip()
+        ranked=re.fullmatch(r"前(100|200)\s*(内战)?",value)
+        if ranked:return {"op":"game_counts","limit":int(ranked[1]),"internal":bool(ranked[2])}
+        if value.startswith("前") and re.match(r"前\d+",value):return {"op":"error","message":"排名范围支持：前100、前200，可追加 内战。"}
+        if len(value)>80:return {"op":"error","message":"卡组关键词请控制在80字以内。"}
+        return {"op":"game_counts","keyword":value}
     if head == "观战设备":
         return {"op": "error", "message": "直接发送“观战设备”即可。"} if rest else {"op": "watch_devices"}
     if head == "历史":

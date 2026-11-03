@@ -275,7 +275,7 @@ class BotService:
         group = conversation.split(":", 1)[1] if conversation.startswith("group:") else ""
         if group:
             return group in {str(x) for x in (cfg.get("allowed_groups") or [])}
-        owners = {str(x) for x in (cfg.get("private_users") or ["1278389701"])}
+        owners = {str(x) for x in (cfg.get("private_users") or [])}
         return str(user_id) in owners
 
     def default_query_rule_line(self) -> str:
@@ -511,21 +511,24 @@ class BotService:
 
     def handle_text(self, user_id, text: str, conversation: str = "") -> str:
         user = str(user_id)
+        from .private_commands import dispatch
+        handled, private_reply = dispatch(self,user,text,conversation)
+        if handled:return private_reply
         command = parse_command(text)
         op = command.get("op")
-        if op in ("stats_page", "watch_devices") and not self._statistics_allowed(user, conversation):
+        if op in ("stats_page", "watch_devices", "game_counts") and not self._statistics_allowed(user, conversation):
             return None
         if not self.authorized(user):
             if command.get("op") == "help":
                 text = HELP
                 if not self._statistics_allowed(user, conversation):
-                    text = "\n".join(line for line in text.splitlines() if not line.startswith(("统计：", "观战设备：")))
+                    text = "\n".join(line for line in text.splitlines() if not line.startswith(("统计：", "观战设备：", "统计对局：")))
                 return text + "\n\n你还没有使用权限，不能订阅或查看录像。"
             return "你没有使用权限，不能订阅或查看录像。"
         if op == "help":
             text = HELP
             if not self._statistics_allowed(user, conversation):
-                text = "\n".join(line for line in text.splitlines() if not line.startswith(("统计：", "观战设备：")))
+                text = "\n".join(line for line in text.splitlines() if not line.startswith(("统计：", "观战设备：", "统计对局：")))
             return text
         if op == "empty":
             return "请发送“帮助”查看用法。"
@@ -588,6 +591,9 @@ class BotService:
             if count:
                 return f"已取消 {count} 条卡价预定：{label}。"
             return f"没有找到这条预定：{label}。"
+        if op == "game_counts":
+            from .game_counts import message
+            return message(self,command)
         if op == "watch_devices":
             from .watch_devices import device_message
             return device_message(self)

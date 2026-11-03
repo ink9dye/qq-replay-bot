@@ -51,7 +51,8 @@ class RankWindow:
         return {name:value for name,value in self.cache.items() if name not in known and 0<value[0]<=self.limit}
 
     def status(self):
-        return dict(automatic_rank_limit=self.limit,automatic_rank_mode='visible_players_official_rank',
+        return dict(rank_samples=[dict(player=name,rank=value[0],checked_at=value[1]) for name,value in list(self.cache.items())[:256] if 0<=self.clock()-value[1]<120],
+                    automatic_rank_limit=self.limit,automatic_rank_mode='visible_players_official_rank',
                     complete_top200_roster=False,rank_queries_pending=len(self.pending),rank_pause_seconds=max(0,int(self.pause_until-self.clock())),
                     rank_checks_cached=len(self.cache),rank_consecutive_failures=self.errors,rank_last_error=self.last_error)
 
