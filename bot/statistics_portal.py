@@ -150,7 +150,12 @@ class StatisticsPortal:
                 limit=int(args.get('limit',['50'])[0]);offset=int(args.get('offset',['0'])[0])
             except ValueError:return self._reply(400,'分页参数无效。')
             if len(query)>60:return self._reply(400,'搜索词过长。')
-            return self._cached_query_reply(('groups',query,limit,offset), lambda db:list_groups(db,self.database.parent,float(self.clock()),query,limit,offset), ttl=60.0)
+            # 配置一写（删除/加卡/阈值）就换了缓存键，避免删完立刻回读仍命中旧列表；
+            # 页面写入后的刷新会带 _ 时间戳，按完整查询串分键即可绕过旧结果。
+            try:
+                state=(self.database.parent/'series-naming.json').stat();config_stamp=(state.st_mtime_ns,state.st_size)
+            except OSError:config_stamp=None
+            return self._cached_query_reply(('groups',parsed.query,config_stamp), lambda db:list_groups(db,self.database.parent,float(self.clock()),query,limit,offset), ttl=60.0)
         if len(parts)==5 and parts[:4]==['statistics','api','deck-naming','groups']:
             from .series_naming_admin import group_detail
             from urllib.parse import unquote

@@ -165,11 +165,18 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
     import os
     db_path = db.execute('PRAGMA database_list').fetchone()[2] or ''
     try:
-        stamp = os.stat(db_path).st_mtime_ns
+        # WAL 模式下主库 mtime 可能滞后，-wal 也要算进来。
+        stamp = tuple(os.stat(path).st_mtime_ns if os.path.exists(path) else 0
+                      for path in (db_path, db_path + '-wal'))
     except OSError:
-        stamp = 0
+        stamp = (0, 0)
+    try:
+        revision = db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
+    except Exception:
+        revision = 0
     import time as _time
-    cache_key = (scope, query, deck_query, str(replay_root))
+    # 改名/重算会 +revision，新对局会改 -wal：两者都进缓存键，避免改名后 5 分钟看不到。
+    cache_key = (scope, query, deck_query, str(replay_root), stamp, revision)
     cached = _LIST_CACHE.get(cache_key)
     if cached is not None and _time.monotonic() - cached[0] <= 300:
         return cached[1]

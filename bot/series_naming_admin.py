@@ -257,6 +257,31 @@ def _resolve_terms(data_dir, terms):
     return codes
 
 
+def _same_name_codes(data_dir, codes):
+    """同一张卡的不同印刷/异画卡号：加回或移除时一起处理。
+
+    实际对局里同一张卡会出现不同卡号（如 88570003 与 88570004），只按一个卡号
+    增删会让“移除”残留另一个卡号，名字统计少算。
+    """
+    codes = {int(code) for code in codes}
+    try:
+        names = _names(data_dir)
+    except Exception:
+        return codes
+    wanted = set()
+    for code in codes:
+        text = ((names.get(str(code)) or {}).get('cn_name') or '').strip()
+        if text:
+            wanted.add(text)
+    if not wanted:
+        return codes
+    for key, entry in names.items():
+        text = (entry.get('cn_name') or '').strip()
+        if text in wanted and str(key).isdigit():
+            codes.add(int(key))
+    return codes
+
+
 def update_group(db, data_dir, now, payload):
     """组合编辑的保存入口；支持 save/create/rename/add_cards/remove_cards/thresholds。"""
     if not isinstance(payload, dict):
@@ -448,6 +473,7 @@ def update_group(db, data_dir, now, payload):
         raw[kind][index] = item
     elif op in ('add_cards', 'remove_cards'):
         codes = _resolve_terms(data_dir, payload.get('cards'))
+        group_codes = _same_name_codes(data_dir, codes)
         if kind is None:
             # 由官方映射派生出来的组第一次改动时，先把现有 sources 固化，避免丢成员。
             config = series_naming.load_config(data_dir)
@@ -460,17 +486,13 @@ def update_group(db, data_dir, now, payload):
         add = set(item.get('add') or [])
         remove = set(item.get('remove') or [])
         if op == 'add_cards':
+            remove.difference_update(group_codes)
             for code in codes:
-                if code in remove:
-                    remove.discard(code)
-                else:
-                    add.add(code)
+                add.add(code)
         else:
-            for code in codes:
-                if code in add:
-                    add.discard(code)
-                else:
-                    remove.add(code)
+            for code in group_codes:
+                add.discard(code)
+                remove.add(code)
         item['add'] = sorted(add)
         item['remove'] = sorted(remove)
         item['name'] = name

@@ -162,6 +162,53 @@ class AdminTests(unittest.TestCase):
         backups = list((self.data / 'config-backups').glob('series-naming.*.json'))
         self.assertTrue(backups)
 
+    def test_same_name_prints_are_removed_and_added_together(self):
+        self.save(dict(op='create', name='烙印', sources=['烙印']))
+        self.save(dict(op='remove_cards', name='烙印', cards=[68468459]))
+        raw = admin.load_raw(self.data)
+        group = next(item for item in raw['groups'] if item['name'] == '烙印')
+        self.assertEqual(sorted(group.get('remove') or []), [200, 68468459])
+        self.save(dict(op='add_cards', name='烙印', cards=[200]))
+        raw = admin.load_raw(self.data)
+        group = next(item for item in raw['groups'] if item['name'] == '烙印')
+        self.assertEqual(group.get('remove') or [], [])
+        detail = admin.group_detail(self.db, self.data, 1000.0, '烙印')
+        self.assertIn(200, [card['code'] for card in detail['cards']])
+
+    def test_group_list_cache_is_dropped_after_config_write(self):
+        from contextlib import closing
+        from bot.statistics_portal import StatisticsPortal
+        self.save(dict(op='create', name='烙印', sources=['烙印']))
+        database = self.data / 'bot.sqlite3'
+        with closing(sqlite3.connect(database)) as db:
+            db.executescript('''
+CREATE TABLE stat_current_top100(rank INTEGER,player TEXT,points REAL);
+CREATE TABLE stat_views(player TEXT,build TEXT,digest TEXT);
+CREATE TABLE stat_games(digest TEXT,recorded_at REAL,expires_at REAL);
+CREATE TABLE stat_builds(fingerprint TEXT,deck_type TEXT,classification_source TEXT,
+  classification_status TEXT,classification_version TEXT,classification_score REAL,main_complete INTEGER);
+CREATE TABLE stat_build_cards(build TEXT,partition TEXT,code INTEGER,copies INTEGER);
+''')
+            db.execute("INSERT INTO stat_current_top100 VALUES(1,'甲',1500)")
+            db.execute("INSERT INTO stat_views VALUES('甲','b1','d1')")
+            db.execute("INSERT INTO stat_games VALUES('d1',100.0,9999999999.0)")
+            db.execute("INSERT INTO stat_builds VALUES('b1',NULL,'unclassified','unknown',NULL,NULL,1)")
+            db.execute("INSERT INTO stat_build_cards VALUES('b1','main',100,3)")
+            db.commit()
+        portal = StatisticsPortal(database, self.data, lambda: 1000.0, 'x' * 43)
+        headers = {'Host': '127.0.0.1:8788', 'Cookie': 'qqstats_owner=' + portal._session(1600)}
+
+        def names():
+            status, _kind, body, _extra = portal.route('/statistics/api/deck-naming/groups?limit=50',
+                                                       headers, '127.0.0.1')
+            self.assertEqual(status, 200)
+            return [row['name'] for row in json.loads(body)['rows']]
+
+        self.assertIn('烙印', names())
+        self.assertIn('烙印', names())          # 第二次走 60 秒缓存
+        self.save(dict(op='delete', name='烙印'))
+        self.assertNotIn('烙印', names())       # 配置一写，缓存键变化，删掉就消失
+
 
 if __name__ == '__main__':
     unittest.main()
