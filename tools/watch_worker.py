@@ -105,8 +105,12 @@ def claim(server: str, token: str, name: str, capacity: int, wait: float = 15.0)
     raise RuntimeError(f"认领失败（HTTP {status}）：检查服务端 remote.enabled 与 worker.json 的 token")
 
 
-def heartbeat(server: str, token: str, name: str, active: list[str]) -> None:
-    _json_request(server, token, "/watch-api/heartbeat", dict(worker=name, active=active))
+def heartbeat(server: str, token: str, name: str, active: list[str] | None) -> None:
+    """active 为空时不要发送空列表：刚认领的任务可能还没登记，空列表会被服务器当成“已放弃”。"""
+    payload = dict(worker=name)
+    if active is not None:
+        payload["active"] = active
+    _json_request(server, token, "/watch-api/heartbeat", payload)
 
 
 def report(server: str, token: str, name: str, job_id: str, outcome: str, detail: dict) -> None:
@@ -323,7 +327,7 @@ def heartbeat_loop(server: str, token: str, name: str) -> None:
         with ACTIVE_LOCK:
             active = list(ACTIVE)
         try:
-            heartbeat(server, token, name, active)
+            heartbeat(server, token, name, active or None)
         except RuntimeError:
             pass
         STOP.wait(10.0)

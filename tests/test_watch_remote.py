@@ -150,6 +150,26 @@ class WorkerAccountRefreshTests(unittest.TestCase):
         self.assertEqual((state["secret"], state["nickname"]), (8, "new"))
 
 
+class HeartbeatPayloadTests(unittest.TestCase):
+    def test_empty_active_is_omitted(self):
+        captured = {}
+        original = watch_worker._json_request
+
+        def fake(server, token, path, payload):
+            captured.clear()
+            captured.update(payload)
+            return 200, {}
+
+        watch_worker._json_request = fake
+        try:
+            watch_worker.heartbeat("s", "t", "pc-a", None)
+            self.assertNotIn("active", captured)
+            watch_worker.heartbeat("s", "t", "pc-a", ["job-1"])
+            self.assertEqual(captured["active"], ["job-1"])
+        finally:
+            watch_worker._json_request = original
+
+
 class JoinPacingTests(unittest.TestCase):
     def test_join_pacing_spaces_connections(self):
         old = (watch_worker.JOIN_MIN_INTERVAL, watch_worker.JOIN_JITTER, watch_worker.LAST_JOIN_AT)

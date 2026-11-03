@@ -81,7 +81,7 @@ python tools/watch_worker.py --config tools/worker.json
   "server": "http://101.201.108.188:8787",
   "token": "<remote.token，不要复用其它 token>",
   "name": "pc-a",
-  "capacity": 6,
+  "capacity": 1,
   "account": "<本机萌卡账号>",
   "password": "<本机萌卡密码>",
   "work_dir": ""
@@ -102,6 +102,10 @@ python tools/watch_worker.py --config tools/worker.json
   worker 按房间同时只录一份，且 30 分钟内不重复录，重复任务直接回 `noreplay + duplicate`。
 - **客户端进场节流**：服务器派发绕过本地 `JoinGate`（不占 `in_flight`、不更新 20 秒间隔），
   worker 自己补：两次新连接至少隔 20 秒 + 0–5 秒抖动，避免几秒内连进多间被平台判异常。
+- **一个账号同一时刻只能看一间房**：MyCard 的 `mycard-spectator-replay` 会对
+  `blockedByMultipleRooms` 直接拒发回放（`CLIENT_send_replays()` 返回 false）。因此
+  `worker.json` 的 `capacity` 固定 **1**；要 6 路就起 **6 个 worker / 6 个账号**，
+  不要用一个账号 `capacity 6`。2026-11-03 实测：单账号单间能收到 3 个小局回放并入库。
 
 ## 5. 容量与账号的对应规则（用户口径）
 
@@ -113,8 +117,14 @@ python tools/watch_worker.py --config tools/worker.json
 
 即：观战端数量 = min(可用公网 IP 数 - 1, 账号数)；-1 是留给主服务器的出口。
 
-多账号 = 每台机器/每个 `worker.json` 写自己的 `account/password`；一个进程只用一个
-账号，避免同账号多端同时刷新 u16Secret 互相顶掉。
+> **2026-11-03 新增账号并发上限**：一个萌卡账号同一时刻只能观战 **1 间房**。同一账号同时
+> 看多间会被 MyCard 标记 `blockedByMultipleRooms`，服务端不再下发任何回放。因此“观战端
+> 数量”实际上也 = **可用账号数**：6 路需要 6 个账号。对 collector 同样成立——本地用
+> 一个账号看 6–8 间也拿不到回放；要么把本地并发降到 1，要么改成“collector 只发现/派发 +
+> 多账号 worker 各看一间”。
+
+多账号 = 每台机器/每个 `worker.json` 写自己的 `account/password`；一个进程一个账号、
+一间房；同账号多端还会互相顶 u16Secret，并触发上面的回放屏蔽。
 
 ## 6. 安全注意
 
