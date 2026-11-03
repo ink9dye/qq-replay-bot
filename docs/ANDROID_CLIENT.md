@@ -5,6 +5,19 @@
 
 先读接口契约：[REMOTE_WATCH.md](REMOTE_WATCH.md)。本文补充工程落地、安卓注意事项和验收清单。
 
+## 0. 一页纸：你只需要做这些
+
+1. 向服务器管理员要 `remote.token`（安全渠道）和一个**你自己的**萌卡账号；不要用服务器/云端账号。
+2. clone/fork 仓库，读 `docs/REMOTE_WATCH.md` + 本文；参考 `tools/watch_worker.py`。
+3. 做一个前台服务：`claim` → 本机 `sign_in`/算口令 → 进房 → 存 `.yrp` → `upload` → `report`；
+   心跳每 10 秒。
+4. 先在 PC 上用 `tools/watch_worker.py` 跑通同一个账号，再装 APK。
+5. 把 **唯一的 worker 名**（如 `android-<你的名字>`）和测试时间发给管理员，让他确认
+   `/watch-api/status`、`data/replays/<focus>/` 和统计库入库。
+6. 交付 APK/源码 + 一局完整测试日志；日志/源码里不能有 token、账号密码。
+
+> 服务端已经部署好，你**不需要**动 `/opt/ygobot`、不需要重启 collector、不需要数据库权限。
+
 ## 1. 目标与边界
 
 安卓端是一个**远程观战客户端**：
@@ -25,6 +38,9 @@
 | 萌卡账号 | 你自己的账号，账号密码只存手机本地（Android Keystore/私有存储） |
 | 公网 IP | 手机所在网络的公网 IP；服务器按这个 IP 限并发（单 IP 7，多 IP 时每个 IP 各自 6） |
 | 参考代码 | `watch.py`（协议/录像核心）、`tools/watch_worker.py`（完整客户端流程） |
+
+> `worker` 名必须唯一（如 `android-pixel8`）。服务器用 worker 名区分客户端；两个设备重名会
+> 互相覆盖 `active`/容量，表现为“领不到任务”或统计异常。
 
 > 不要把服务器 `config.json` 里的 `mycard` 账号给安卓端用；云端客户端已经占了它。
 > 也不要把同一个账号同时给两个客户端，否则 MyCard 会拒发回放，且 u16Secret 会互顶。
@@ -161,6 +177,7 @@ loop:
 
 | 点 | 建议 |
 |---|---|
+| 权限 | `INTERNET`、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_DATA_SYNC`（Android 14+）、`WAKE_LOCK`、`POST_NOTIFICATIONS`（13+） |
 | 前台服务 | 用 `ForegroundService`，常驻通知；否则 Doze 会杀长轮询/连接 |
 | 网络 | `usesCleartextTraffic=true` 或 network-security-config 只放行 `101.201.108.188:8787`（当前是 HTTP，无 TLS） |
 | 超时 | claim 读超时 25s；upload 60s；连接/读包参考 `watch.py` 的 10s/120s |
@@ -214,6 +231,22 @@ python tools/watch_worker.py --config tools/worker-android.json --name android-t
 | `tools/worker.example.json` | 客户端配置模板 |
 | `deploy/ygo-cloud-watch.service` | 服务器云端客户端单元（安卓不需要部署这个） |
 | `tests/test_watch_jobs.py` | 任务板/并发上限的测试，可看边界行为 |
+
+## 10. 交付与回传
+
+完成后给服务器管理员：
+
+- APK（或源码仓库链接）；
+- **唯一的 worker 名**（如 `android-pixel8`）和一局完整测试的时间；
+- 脱敏后的客户端日志（证明 `claim`/进房/`upload`/`report`）；
+- 不要回传 token、萌卡账号密码、`worker-*.json`。
+
+管理员侧确认：
+
+- `/watch-api/status` 里出现该 worker，`ip` 正确、`active` 归零；
+- `journalctl -u ygo-collector` 有 `已派发远程观战 ... → <worker>`；
+- `data/replays/<focus>/` 有新 `.yrp`，`replays`/`stat_games`/`stat_views` 入库。
+
 
 有问题先看 `REMOTE_WATCH.md` 的接口和本文第 7 节；仍不通就把**脱敏后的**日志、worker 名、
 `/watch-api/status` 输出发给服务器管理员，不要发 token/账号密码。
