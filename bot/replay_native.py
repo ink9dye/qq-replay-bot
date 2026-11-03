@@ -625,7 +625,7 @@ class Core:
         self.errors: list[str] = []
         self.script_hashes = {}
         self.missing_scripts = set()
-        self.lib = ctypes.WinDLL(str(dll))
+        self.lib = (getattr(ctypes, 'WinDLL', None) or ctypes.CDLL)(str(dll))
         self._bind()
         self.script_buf = ctypes.create_string_buffer(0x100000)
         self._script_cb = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_int))(self._read_script)

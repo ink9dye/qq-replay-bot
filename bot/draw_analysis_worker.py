@@ -97,8 +97,9 @@ def _unlock(handle):
 
 
 def engine_ready(root=None):
-    """本机能否真正解析录像：ocgcore.dll 是 Windows PE，只有 Windows 能加载。"""
-    return os.name == 'nt' and ((Path(root) if root else ROOT) / 'runtime' / 'ocgcore.dll').is_file()
+    """本机能否真正解析录像：Windows 用 runtime/ocgcore.dll，其它平台用 runtime/ocgcore.so。"""
+    base = Path(root) if root else ROOT
+    return (base / 'runtime' / ('ocgcore.dll' if os.name == 'nt' else 'ocgcore.so')).is_file()
 
 
 def start_worker(root):
@@ -111,7 +112,7 @@ def start_worker(root):
     if not engine_ready():
         # 没有引擎时每条录像都会解析失败，而失败 sidecar 会被当成“已尝试、永不重试”，
         # 等于把整段历史永久标死；所以宁可不启动，只留一行说明。
-        print('draw-analysis 未启动：本机没有可用的解析引擎（runtime/ocgcore.dll，仅 Windows）', file=sys.stderr)
+        print('draw-analysis 未启动：本机没有可用的解析引擎（runtime/ocgcore.dll 或 runtime/ocgcore.so）', file=sys.stderr)
         return stop
     def loop():
         # OS lock is released on process exit. It stores no replay/player facts.

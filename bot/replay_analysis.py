@@ -159,7 +159,7 @@ def fill_draws(report, events, complete=False, source='native_replay'):
 
 def analyze(path, game_root, dll=None, timeout=25):
     path, game_root = Path(path), Path(game_root)
-    dll = Path(dll) if dll else ROOT / 'runtime/ocgcore.dll'
+    dll = Path(dll) if dll else ROOT / ('runtime/ocgcore.dll' if os.name == 'nt' else 'runtime/ocgcore.so')
     report = {'version': VERSION, 'digest': digest_file(path), 'file': path.name,
               'analyzed_at': time.time(), 'playback': 'failed', 'result': 'unknown',
               'winner': None, 'result_source': None, 'first_player': None,
