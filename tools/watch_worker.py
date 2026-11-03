@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import random
 import signal
 import sys
 import tempfile
@@ -40,6 +41,11 @@ ROOM_LOCK = threading.Lock()
 ROOM_ACTIVE: set[str] = set()
 ROOM_SEEN: dict[str, float] = {}
 ROOM_DEDUPE_SECONDS = 1800.0
+# 服务器派发绕过了本地 JoinGate，客户端自己补进场节流：两次新连接至少隔 20 秒 + 0–5 秒抖动。
+JOIN_LOCK = threading.Lock()
+LAST_JOIN_AT = 0.0
+JOIN_MIN_INTERVAL = 20.0
+JOIN_JITTER = 5.0
 ACCOUNT_LOCK = threading.Lock()
 ACCOUNT_SIGNIN_LOCK = threading.Lock()
 # 只在本机内存里保存登录结果；密码不会写日志，也不会进任务上报。
@@ -227,6 +233,16 @@ def _room_release(key: str) -> None:
         ROOM_SEEN[key] = time.time()
 
 
+def _pace_join() -> None:
+    """串行化"进新房间"的时刻，避免 capacity>1 时几秒内连进多间被平台判异常。"""
+    global LAST_JOIN_AT
+    with JOIN_LOCK:
+        wait = (LAST_JOIN_AT + JOIN_MIN_INTERVAL + random.uniform(0.0, JOIN_JITTER)) - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        LAST_JOIN_AT = time.time()
+
+
 def run_job(server: str, token: str, name: str, job: dict, work_dir: Path, creds: dict) -> None:
     job_id = str(job.get("id") or "")
     room = _room_from_job(job)
@@ -275,6 +291,7 @@ def run_job(server: str, token: str, name: str, job: dict, work_dir: Path, creds
             print(f"[worker] 跳过重复任务 {job_id}：{room_key} 已在录/刚录过（{why}）", flush=True)
             outcome = "noreplay"
             return
+        _pace_join()
         outcome = asyncio.run(spectator.run()) or "failed"
     except Exception as exc:  # 远程端任何异常都只影响这一局
         error = f"{type(exc).__name__}: {exc}"[:200]

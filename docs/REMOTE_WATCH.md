@@ -100,6 +100,8 @@ python tools/watch_worker.py --config tools/worker.json
 - 心跳每 10 秒，任务租期内未 report 会被服务器收回；长轮询 `wait` 用 15 秒（小于 HTTP 20 秒超时）。
 - **客户端房间去重**：服务器派发没有"已派发"去重，capacity>1 时同一 `room.key` 可能被连续派两次；
   worker 按房间同时只录一份，且 30 分钟内不重复录，重复任务直接回 `noreplay + duplicate`。
+- **客户端进场节流**：服务器派发绕过本地 `JoinGate`（不占 `in_flight`、不更新 20 秒间隔），
+  worker 自己补：两次新连接至少隔 20 秒 + 0–5 秒抖动，避免几秒内连进多间被平台判异常。
 
 ## 5. 容量与账号的对应规则（用户口径）
 

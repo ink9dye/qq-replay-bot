@@ -150,6 +150,21 @@ class WorkerAccountRefreshTests(unittest.TestCase):
         self.assertEqual((state["secret"], state["nickname"]), (8, "new"))
 
 
+class JoinPacingTests(unittest.TestCase):
+    def test_join_pacing_spaces_connections(self):
+        old = (watch_worker.JOIN_MIN_INTERVAL, watch_worker.JOIN_JITTER, watch_worker.LAST_JOIN_AT)
+        watch_worker.JOIN_MIN_INTERVAL = 0.05
+        watch_worker.JOIN_JITTER = 0.0
+        watch_worker.LAST_JOIN_AT = 0.0
+        try:
+            started = time.time()
+            watch_worker._pace_join()
+            watch_worker._pace_join()
+            self.assertGreaterEqual(time.time() - started, 0.045)
+        finally:
+            watch_worker.JOIN_MIN_INTERVAL, watch_worker.JOIN_JITTER, watch_worker.LAST_JOIN_AT = old
+
+
 class RoomDedupeTests(unittest.TestCase):
     def setUp(self):
         with watch_worker.ROOM_LOCK:
