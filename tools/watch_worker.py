@@ -184,19 +184,32 @@ def heartbeat_loop(server: str, token: str, name: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="远程观战端")
-    parser.add_argument("--server", required=True, help="服务器地址，例如 http://101.201.108.188:8787")
-    parser.add_argument("--token", required=True, help="watch.remote.token")
-    parser.add_argument("--name", required=True, help="本机名字，例 pc-a")
-    parser.add_argument("--capacity", type=int, default=1, help="同时观战几路（默认 1）")
+    parser.add_argument("--config", default="", help="worker.json（推荐）；命令行参数可覆盖")
+    parser.add_argument("--server", default="", help="服务器地址，例如 http://101.201.108.188:8787")
+    parser.add_argument("--token", default="", help="watch.remote.token")
+    parser.add_argument("--name", default="", help="本机名字，例 pc-a")
+    parser.add_argument("--capacity", type=int, default=0, help="同时观战几路（默认 1）")
     parser.add_argument("--work-dir", default="", help="临时目录，默认系统临时目录")
     parser.add_argument("--once", action="store_true", help="只领一个任务就退出（调试用）")
     args = parser.parse_args()
 
-    name = args.name.strip()[:64]
-    capacity = max(1, min(16, int(args.capacity or 1)))
-    work_root = Path(args.work_dir) if args.work_dir else Path(tempfile.mkdtemp(prefix="ygowatch-"))
+    cfg = {}
+    if args.config:
+        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            raise SystemExit("worker.json 必须是对象")
+    server = (args.server or cfg.get("server") or "").strip()
+    token = (args.token or cfg.get("token") or "").strip()
+    name = (args.name or cfg.get("name") or "").strip()[:64]
+    capacity = int(args.capacity or cfg.get("capacity") or 1)
+    work_dir = args.work_dir or cfg.get("work_dir") or ""
+    if not server or not token or not name:
+        raise SystemExit("缺少 server/token/name（命令行或 worker.json）")
+
+    capacity = max(1, min(16, capacity))
+    work_root = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="ygowatch-"))
     work_root.mkdir(parents=True, exist_ok=True)
-    print(f"[worker] {name} 连接 {args.server}，并发 {capacity}，临时目录 {work_root}", flush=True)
+    print(f"[worker] {name} 连接 {server}，并发 {capacity}，临时目录 {work_root}", flush=True)
 
     def _stop(signum, frame):
         STOP.set()
@@ -204,7 +217,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
 
-    threading.Thread(target=heartbeat_loop, args=(args.server, args.token, name),
+    threading.Thread(target=heartbeat_loop, args=(server, token, name),
                      daemon=True, name="heartbeat").start()
     pool = ThreadPoolExecutor(max_workers=capacity, thread_name_prefix="job")
     errors = 0
@@ -215,7 +228,7 @@ def main() -> int:
             STOP.wait(1.0)
             continue
         try:
-            job = claim(args.server, args.token, name, capacity)
+            job = claim(server, token, name, capacity)
             errors = 0
         except RuntimeError as exc:
             errors += 1
@@ -228,7 +241,7 @@ def main() -> int:
         job_id = str(job.get("id") or "")
         with ACTIVE_LOCK:
             ACTIVE[job_id] = dict(room=(job.get("room") or {}).get("key", ""), at=time.time())
-        pool.submit(run_job, args.server, args.token, name, job, work_root)
+        pool.submit(run_job, server, token, name, job, work_root)
         if args.once:
             break
     pool.shutdown(wait=True)

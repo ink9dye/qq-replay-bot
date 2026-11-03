@@ -2759,6 +2759,12 @@ async def serve(
     writer.on_session = on_session
     remote = None
     remote_cfg = config.get("remote") if isinstance(config.get("remote"), dict) else {}
+    if not remote_cfg:
+        try:
+            raw_cfg = json.loads((Path(config.get("root") or "/opt/ygobot") / "config.json").read_text(encoding="utf-8"))
+            remote_cfg = raw_cfg.get("remote") if isinstance(raw_cfg.get("remote"), dict) else {}
+        except (OSError, ValueError):
+            remote_cfg = {}
     if remote_cfg.get("enabled"):
         from bot.watch_jobs import RemoteJobs
         from bot.watch_api import WatchApiServer

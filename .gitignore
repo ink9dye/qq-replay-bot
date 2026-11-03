@@ -30,3 +30,4 @@ statistics-owner.key
 *.pem
 *.key
 secrets*
+tools/worker.json
