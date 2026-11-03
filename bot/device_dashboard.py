@@ -7,6 +7,12 @@ import urllib.request
 from contextlib import closing
 from pathlib import Path
 
+# Upper bound on replay rows inspected for the ingest summary. The replays table
+# keeps 14 days (a few thousand rows), so this covers far more than 24 hours while
+# never scanning the multi-million-row statistics tables.
+MAX_INGEST_ROWS=4000
+HOURLY_BUCKETS=24
+
 
 class DeviceDashboard:
     def __init__(self, database, replay_root, token='', fetch=None, clock=time.time, include_recordings=True):
@@ -50,6 +56,30 @@ class DeviceDashboard:
                 focus=[row['focus_player']],recorded_at=row['recorded_at'],saved_at=row['saved_at'])
         return list(games.values())
 
+    def _ingest(self, now):
+        """When the last replay was ingested and how many landed per hour (24h).
+
+        Read-only and bounded by primary-key tail: no sorting of the full table.
+        """
+        with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=1)) as db:
+            rows=db.execute('SELECT saved_at FROM replays WHERE saved_at IS NOT NULL '
+                            'ORDER BY id DESC LIMIT '+str(MAX_INGEST_ROWS)).fetchall()
+        stamps=[float(row[0]) for row in rows if row[0] is not None]
+        last=max(stamps) if stamps else None
+        cutoff=now-HOURLY_BUCKETS*3600
+        hour_start=int(now//3600)*3600
+        buckets={hour_start-index*3600:0 for index in range(HOURLY_BUCKETS)}
+        for value in stamps:
+            if value<cutoff: continue
+            key=int(value//3600)*3600
+            if key in buckets: buckets[key]+=1
+        return dict(last_saved_at=last,
+                    age_seconds=max(0.0,now-last) if last is not None else None,
+                    count_1h=sum(1 for value in stamps if value>=now-3600),
+                    count_6h=sum(1 for value in stamps if value>=now-6*3600),
+                    count_24h=sum(1 for value in stamps if value>=cutoff),
+                    hourly=[dict(t=key,n=buckets[key]) for key in sorted(buckets)])
+
     def snapshot(self):
         with self._lock:
             now=self.clock()
@@ -75,8 +105,11 @@ class DeviceDashboard:
             workers.sort(key=lambda item:(not item['online'],item['name']))
             ip_cap=int(self._remote.get('ip_cap') or 0)
             for group in ips.values(): group['limit']=min(group['capacity'],ip_cap) if ip_cap else group['capacity']
-            try: recordings=self._recordings() if self.include_recordings else [];recordings_ok=True
-            except (OSError,sqlite3.Error): recordings=[];recordings_ok=False
+            try:
+                recordings=self._recordings() if self.include_recordings else []
+                ingest=self._ingest(now) if self.include_recordings else None
+                recordings_ok=True
+            except (OSError,sqlite3.Error): recordings=[];ingest=None;recordings_ok=False
             online=[row for row in workers if row['online']]
             raw_stats=self._remote.get('stats') or {}
             result=dict(generated_at=now,status_at=self._status_at,remote_ok=remote_ok,
@@ -85,6 +118,6 @@ class DeviceDashboard:
                 summary=dict(online=len(online),active=sum(row['active'] for row in online),
                     capacity=sum(row['limit'] for row in ips.values()),pending=int(self._remote.get('pending') or 0)),
                 stats={key:int(raw_stats.get(key) or 0) for key in ('offered','claimed','reported','unclaimed','expired','uploaded','failed')},
-                recordings=recordings,recordings_ok=recordings_ok)
+                recordings=recordings,recordings_ok=recordings_ok,ingest=ingest)
             self._cached=result;self._cached_at=now
             return result

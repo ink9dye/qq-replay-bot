@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock
 from bot.device_dashboard import DeviceDashboard
@@ -11,9 +12,10 @@ class DeviceDashboardTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.database=self.root/'bot.sqlite3'
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db:
             db.execute('CREATE TABLE replays (id INTEGER PRIMARY KEY,digest TEXT,focus_player TEXT,players_json TEXT,recorded_at REAL,saved_at REAL)')
             db.executemany('INSERT INTO replays VALUES (?,?,?,?,?,?)',[(1,'same','A','["A","B"]',900,950),(2,'same','B','["A","B"]',900,951)])
+            db.commit()
         self.now=1000
         self.fetch=Mock(return_value=dict(ok=True,workers={'a':dict(ip='1.2.3.4',online=True,active=2,capacity=6),'b':dict(ip='1.2.3.4',online=True,active=3,capacity=6),'old':dict(ip='5.6.7.8',online=False,active=4,capacity=6)},ip_cap=6,pending=1,token='DO_NOT_EXPOSE'))
         self.dashboard=DeviceDashboard(self.database,self.root,token='SECRET',fetch=self.fetch,clock=lambda:self.now)
@@ -44,6 +46,41 @@ class DeviceDashboardTests(unittest.TestCase):
     def test_database_failure_is_not_reported_as_empty_history(self):
         self.database.unlink();s=self.dashboard.snapshot()
         self.assertFalse(s['recordings_ok']);self.assertTrue(s['remote_ok'])
+        self.assertIsNone(s['ingest'])
+
+    def test_ingest_summary_uses_bounded_tail_and_hour_buckets(self):
+        now=1000000
+        database=self.root/'ingest.sqlite3'
+        with closing(sqlite3.connect(database)) as db:
+            db.execute('CREATE TABLE replays (id INTEGER PRIMARY KEY,digest TEXT,focus_player TEXT,'
+                       'players_json TEXT,recorded_at REAL,saved_at REAL)')
+            db.executemany('INSERT INTO replays VALUES (?,?,?,?,?,?)',
+                [(1,'a','A','["A"]',0,now-120),(2,'b','B','["B"]',0,now-3600),(3,'c','C','["C"]',0,now-2*3600),
+                 (4,'d','D','["D"]',0,now-30*3600),(5,'e','E','["E"]',0,None)])
+            db.commit()
+        dashboard=DeviceDashboard(database,self.root,fetch=lambda:dict(ok=True),clock=lambda:now)
+        ingest=dashboard.snapshot()['ingest']
+        self.assertEqual(ingest['last_saved_at'],now-120)
+        self.assertAlmostEqual(ingest['age_seconds'],120)
+        self.assertEqual(ingest['count_1h'],2);self.assertEqual(ingest['count_6h'],3);self.assertEqual(ingest['count_24h'],3)
+        self.assertEqual(len(ingest['hourly']),24)
+        self.assertEqual(sum(row['n'] for row in ingest['hourly']),3)
+        self.assertEqual(ingest['hourly'][-1]['t'],(now//3600)*3600)
+        self.assertEqual(ingest['hourly'][-1]['n'],1)
+
+    def test_ingest_without_replays_is_not_a_fake_zero_time(self):
+        dashboard=DeviceDashboard(self.root/'empty.sqlite3',self.root,fetch=lambda:dict(ok=True),clock=lambda:1000)
+        with closing(sqlite3.connect(self.root/'empty.sqlite3')) as db:
+            db.execute('CREATE TABLE replays (id INTEGER PRIMARY KEY,digest TEXT,focus_player TEXT,'
+                       'players_json TEXT,recorded_at REAL,saved_at REAL)')
+            db.commit()
+        ingest=dashboard.snapshot()['ingest']
+        self.assertIsNone(ingest['last_saved_at']);self.assertIsNone(ingest['age_seconds'])
+        self.assertEqual(ingest['count_1h'],0);self.assertEqual(len(ingest['hourly']),24)
+
+    def test_uploaded_counter_reaches_the_page_payload(self):
+        self.fetch.return_value=dict(ok=True,workers={},stats=dict(offered=3,claimed=2,reported=1,uploaded=4,failed=1))
+        self.assertEqual(self.dashboard.snapshot()['stats']['uploaded'],4)
 
     def test_owner_auth_and_redirect_allowlist(self):
         p=StatisticsPortal(self.database,self.root,lambda:self.now,'x'*43);p.device_dashboard=self.dashboard
