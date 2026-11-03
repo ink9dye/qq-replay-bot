@@ -11,6 +11,7 @@ from pathlib import Path
 # keeps 14 days (a few thousand rows), so this covers far more than 24 hours while
 # never scanning the multi-million-row statistics tables.
 MAX_INGEST_ROWS=4000
+MAX_RECENT_ROWS=40
 HOURLY_BUCKETS=24
 
 
@@ -79,6 +80,30 @@ class DeviceDashboard:
                     count_6h=sum(1 for value in stamps if value>=now-6*3600),
                     count_24h=sum(1 for value in stamps if value>=cutoff),
                     hourly=[dict(t=key,n=buckets[key]) for key in sorted(buckets)])
+
+    def _recent(self, limit):
+        """最新入库的小局（只读、主键尾部有界），给 QQ 状态命令用。"""
+        with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=1)) as db:
+            rows=db.execute('SELECT id,digest,focus_player,players_json,recorded_at,saved_at '
+                            'FROM replays ORDER BY id DESC LIMIT '+str(MAX_RECENT_ROWS)).fetchall()
+        games=[];seen=set()
+        for _id,digest,_focus,players_json,recorded_at,saved_at in rows:
+            if digest in seen: continue
+            seen.add(digest)
+            try: players=json.loads(players_json)
+            except (TypeError,ValueError): players=[]
+            games.append(dict(digest=digest,players=players if isinstance(players,list) else [],
+                              recorded_at=recorded_at,saved_at=saved_at))
+            if len(games)>=max(1,int(limit)): break
+        return games
+
+    def activity(self, limit=9):
+        """QQ 状态命令用的有界快照：最近入库时间/场次 + 最新小局；失败返回 None。"""
+        now=self.clock()
+        try:
+            return dict(ingest=self._ingest(now),games=self._recent(limit))
+        except (OSError,sqlite3.Error):
+            return None
 
     def snapshot(self):
         with self._lock:

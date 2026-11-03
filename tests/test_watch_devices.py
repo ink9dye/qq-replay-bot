@@ -56,6 +56,28 @@ class WatchDevicesTests(unittest.TestCase):
         self.assertIn('正在观战：未知',text);self.assertIn('等待观战：未知',text)
         self.assertIn('未把旧状态当作当前在线',text)
 
+    def test_activity_line_and_stall_warning(self):
+        s=dict(remote_ok=True,summary=dict(active=2,pending=0),
+               workers=[dict(name='pc-a',online=True,active=1,capacity=2,ip='a')],
+               ips=[dict(ip='a',limit=2,active=1)])
+        activity=dict(ingest=dict(last_saved_at=1000,count_1h=0,count_24h=3),games=[])
+        text=format_status(s,[],{},1000+3600,activity)
+        self.assertIn('最近入库：',text);self.assertIn('近 24 小时 3 场',text)
+        self.assertIn('没有新录像入库',text);self.assertIn('同账号多房间',text)
+        fresh=format_status(s,[],{},1000+60,activity)
+        self.assertNotIn('没有新录像入库',fresh)
+
+    def test_database_fallback_games_when_receipts_missing(self):
+        stored=[dict(digest='d1',players=['A','B'],saved_at=900,recorded_at=880),
+                dict(digest='d2',players=['C','D'],saved_at=950,recorded_at=930)]
+        games=recent_games(self.root,[],stored)
+        self.assertEqual([g['digest'] for g in games],['d1','d2'])
+        self.assertEqual(games[0]['worker'],'数据库入库（来源未记录）')
+        text=format_status(dict(remote_ok=False),games,{},1000)
+        self.assertIn('最近收到 / 入库的小局（2/9',text)
+        self.assertIn('来源：数据库入库（来源未记录）',text)
+        self.assertIn('录制 ',text)
+
     def test_legacy_games_do_not_invent_source_or_receipt_time(self):
         g=recent_games(self.root,[dict(digest='old',players=['A','B'],saved_at=900)])
         text=format_status(dict(remote_ok=False),g,{},1000)
