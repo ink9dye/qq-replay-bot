@@ -757,19 +757,19 @@ class BotService:
             ydk_note = '（推测 Side 有冲突，未并入）'
         ydk_line = (f"YDK：{ydk_url}{ydk_note}" if public_ready and ydk_url
                     else "YDK：公网暂未连接，链接暂不可用（构筑图仍见下）")
-        from .statistics_local_cards import picture, wait_for
+        from .statistics_local_cards import thumb_picture, wait_for_thumbs
         from . import deck_image
 
         image_codes = [int(card.get('code') or 0) for card in
                        (result.get('cards') or []) + ((result.get('inferred_side') or {}).get('cards') or [])]
-        wait_for(self.data_dir, image_codes, timeout=12)
+        wait_for_thumbs(self.data_dir, image_codes, timeout=4)
 
         def load(code):
-            found = picture(self.data_dir, code)
-            return found[0] if found else None
+            return thumb_picture(self.data_dir, code)
 
+        image_stats = {}
         try:
-            blob = deck_image.render(result, load)
+            blob = deck_image.render(result, load, stats=image_stats)
         except Exception:
             return f"构筑图生成失败；YDK 可从这里下载：{ydk_url}"
         image_url = 'base64://' + base64.b64encode(blob).decode('ascii')
@@ -787,9 +787,11 @@ class BotService:
                 if link.get('expires_at') else
                 f"{ydk_line}\n构筑图见下")
         reply = CardReply(text, image_url)
-        self._deck_cache[cache_key] = (time.monotonic(), reply)
-        while len(self._deck_cache) > 32:
-            self._deck_cache.pop(next(iter(self._deck_cache)))
+        # 有缺图时不进 1 小时缓存：否则同一张缺图会被反复返回，直到缓存过期。
+        if not image_stats.get('missing'):
+            self._deck_cache[cache_key] = (time.monotonic(), reply)
+            while len(self._deck_cache) > 32:
+                self._deck_cache.pop(next(iter(self._deck_cache)))
         return reply
 
     def _replay_text(self, user_id: str, player: str) -> str:

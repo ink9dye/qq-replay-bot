@@ -19,7 +19,12 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
     metadata = capture_metadata(db, {r['digest'] for r in rows})
     explicit_capture = set()
     import json
-    for evidence in db.execute('SELECT digest,payload_json FROM stat_evidence'):
+    row_digests = tuple({r['digest'] for r in rows})
+    evidence_rows = ()
+    if row_digests:
+        marks = ','.join('?' * len(row_digests))
+        evidence_rows = db.execute('SELECT digest,payload_json FROM stat_evidence WHERE digest IN (' + marks + ')', row_digests)
+    for evidence in evidence_rows:
         try:
             capture = json.loads(evidence['payload_json']).get('capture')
             if isinstance(capture,dict) and ('session_id' in capture or 'game_no' in capture): explicit_capture.add(evidence['digest'])
@@ -34,12 +39,16 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
             metadata[d] = next(iter(values))
     builds = {r['build'] for r in rows}
     cards = {build: [] for build in builds}
-    for r in db.execute('SELECT build,partition,code,copies FROM stat_build_cards ORDER BY partition,code'):
-        if r['build'] in cards:
+    if builds:
+        marks = ','.join('?' * len(builds))
+        for r in db.execute('SELECT build,partition,code,copies FROM stat_build_cards '
+                            'WHERE build IN (' + marks + ') ORDER BY partition,code', tuple(builds)):
             cards[r['build']].append(dict(partition=r['partition'], code=r['code'], copies=r['copies']))
     pairs = {}
-    for opponent in db.execute('SELECT digest,player FROM stat_views'):
-        pairs.setdefault(opponent['digest'], []).append(opponent['player'])
+    if row_digests:
+        marks = ','.join('?' * len(row_digests))
+        for opponent in db.execute('SELECT digest,player FROM stat_views WHERE digest IN (' + marks + ')', row_digests):
+            pairs.setdefault(opponent['digest'], []).append(opponent['player'])
     for row in rows:
         row['_pair'] = tuple(sorted(pairs.get(row['digest'], [])))
     from .card_identity import reference
@@ -110,9 +119,11 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
     from .statistics_recording_names import decorate
     decorate(db,matches)
     view_deck_types = {}
-    for item in db.execute('SELECT v.digest, v.player, b.deck_type FROM stat_views v '
-                           'JOIN stat_builds b ON b.fingerprint=v.build'):
-        view_deck_types[(item['digest'], item['player'])] = item['deck_type']
+    if row_digests:
+        marks = ','.join('?' * len(row_digests))
+        for item in db.execute('SELECT v.digest, v.player, b.deck_type FROM stat_views v '
+                               'JOIN stat_builds b ON b.fingerprint=v.build WHERE v.digest IN (' + marks + ')', row_digests):
+            view_deck_types[(item['digest'], item['player'])] = item['deck_type']
     for row in rows:
         others = [p for p in row['_pair'] if p != row['player']]
         row['_opponent_deck_type'] = (view_deck_types.get((row['digest'], others[0]))

@@ -220,8 +220,6 @@ class StatisticsPortal:
                     for match in result['matches']:
                         for card in match['changes']['added']+match['changes']['removed']:
                             info=names.get(str(card['code']));card['name']=card_name(info) if info else '卡名暂缺'
-                    from .statistics_local_cards import prefetch
-                    prefetch(self.database.parent,[card['code'] for card in result['cards']+result['inferred_side']['cards']])
                 return result
             if parts[1]=='api':return self._query_reply(run)
             try:

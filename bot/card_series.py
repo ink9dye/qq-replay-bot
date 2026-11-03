@@ -38,14 +38,25 @@ def reference(db):
     except (OSError,ValueError,TypeError):return dict(status='invalid_reference',revision=None,cards={})
 
 
+def _chunks(values, size=500):
+    values = tuple(values)
+    for index in range(0, len(values), size):
+        yield values[index:index + size]
+
+
 def annotate(db,rows,catalog):
     """只读同一数据库快照；参考文件由查询入口固定一次，避免一请求混版本。"""
     builds={r['build'] for r in rows};stored={};cards={}
-    for row in db.execute('SELECT build,series FROM stat_build_series'):
-        if row['build'] in builds:stored.setdefault(row['build'],set()).add(row['series'])
+    # 只取本批构筑的行；全表扫描 46 万行在 2C2G 上要好几秒。
+    for chunk in _chunks(builds):
+        marks=','.join('?'*len(chunk))
+        for row in db.execute('SELECT build,series FROM stat_build_series WHERE build IN ('+marks+')',chunk):
+            stored.setdefault(row['build'],set()).add(row['series'])
     if catalog['status']=='ready':
-        for row in db.execute("SELECT build,partition,code,copies FROM stat_build_cards WHERE partition IN ('main','extra')"):
-            if row['build'] in builds:cards.setdefault(row['build'],[]).append(dict(row))
+        for chunk in _chunks(builds):
+            marks=','.join('?'*len(chunk))
+            for row in db.execute("SELECT build,partition,code,copies FROM stat_build_cards WHERE partition IN ('main','extra') AND build IN ("+marks+")",chunk):
+                cards.setdefault(row['build'],[]).append(dict(row))
     results={}
     for row in rows:
         build=row['build']

@@ -51,12 +51,13 @@ def _grid_rows(count):
     return max(1, math.ceil(count / COLS))
 
 
-def render(result, picture, title=None):
+def render(result, picture, title=None, stats=None):
     """result 用 statistics_build_detail.query 的返回；picture(code) 返回本地卡图路径或 None。
 
     直接记录的 Side 之外，把 inferred_side 的推测候选单独画成“Side（推测）”，不混入直接记录。
     """
     cards = list(result.get('cards') or [])
+    missing = 0
     sections = _sections(cards)
     inferred = list((result.get('inferred_side') or {}).get('cards') or [])
     if inferred:
@@ -103,6 +104,7 @@ def render(result, picture, title=None):
             if thumb is not None:
                 image.paste(thumb, (x, top))
             else:
+                missing += 1
                 draw.rectangle((x, top, x + CARD_W, top + CARD_H), fill='#e3e9f2', outline='#c3cfdf')
                 code = str(card.get('code') or '?')
                 draw.text((x + 5, top + CARD_H // 2 - 7), code[-6:], fill='#6b7d93', font=badge_font)
@@ -116,6 +118,8 @@ def render(result, picture, title=None):
                 draw.rectangle((x + CARD_W - bw, top, x + CARD_W, top + bh), fill='#1e3858')
                 draw.text((x + CARD_W - bw + 4, top + 1), badge, fill='white', font=badge_font)
         y += _grid_rows(len(items)) * (CARD_H + GAP)
+    if stats is not None:
+        stats['missing'] = missing
     output = io.BytesIO()
     image.save(output, format='JPEG', quality=88, optimize=True, progressive=True)
     return output.getvalue()

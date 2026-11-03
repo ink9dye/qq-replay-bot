@@ -124,6 +124,9 @@ def card_image_payload(code, data_dir):
             return card_image_url(code)
         encoded = base64.b64encode(blob).decode('ascii')
         _IMAGE_BYTES[code] = encoded
+        # 2C2G 上不限量会随进程寿命涨到几百 MB；只保留最近 32 张。
+        while len(_IMAGE_BYTES) > 32:
+            _IMAGE_BYTES.pop(next(iter(_IMAGE_BYTES)))
         return 'base64://' + encoded
 
 

@@ -173,6 +173,15 @@ def wait_for(data_dir, codes, timeout=30):
         time.sleep(0.2)
 
 
+def _existing_picture(pics, code):
+    for candidate in _image_codes(code):
+        for suffix, mime in (('.jpg', 'image/jpeg'), ('.png', 'image/png'), ('.webp', 'image/webp')):
+            path = (pics / (str(candidate) + suffix)).resolve()
+            if path.is_relative_to(pics) and path.is_file() and path.stat().st_size <= 8 * 1024 * 1024:
+                return path, mime
+    return None
+
+
 def picture(data_dir, code):
     number = _card_number(code)
     if number is None or not 0 < number <= 4294967295:
@@ -184,11 +193,155 @@ def picture(data_dir, code):
     pics = (root / 'pics').resolve()
     if not pics.is_relative_to(root):
         return None
-    for candidate in _image_codes(code):
-        for suffix, mime in (('.jpg', 'image/jpeg'), ('.png', 'image/png'), ('.webp', 'image/webp')):
-            path = (pics / (str(candidate) + suffix)).resolve()
-            if path.is_relative_to(pics) and path.is_file() and path.stat().st_size <= 8 * 1024 * 1024:
-                return path, mime
+    found = _existing_picture(pics, code)
+    if found is not None:
+        return found
     # 卡号可能是本体号，实际卡图存在 100xxxxxx 异画编号；后台缓存，当前请求立即返回。
     _schedule(data_dir, code, pics)
     return None
+
+
+THUMB_REMOTE = 'https://cdn.233.momobako.com/ygopro/pics/%d.jpg!thumb2'
+THUMB_MAX = (120, 165)
+_thumb_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='card-thumb')
+_thumb_pending = set()
+_thumb_failed = {}
+
+
+def thumb_dir(data_dir):
+    return (Path(data_dir) / 'card-thumbs').resolve()
+
+
+def _thumb_file(thumbs, code):
+    for candidate in _image_codes(code):
+        for suffix in ('.webp', '.jpg', '.png'):
+            path = thumbs / (str(candidate) + suffix)
+            try:
+                if path.is_file() and 0 < path.stat().st_size <= 4 * 1024 * 1024:
+                    return path
+            except OSError:
+                continue
+    return None
+
+
+def _derive_thumb(thumbs, source, code):
+    """从已下载的原图离线缩一张缩略图；只落盘，不联网。"""
+    try:
+        from PIL import Image
+        with Image.open(source) as image:
+            image = image.convert('RGB')
+            image.thumbnail(THUMB_MAX, Image.LANCZOS)
+            thumbs.mkdir(parents=True, exist_ok=True)
+            path = thumbs / (str(code) + '.webp')
+            temporary = path.with_suffix('.webp.tmp')
+            image.save(temporary, 'WEBP', quality=82, method=4)
+            os.replace(temporary, path)
+            return path
+    except (OSError, ValueError, ImportError):
+        return None
+
+
+def _schedule_thumb(data_dir, code, thumbs, pics=None):
+    now = time.time()
+    with _lock:
+        if code in _thumb_pending:
+            return
+        if now - _thumb_failed.get(code, 0) < RETRY_SECONDS:
+            return
+        _thumb_pending.add(code)
+    def work():
+        try:
+            thumbs.mkdir(parents=True, exist_ok=True)
+            for candidate in _image_codes(code):
+                try:
+                    with urllib.request.urlopen(THUMB_REMOTE % candidate, timeout=15) as response:
+                        blob = response.read(2 * 1024 * 1024 + 1)
+                except OSError:
+                    continue
+                if len(blob) < 64 or len(blob) > 2 * 1024 * 1024:
+                    continue
+                if blob[:4] == b'RIFF' and blob[8:12] == b'WEBP':
+                    suffix = '.webp'
+                elif blob[:2] == b'\xff\xd8':
+                    suffix = '.jpg'
+                elif blob[:4] == b'\x89PNG':
+                    suffix = '.png'
+                else:
+                    continue
+                path = (thumbs / (str(candidate) + suffix)).resolve()
+                if not path.is_relative_to(thumbs):
+                    continue
+                temporary = path.with_suffix(suffix + '.tmp')
+                temporary.write_bytes(blob)
+                os.replace(temporary, path)
+                with _lock:
+                    _thumb_failed.pop(code, None)
+                return
+            raise ValueError('no thumb')
+        except (OSError, ValueError):
+            with _lock:
+                _thumb_failed[code] = time.time()
+            # 缩略图不存在（多为先行卡）时，让原图走慢速后台下载，下次渲染可从本地缩。
+            if pics is not None:
+                _schedule(data_dir, code, pics)
+        finally:
+            with _lock:
+                _thumb_pending.discard(code)
+    _thumb_pool.submit(work)
+
+
+def thumb_picture(data_dir, code):
+    """拼图用缩略图：优先 3.5KB 的 !thumb2，其次本地原图离线缩，都没有则后台补。"""
+    number = _card_number(code)
+    if number is None or not 0 < number <= 4294967295:
+        return None
+    thumbs = thumb_dir(data_dir)
+    found = _thumb_file(thumbs, number)
+    if found is not None:
+        return found
+    root = library_root(data_dir)
+    pics = (root / 'pics').resolve() if root is not None else None
+    if pics is not None and not pics.is_relative_to(root):
+        pics = None
+    if pics is not None:
+        existing = _existing_picture(pics, number)
+        if existing is not None:
+            derived = _derive_thumb(thumbs, existing[0], number)
+            if derived is not None:
+                return derived
+            return existing[0]
+    _schedule_thumb(data_dir, number, thumbs, pics)
+    return None
+
+
+def wait_for_thumbs(data_dir, codes, timeout=3):
+    """预热缩略图并最多等待 timeout 秒；本地已有的原图直接离线缩，不走网络。"""
+    numbers = {_card_number(c) for c in codes}
+    numbers = {n for n in numbers if n is not None and 0 < n <= 4294967295}
+    if not numbers:
+        return
+    thumbs = thumb_dir(data_dir)
+    root = library_root(data_dir)
+    pics = (root / 'pics').resolve() if root is not None else None
+    if pics is not None and not pics.is_relative_to(root):
+        pics = None
+    pending = []
+    for code in numbers:
+        if _thumb_file(thumbs, code) is not None:
+            continue
+        if pics is not None:
+            existing = _existing_picture(pics, code)
+            if existing is not None and _derive_thumb(thumbs, existing[0], code) is not None:
+                continue
+        pending.append(code)
+        _schedule_thumb(data_dir, code, thumbs, pics)
+    if not pending:
+        return
+    deadline = time.time() + max(0, timeout)
+    while time.time() < deadline:
+        remaining = [code for code in pending if _thumb_file(thumbs, code) is None]
+        with _lock:
+            active = [code for code in remaining if code in _thumb_pending]
+        if not active:
+            return
+        time.sleep(0.1)
