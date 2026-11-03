@@ -162,7 +162,9 @@ class RemoteJobs:
                     continue
                 job.lease_until = now + self.lease
             keep = [job_id for job_id, job in self._jobs.items() if job.claimed_by == worker]
-            info["active"] = len(keep)
+            # 信任客户端上报的 active：collector 重启后任务板是空的，但客户端可能还在录旧任务；
+            # 这时若把 active 重置为 0，会误判空闲并疯狂空派发。
+            info["active"] = len(live) if active is not None else len(keep)
             return []
 
     def report(self, worker: str, job_id: str, outcome: str, detail: dict | None = None) -> bool:

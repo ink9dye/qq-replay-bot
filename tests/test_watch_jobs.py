@@ -107,6 +107,13 @@ class RemoteJobsTests(unittest.TestCase):
         jobs.heartbeat("pc-a", [], "1.2.3.4")
         self.assertEqual(jobs.snapshot()["workers"]["pc-a"]["ip"], "1.2.3.4")
 
+    def test_heartbeat_trusts_client_active_count(self):
+        jobs = RemoteJobs()
+        jobs.heartbeat("pc-a", ["unknown-job"], "1.2.3.4")
+        self.assertEqual(jobs.snapshot()["workers"]["pc-a"]["active"], 1)
+        jobs.heartbeat("pc-a", [], "1.2.3.4")
+        self.assertEqual(jobs.snapshot()["workers"]["pc-a"]["active"], 0)
+
     def test_free_slots_respects_capacity_and_ip_cap(self):
         jobs = RemoteJobs(single_ip_max=7, multi_ip_max=6)
         now = time.time()
