@@ -27,11 +27,6 @@ def query(db,replay_root,code,now,deck_types=(),series=()):
     rank_scope=current()
     from .statistics_population import latest_views
     latest=latest_views(basis)
-    from .statistics_deck_labels import labels_for_builds
-    similar=labels_for_builds(db,[r['build'] for r in latest.values()])
-    for row in latest.values():
-        found=similar.get(row['build'])
-        if found and row.get('classification_source')!='manual':row['deck_type']=found[0]
     selected=[r for r in latest.values() if (not deck_types or r['deck_type'] in deck_types)
               and (not series or set(series).intersection(r['series']))]
     placeholders=','.join('?' for _ in codes)

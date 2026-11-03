@@ -42,17 +42,6 @@ def population(db, replay_root, now, player=None, allowed_digests=None, resolve_
     if allowed_digests is not None:basis['views']=[r for r in basis['views'] if r['digest'] in allowed_digests]
     from .statistics_population import latest_views
     latest=latest_views(basis)
-    # 与卡组命名页同一套“卡组名字库”相似度；构筑自身 manual 仍优先。
-    from .statistics_deck_labels import labels_for_builds
-    similar=labels_for_builds(db,[r['build'] for r in latest.values()])
-    for row in latest.values():
-        if row.get('classification_source')=='manual':continue
-        found=similar.get(row['build'])
-        if found:
-            row['deck_type']=found[0]
-            row['classification_status']='recognized'
-            row['label_source']='manual_similarity'
-            row['label_score']=round(found[1],3)
     metadata=capture_metadata(db,{r['digest'] for r in latest.values()})
     people=[]
     for member in basis['roster']['members']:

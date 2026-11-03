@@ -34,8 +34,7 @@ dialog{border:1px solid #b5c8b1;border-radius:14px;width:min(860px,95vw);max-hei
 </section>
 </main>
 <dialog id="dialog"><div class="dlghead"><div><h2 id="title">—</h2><p id="meta"></p></div><button id="close">关闭</button></div><div class="dlgbody"><div class="fieldbreak" id="fieldBreakdown" hidden><h3>字段明细（点字段进入组合编辑）</h3><div id="fieldRows"></div></div><div class="cards" id="cards"></div>
-<div class="form"><div class="row"><label>卡组名（1—120 字）<input id="deck" maxlength="120" autocomplete="off" placeholder="例如：妖精传姬"></label><button id="save">保存命名</button></div><div id="savestatus" role="status"></div></div>
-<p class="note" style="margin-top:12px">自动命名按「组合编辑」的规则统一重算；这里的人工命名只作临时覆盖，下次重算会被规则名替换，旧人工名库也不再作为相似度标签来源。</p></div></dialog>
+<p class="note" style="margin-top:12px">卡组名由「组合编辑」的规则统一生成；旧人工命名已停用，本页只读。</p></div></dialog>
 <dialog id="groupDialog"><div class="dlghead"><div><h2 id="gTitle">—</h2><p id="gMeta"></p></div><button id="gClose">关闭</button></div><div class="dlgbody">
 <div class="form"><div class="row"><label>组名（大轴名）<input id="gName" maxlength="60"></label><label>小轴名（只有必要卡时显示，可留空）<input id="gSmallName" maxlength="60"></label></div>
 <div class="row"><label>来源官方系列（逗号分隔）<input id="gSources"></label><div class="includebox"><label>可添加项（补充组；核心卡在场才计入）</label><input id="gIncludeSearch" placeholder="搜索组名，点选加入"><div id="gIncludeOptions"></div><div id="gIncludeChips" class="includechips"></div></div></div>
@@ -59,26 +58,20 @@ function render(){const only=$('only').value;const body=$('rows');body.replaceCh
   const who=el('td');who.append(el('div',row.player,'name'));who.append(el('div',row.points!=null?row.points.toFixed(1)+' 分':'—','points'));tr.append(who);
   const deck=el('td');deck.append(row.observed?el('span',row.deck_type||'未命名','deck'+(row.deck_type?'':' unknown')):el('span','未采集','deck unknown'));if(row.observed&&row.deck_type&&row.label_source==='same_match_first_game')deck.append(el('small','（继承首局）','muted'));if(row.observed&&row.deck_type&&row.label_source==='manual_similarity')deck.append(el('small','（相似度 '+(row.label_score??'—')+'）','muted'));tr.append(deck);
   tr.append(el('td',time(row.recorded_at),'muted'));
-  const action=el('td');const b=el('button','查看并命名','go');b.disabled=!row.observed;if(!row.observed)b.title='还没有有效对局';b.onclick=e=>{e.stopPropagation();openDetail(row)};action.append(b);tr.append(action);
+  const action=el('td');const b=el('button','查看构筑','go');b.disabled=!row.observed;if(!row.observed)b.title='还没有有效对局';b.onclick=e=>{e.stopPropagation();openDetail(row)};action.append(b);tr.append(action);
   tr.onclick=()=>{if(row.observed)openDetail(row)};body.append(tr)}
  $('empty').hidden=shown>0;
  const hint=lastTruncated?`（共 ${lastTotal} 人，只显示前 ${rows.length}，请用搜索缩小）`:''; const extra=scope==='200'?' · 前200 只含已核验名次，未核验请看全部或搜索':''; $('status').textContent=`${scope==='search'?'搜索':scope==='100'?'前100':scope==='200'?'前200':scope==='unnamed'?'未识别':'全部已采集'} ${rows.length} 人 · 已采集 ${rows.filter(r=>r.observed).length} · 已识别 ${rows.filter(r=>r.observed&&r.deck_type).length} · 未识别 ${rows.filter(r=>r.observed&&!r.deck_type).length}${hint}${extra}`}
 function section(title,items){const col=el('div','','col');const total=items.reduce((n,c)=>n+(Number(c.copies)||1),0);col.append(el('h3',`${title}（${total} 张）`));const list=el('ul','','cardlist');if(!items.length)list.append(el('li','无记录','muted'));for(const c of items){const li=el('li');li.append(el('span',c.name));li.append(el('b','×'+c.copies));list.append(li)}col.append(list);return col}
 function renderFields(items){const box=$('fieldBreakdown'),host=$('fieldRows');host.replaceChildren();if(!items||!items.length){box.hidden=true;return}box.hidden=false;
- for(const field of items.slice(0,12)){const chip=el('button',field.field+'×'+field.copies,'badge');chip.title='点击拼接到下方卡组名（按点击顺序）\n'+(field.cards||[]).map(c=>c.name+'×'+c.copies).join('、');chip.onclick=()=>{const input=$('deck');input.value=(input.value||'')+field.field;input.focus();$('savestatus').textContent='已拼接：'+field.field};host.append(chip)}}
-async function openDetail(row){current=row;$('title').textContent=`#${row.rank==null?'排名暂缺':row.rank} ${row.player}`;$('meta').textContent='正在读取构筑…';$('cards').replaceChildren();$('fieldBreakdown').hidden=true;$('deck').value=row.deck_type||'';$('savestatus').textContent='';$('dialog').showModal();
+ for(const field of items.slice(0,12)){const chip=el('button',field.field+'×'+field.copies,'badge');chip.title='字段明细：\n'+(field.cards||[]).map(c=>c.name+'×'+c.copies).join('、');host.append(chip)}}
+async function openDetail(row){current=row;$('title').textContent=`#${row.rank==null?'排名暂缺':row.rank} ${row.player}`;$('meta').textContent='正在读取构筑…';$('cards').replaceChildren();$('fieldBreakdown').hidden=true;$('dialog').showModal();
  try{const d=await api('/statistics/api/deck-naming?player='+encodeURIComponent(row.player));current=Object.assign({},row,d);
   $('title').textContent=`#${d.rank==null?'排名暂缺':d.rank} ${d.player}`;$('meta').textContent=`构筑 ${d.build?d.build.slice(0,12):'—'} · 采集 ${d.recorded_text||'—'} · 当前 ${d.deck_type||'未命名'}${d.label_source==='same_match_first_game'?'（继承同场首局）':''}${d.label_source==='manual_similarity'?'（相似度 '+(d.label_score??'—')+'）':''}`;
   const cols=[section('主卡组',d.cards.main||[]),section('额外',d.cards.extra||[])];if((d.cards.side||[]).length)cols.push(section('Side',d.cards.side));const inferred=(d.inferred_side||{}).cards||[];if(inferred.length)cols.push(section((d.inferred_side||{}).fallback?'Side（推测，来自最近可推测对局）':'Side（推测，非直接记录）',inferred));$('cards').replaceChildren(...cols);
   renderFields(d.field_breakdown||[]);
-  $('deck').value=d.deck_type||''}catch(e){$('meta').textContent='读取失败：'+e.message}}
+  }catch(e){$('meta').textContent='读取失败：'+e.message}}
 $('close').onclick=()=>$('dialog').close();
-$('save').onclick=async()=>{if(busy||!current||!current.build)return;const deck=$('deck').value.trim();if(!deck){$('savestatus').textContent='卡组名不能为空。';return}
- busy=true;$('save').disabled=true;$('savestatus').textContent='保存中…';
- try{const result=await post('/statistics/api/deck-naming',{build:current.build,deck:deck,player:current.player});
-  $('savestatus').textContent=`已保存：${result.deck}（修订 ${result.revision}）`;const row=rows.find(r=>r.player===current.player);if(row){row.deck_type=result.deck;row.build=current.build}current.deck_type=result.deck;$('meta').textContent=`构筑 ${current.build.slice(0,12)} · 当前 ${result.deck}`;render()}
- catch(e){$('savestatus').textContent='保存失败：'+e.message}
- finally{busy=false;$('save').disabled=false}};
 function fillDeckNames(source){const list=$('deck-names');const known=new Set([...list.options].map(o=>o.value));const names=[...new Set(source.map(r=>r.deck_type).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'zh-CN'));for(const name of names){if(known.has(name))continue;const option=document.createElement('option');option.value=name;list.append(option)}}
 async function load(){const id=++loadRequest;const q=$('search').value.trim(),deck=$('deckSearch').value.trim();const params=new URLSearchParams({scope:$('scope').value});if(q)params.set('q',q);if(deck)params.set('deck',deck);$('status').classList.add('busy');$('status').textContent='筛选中…';try{const data=await api('/statistics/api/deck-naming?'+params.toString());if(id!==loadRequest)return;rows=data.rows;scope=data.scope;lastTotal=data.total||rows.length;lastTruncated=!!data.truncated;fillDeckNames(rows);$('status').classList.remove('busy');render()}catch(e){if(id===loadRequest){$('status').classList.remove('busy');$('status').textContent='读取失败：'+e.message}}}
 $('reload').onclick=load;$('scope').onchange=load;$('search').oninput=()=>{$('status').classList.add('busy');$('status').textContent='筛选中…';clearTimeout(searchTimer);searchTimer=setTimeout(load,300)};$('deckSearch').oninput=()=>{$('status').classList.add('busy');$('status').textContent='筛选中…';clearTimeout(searchTimer);searchTimer=setTimeout(load,300)};$('only').onchange=render;

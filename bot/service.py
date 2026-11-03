@@ -1108,8 +1108,8 @@ class BotService:
                 from .series_naming import load_config
                 config=load_config(self.data_dir)
                 pending=self.store.pending_series_count(config,now,self.replay_root)
-                if pending>400:
-                    self.write_log(f'组合命名待初始化 {pending} 个构筑；请先运行 bot.series_naming 初始化')
+                if pending>5000:
+                    self.write_log(f'组合命名待初始化 {pending} 个构筑；数量过大，先手动运行 bot.series_naming 初始化')
                 else:
                     result=self.store.refresh_series_names(config,now,self.replay_root)
                     self._series_rules_signature=series_marker

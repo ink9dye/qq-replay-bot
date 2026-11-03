@@ -136,11 +136,7 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
         canonical=mapping.get(card['code'],(card['code'],))[0]
         card['swap_contexts']=contexts.get(canonical,[])
     stats_rows=rows if history_digests is None else [r for r in rows if r['digest'] in history_digests]
-    from .statistics_deck_labels import labels_for_builds
-    found=labels_for_builds(db,[selected['build']]).get(selected['build'])
-    label=selected['deck_type'] if selected.get('classification_source')=='manual' else (found[0] if found else selected['deck_type'])
-    person_out=dict(person, deck_type=label)
-    if found and selected.get('classification_source')!='manual':person_out['classification_status']='recognized'
+    person_out=dict(person, deck_type=selected['deck_type'])
     return dict(generated_at=now, person=person_out,
                 roster={k: v for k, v in basis['roster'].items() if k != 'members'},
                 selected=dict(digest=selected['digest'], build=selected['build'], recorded_at=selected['recorded_at'],

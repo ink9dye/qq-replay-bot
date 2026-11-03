@@ -67,29 +67,6 @@ def _latest_views(db, now, replay_root=None, only=None):
                     views[name] = latest[name]
                 else:
                     views.pop(name, None)
-    return _apply_similar_names(db, views, only)
-
-
-def _apply_similar_names(db, views, only=None):
-    """按“卡组构成”匹配人工命名；构筑自身 manual 命名的优先保留。
-
-    only 为 None 时对所有玩家计算；传入集合时只算这些玩家（如 scope=100）。
-    """
-    from .statistics_deck_labels import labels_for_builds
-    targets = [view for name, view in views.items() if only is None or name in only]
-    labels = labels_for_builds(db, [v['build'] for v in targets])
-    for view in targets:
-        if view.get('classification_source') == 'manual':
-            continue
-        # 自动命名按组合规则产生，优先于旧人工名库的相似度标签，保证名字统一。
-        if view.get('classification_source') == 'auto_series':
-            continue
-        found = labels.get(view['build'])
-        if found:
-            view['deck_type'] = found[0]
-            view['classification_status'] = 'recognized'
-            view['label_source'] = 'manual_similarity'
-            view['label_score'] = round(found[1], 3)
     return views
 
 

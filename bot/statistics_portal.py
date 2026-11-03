@@ -567,6 +567,9 @@ class StatisticsPortal:
         parsed=urlsplit(path)
         if parsed.path not in ('/statistics/api/deck-naming','/statistics/api/deck-naming/groups'):
             return self._reply(403,'用户统计页面仅提供查询与下载，不支持管理操作。')
+        if parsed.path == '/statistics/api/deck-naming':
+            # 旧人工命名已整体下线：名字只由“组合编辑”的规则统一生成。
+            return self._reply(410,'旧人工命名已停用；卡组名由组合编辑规则统一生成。')
         try:host=urlsplit('//'+headers.get('Host','')).hostname
         except ValueError:return self._reply(403,'本机入口地址无效。')
         try:local=ip_address(client).is_loopback
@@ -595,31 +598,6 @@ class StatisticsPortal:
             except sqlite3.Error:return self._reply(409,'统计库正忙，请稍后重试。')
             except OSError:return self._reply(500,'命名组配置保存失败，请检查数据目录。')
             return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
-        try:
-            build=payload['build'];deck=payload['deck'];naming_player=payload.get('player')
-        except (KeyError,TypeError):
-            return self._reply(400,'命名参数无效。')
-        from .statistics_deck_naming import apply_name
-        try:
-            with closing(sqlite3.connect(str(self.database),timeout=10)) as db:
-                db.row_factory=sqlite3.Row;db.execute('PRAGMA busy_timeout=5000')
-                result=apply_name(db,build,deck,naming_player);db.commit()
-        except LookupError:return self._reply(404,'找不到这个构筑，可能已经过期。')
-        except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
-        except sqlite3.Error:return self._reply(409,'统计库正忙，请稍后重试。')
-        self._log_deck_name(result,client)
-        return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
-
-    def _log_deck_name(self,result,client):
-        try:
-            from datetime import datetime
-            log=self.database.parent/'logs'/'deck-naming.log'
-            log.parent.mkdir(parents=True,exist_ok=True)
-            with log.open('a',encoding='utf-8') as handle:
-                handle.write('\t'.join([datetime.now().isoformat(timespec='seconds'),str(client),
-                    str(result.get('build')),str(result.get('old')),str(result.get('deck')),
-                    str(result.get('revision'))])+'\n')
-        except OSError:pass
 
     @staticmethod
     def _reply(status,body,content_type='text/plain; charset=utf-8',extra=None):
