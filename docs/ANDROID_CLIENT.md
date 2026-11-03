@@ -4,6 +4,7 @@
 录制 → 上传 → 上报”这一条链路**，不需要改服务器。
 
 先读接口契约：[REMOTE_WATCH.md](REMOTE_WATCH.md)。本文补充工程落地、安卓注意事项和验收清单。
+令牌领取、客户端名称绑定和排障见 [WATCH_DEVICE_TOKENS.md](WATCH_DEVICE_TOKENS.md)。
 
 ## 0. 一页纸：你只需要做这些
 

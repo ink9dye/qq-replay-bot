@@ -4,7 +4,7 @@
 
 线上 `101.201.108.188` 由四个 systemd 服务提供：`ygo-collector`（server-only 房间发现/派发 + 分享本体 `127.0.0.1:8789`）、`ygo-web`（统计后台 `127.0.0.1:8788`）、`ygo-qq`（QQ）、`ygo-cloud-watch`（云端观战客户端，单账号单间），NapCat 在 Docker。
 
-远程观战已拆成 **server-only**：collector 只发现/派发，录制由云端/PC/安卓客户端完成。接口契约见 [docs/REMOTE_WATCH.md](docs/REMOTE_WATCH.md)，安卓开发指南见 [docs/ANDROID_CLIENT.md](docs/ANDROID_CLIENT.md)，云端客户端单元见 [deploy/ygo-cloud-watch.service](deploy/ygo-cloud-watch.service)。
+远程观战已拆成 **server-only**：collector 只发现/派发，录制由云端/PC/安卓客户端完成。接口契约见 [docs/REMOTE_WATCH.md](docs/REMOTE_WATCH.md)，安卓开发指南见 [docs/ANDROID_CLIENT.md](docs/ANDROID_CLIENT.md)，每设备令牌与 QQ `令牌分发` 见 [docs/WATCH_DEVICE_TOKENS.md](docs/WATCH_DEVICE_TOKENS.md)，云端客户端单元见 [deploy/ygo-cloud-watch.service](deploy/ygo-cloud-watch.service)。
 
 公网入口 `http://101.201.108.188:8787` 由 **nginx 1.24** 监听并反代到 `127.0.0.1:8789`：只放行 `/stats/*`、`/s/*`、`/health`、`/`，按 IP 限速（页面 10r/s、`/statistics/api/` 5r/s，burst 30/20）、单 IP 连接 20、请求头 10s 超时、上游读写 120s、`proxy_buffering off`。分享服务因此只绑回环，**公开链接格式不变**（仍是 `http://<服务器>:8787/stats/<token>`）。
 

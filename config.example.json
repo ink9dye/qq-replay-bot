@@ -47,13 +47,11 @@
     "require_schema_version": 0
   },
   "remote": {
-    "_comment": "远程观战接口；token 是兼容总令牌，device_token_hours 是 QQ 每设备令牌有效期（0=长期）。token_groups/token_users 是“令牌分发”的保密名单，留空则沿用 statistics 的 allowed_groups/private_users。",
+    "_comment": "远程观战接口；token 是兼容总令牌，device_token_hours 是 QQ 每设备令牌有效期（0=长期）。token_groups/token_users 是“令牌分发”的可选保密名单；不写这两个键时沿用 statistics.allowed_groups/private_users，显式空数组表示关闭该范围。",
     "enabled": false,
     "token": "",
     "public_url": "http://101.201.108.188:8787",
     "device_token_hours": 720,
-    "token_groups": [],
-    "token_users": [],
     "bind_host": "127.0.0.1",
     "bind_port": 8791,
     "claim_wait_seconds": 3,

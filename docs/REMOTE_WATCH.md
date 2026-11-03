@@ -5,6 +5,7 @@
 
 > **安卓端开发指南（推荐先读）**：[ANDROID_CLIENT.md](ANDROID_CLIENT.md)。
 > 本文是接口契约与运行规则；安卓的工程结构、Chaquopy/ Kotlin 路线、排障和验收清单在那边。
+> 每设备令牌、QQ `令牌分发`、保密名单与运维见 [WATCH_DEVICE_TOKENS.md](WATCH_DEVICE_TOKENS.md)。
 
 > 2026-11-03 生产已切成 **server-only**：`watch.local_watch=false`，`ygo-collector`
 > 不再自己进房；记录由服务器上的云端客户端 `ygo-cloud-watch` 和后续 PC/安卓客户端完成。
@@ -39,8 +40,6 @@
   "token": "<随机长串，单独的接口令牌>",
   "public_url": "http://101.201.108.188:8787",
   "device_token_hours": 720,
-  "token_groups": [],
-  "token_users": [],
   "bind_host": "127.0.0.1",
   "bind_port": 8791,
   "claim_wait_seconds": 3,
@@ -56,7 +55,7 @@
 - 接口只监听回环，由 8787 的 nginx 反代：`location /watch-api/ { proxy_pass http://127.0.0.1:8791; }`。
 - `token` 是兼容总令牌，**不要复用** QQ/NapCat/统计的 token。
 - 每设备令牌（2026-11-03）：QQ 群/私聊发 `令牌分发`，机器人自动签发。数据库只存 SHA-256，令牌绑定 `worker`（客户端名称），默认 720 小时（`device_token_hours`，0=长期），可过期/吊销；`public_url` 是机器人回复给用户的服务器地址。旧 `token` 继续有效，现有 PC/云端客户端不受影响。
-- `令牌分发` 只对保密名单开放：优先读 `remote.token_groups` / `remote.token_users`，留空则沿用 `statistics.allowed_groups` / `statistics.private_users`；群聊不会因为管理员身份绕过群名单。管理员私聊可用 `令牌分发 列表` / `令牌分发 吊销 ...`。
+- `令牌分发` 只对保密名单开放：优先读 `remote.token_groups` / `remote.token_users`；**不写这两个键**时沿用 `statistics.allowed_groups` / `statistics.private_users`，显式空数组表示关闭该范围。群聊不会因为管理员身份绕过群名单。管理员私聊可用 `令牌分发 列表` / `令牌分发 吊销 ...`。
 - `single_ip_max` / `multi_ip_max`：**单个公网 IP** 的并发上限。在线客户端只有 1 个 IP 时
   上限 7；出现第二个 IP 时每个 IP **各自**降到 6（两个 IP 合计最多 12，不是总共 6）。按 claim
   请求的 `X-Real-IP`（云端直连则是 `127.0.0.1`）统计，客户端伪造请求体里的 `ip` 无效。
