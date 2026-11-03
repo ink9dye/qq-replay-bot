@@ -65,6 +65,7 @@ def configure_paths(ygopro_dir: Path, data_dir: Path) -> None:
 ACCOUNTS_API = "https://api.moecube.com/accounts/"
 # 萌卡助手使用的进行中对局列表。游戏服仍是 tiramisu.moenext.com:8911。
 DEFAULT_DUEL_LIST = "wss://tiramisu.moecube.com:8923/?filter=started"
+REMOTE_ROOM_TTL = 900.0  # 远程派发后的房间记忆：避免房间推送延迟删房导致同一间反复派发
 REPLAY_MAGIC_YRP1 = 0x31707279
 REPLAY_MAGIC_YRP2 = 0x32707279
 REPLAY_MAGICS = {REPLAY_MAGIC_YRP1, REPLAY_MAGIC_YRP2}
@@ -2844,6 +2845,7 @@ async def serve(
     retry_zero = {}
     remote_dispatched = 0
     remote_reported = 0
+    remote_rooms: dict[str, float] = {}
     silent_tracker = SilentWindowTracker()
     probation_enabled = config_flag(config, "probation_enabled", True) and gate.min_interval > 0
     probation_until = time.monotonic() + PROBATION_SECONDS if probation_enabled else 0.0
@@ -3175,6 +3177,10 @@ async def serve(
                             log(f"跳过已开 {age / 60:.1f} 分钟的对局（超过 {max_room_age / 60:g} 分钟，多半已到局末）："
                                 f"{room.title or room.join_id or room.key}")
                         continue
+                if remote is not None and remote_rooms.get(room.key, 0.0) > time.monotonic():
+                    # 已经交给远程端的房间不再派发/本地重进：房间推送可能延迟删房，
+                    # 否则同一间会每 5 秒被重复派发一次（客户端只能拒绝，形成空转）。
+                    continue
                 gate_now = time.monotonic()
                 allowed, wait_seconds = gate.allow(gate_now)
                 if not allowed:
@@ -3213,6 +3219,11 @@ async def serve(
                     worker = await dispatch_remote(remote, config, room, writer, known_start, shown, reason)
                     if worker:
                         remote_dispatched += 1
+                        now_remote = time.monotonic()
+                        for key, until in list(remote_rooms.items()):
+                            if until <= now_remote:
+                                remote_rooms.pop(key, None)
+                        remote_rooms[room.key] = now_remote + REMOTE_ROOM_TTL
                         monitor.joined(room.key)
                         continue
                 gate.started(time.monotonic())
