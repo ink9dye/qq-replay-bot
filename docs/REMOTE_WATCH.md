@@ -117,8 +117,9 @@ python tools/watch_worker.py --config tools/worker.json
 - **客户端进场节流**：服务器派发绕过本地 `JoinGate`（不占 `in_flight`、不更新 20 秒间隔），
   worker 自己补：两次新连接至少隔 20 秒 + 0–5 秒抖动，避免几秒内连进多间被平台判异常。
 - **一个账号同一时刻只能看一间房**：MyCard 的 `mycard-spectator-replay` 会对
-  `blockedByMultipleRooms` 直接拒发回放（`CLIENT_send_replays()` 返回 false）。因此
-  `worker.json` 的 `capacity` 固定 **1**；要 6 路就起 **6 个 worker / 6 个账号**，
+  `blockedByMultipleRooms` 直接拒发回放（`CLIENT_send_replays()` 返回 false）。同一账号可以
+  **顺序**录 A→B→C，但不能同时 A+B。`capacity` 是**进程自己的并发**（服务器字段允许 >1），
+  但一个账号同时多间会没有回放，所以客户端固定 **1**；要 6 路就起 **6 个 worker / 6 个账号**，
   不要用一个账号 `capacity 6`。2026-11-03 实测：单账号单间能收到 3 个小局回放并入库。
 
 ## 4.1 云端客户端（ygo-cloud-watch）
