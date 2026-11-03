@@ -181,13 +181,15 @@ function renderPie(data){const box=$('deckPie');if(!box)return;window.__piePaylo
  const rIn=[R*0.30,R*0.56],rOut=[R*0.56,R*0.94];
  const shapes=[],defs=[],labels=[];let clipIndex=0;let angle=-Math.PI/2;
  const middleImage=new Map();for(const m of pie.middle||[])middleImage.set(m.primary+'|'+[].concat(m.extras||[]).slice().sort().join(','),m.image);
- const art=(pathD,code,color,alpha,thumb)=>{const id='pieart'+(++clipIndex);defs.push('<clipPath id="'+id+'"><path d="'+pathD+'"/></clipPath>');const full='<rect x="'+(cx-R)+'" y="'+(cy-R)+'" width="'+(2*R)+'" height="'+(2*R)+'" fill="'+color+'"/>';let body='';if(thumb){const mx=thumb[0],my=thumb[1],ang=thumb[2],span=thumb[3],r0=thumb[4],r1=thumb[5],t=r1-r0,arc=r1*span,w=Math.max(arc*0.98,t*1.526),h=w/1.526,x0=mx-w/2,y0=my-h/2,iw=w/0.74,ih=h/0.485,rot=0,rid=id+'r';defs.push('<clipPath id="'+rid+'"><rect x="'+x0.toFixed(1)+'" y="'+y0.toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+h.toFixed(1)+'" rx="3"/></clipPath>');body='<g><rect x="'+x0.toFixed(1)+'" y="'+y0.toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+h.toFixed(1)+'" fill="'+color+'"/>'+(code?'<g clip-path="url(#'+rid+')"><image href="'+cardArtUrl(code)+'" x="'+(x0-0.14*iw).toFixed(1)+'" y="'+(y0-0.165*ih).toFixed(1)+'" width="'+iw.toFixed(1)+'" height="'+ih.toFixed(1)+'" preserveAspectRatio="none"/><rect x="'+x0.toFixed(1)+'" y="'+y0.toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+h.toFixed(1)+'" fill="rgba(10,24,18,'+alpha+')"/></g>':'')+'</g>'}else{const ax=0.14,ay=0.165,aw=0.74,ah=0.485,iw=2*R/aw,ih=2*R/ah,ix=cx-R-ax*iw,iy=cy-R-ay*ih;body=code?'<image href="'+cardArtUrl(code)+'" x="'+ix.toFixed(1)+'" y="'+iy.toFixed(1)+'" width="'+iw.toFixed(1)+'" height="'+ih.toFixed(1)+'" preserveAspectRatio="none"/><rect x="'+(cx-R)+'" y="'+(cy-R)+'" width="'+(2*R)+'" height="'+(2*R)+'" fill="rgba(10,24,18,'+alpha+')"/>':''}return '<g clip-path="url(#'+id+')" pointer-events="none">'+full+body+'</g>'};
+ const art=(pathD,code,color,alpha,thumb,nofill)=>{const id='pieart'+(++clipIndex);defs.push('<clipPath id="'+id+'"><path d="'+pathD+'"/></clipPath>');const full=nofill?'':'<rect x="'+(cx-R)+'" y="'+(cy-R)+'" width="'+(2*R)+'" height="'+(2*R)+'" fill="'+color+'"/>';let body='';if(thumb){const mx=thumb[0],my=thumb[1],ang=thumb[2],span=thumb[3],r0=thumb[4],r1=thumb[5],t=r1-r0,arc=r1*span,S=Math.max(arc,t)*1.02,w=S*1.526,h=S,x0=mx-w/2,y0=my-h/2,iw=w/0.74,ih=h/0.485,rot=0,rid=id+'r';defs.push('<clipPath id="'+rid+'"><rect x="'+x0.toFixed(1)+'" y="'+y0.toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+h.toFixed(1)+'" rx="3"/></clipPath>');body='<g>'+(code?'<g clip-path="url(#'+rid+')"><image href="'+cardArtUrl(code)+'" x="'+(x0-0.14*iw).toFixed(1)+'" y="'+(y0-0.165*ih).toFixed(1)+'" width="'+iw.toFixed(1)+'" height="'+ih.toFixed(1)+'" preserveAspectRatio="none"/><rect x="'+x0.toFixed(1)+'" y="'+y0.toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+h.toFixed(1)+'" fill="rgba(10,24,18,'+alpha+')"/></g>':'')+'</g>'}else{const ax=0.14,ay=0.165,aw=0.74,ah=0.485,iw=2*R/aw,ih=2*R/ah,ix=cx-R-ax*iw,iy=cy-R-ay*ih;body=code?'<image href="'+cardArtUrl(code)+'" x="'+ix.toFixed(1)+'" y="'+iy.toFixed(1)+'" width="'+iw.toFixed(1)+'" height="'+ih.toFixed(1)+'" preserveAspectRatio="none"/><rect x="'+(cx-R)+'" y="'+(cy-R)+'" width="'+(2*R)+'" height="'+(2*R)+'" fill="rgba(10,24,18,'+alpha+')"/>':''}return '<g clip-path="url(#'+id+')" pointer-events="none">'+full+body+'</g>'};
  for(const cat of pie.inner){const span=cat.players/total*tau,end=angle+span,mid=(angle+end)/2;
   const names=outerByPrimary.get(cat.name)||[],merged=!cat.image,band=cat.band_image;
+  const baseImage=cat.band_image||cat.image||((names[0]||{}).image);
+  if(baseImage&&!band){shapes.push(art(annulusPath(cx,cy,rIn[0],rOut[1],angle,end),baseImage,cat.color,0.18));}
   if(!merged&&!band){
    const path=annulusPath(cx,cy,rIn[0],rIn[1],angle,end);
    const iMR=(rIn[0]+rIn[1])/2,iCx=cx+Math.cos(mid)*iMR,iCy=cy+Math.sin(mid)*iMR;
-   shapes.push(art(path,cat.image,cat.color,0.20,[iCx,iCy,mid,span,rIn[0],rIn[1]]));
+   shapes.push(art(path,cat.image,cat.color,0.20,[iCx,iCy,mid,span,rIn[0],rIn[1]],!baseImage));
    shapes.push('<path d="'+path+'" fill="none" stroke="#fff" stroke-width="1.5" data-category="'+pieEsc(cat.name)+'" style="cursor:pointer" pointer-events="all"><title>'+pieEsc(cat.name)+' · '+cat.players+'人 · '+cat.percent+'%</title></path>');
   }
   if(band){const bMR=(rIn[0]+rOut[1])/2,bCx=cx+Math.cos(mid)*bMR,bCy=cy+Math.sin(mid)*bMR;
@@ -197,7 +199,7 @@ function renderPie(data){const box=$('deckPie');if(!box)return;window.__piePaylo
    const r0=(merged||band)?rIn[0]:rOut[0],oPath=annulusPath(cx,cy,r0,rOut[1],c,oEnd);
    const oKey=cat.name+'|'+[].concat(o.extras||[]).slice().sort().join(',');const oImage=o.image||middleImage.get(oKey)||cat.image;
    const oMR=(r0+rOut[1])/2,oCx=cx+Math.cos(oMid)*oMR,oCy=cy+Math.sin(oMid)*oMR;
-   if(!band)shapes.push(art(oPath,oImage,o.color,0.16,[oCx,oCy,oMid,oSpan,r0,rOut[1]]));
+   if(!band)shapes.push(art(oPath,oImage,o.color,0.16,[oCx,oCy,oMid,oSpan,r0,rOut[1]],!baseImage));
    shapes.push('<path d="'+oPath+'" fill="none" stroke="#fff" stroke-width="1" data-deck="'+pieEsc(o.name)+'" style="cursor:pointer" pointer-events="all"><title>'+pieEsc(o.name)+' · '+o.players+'人 · '+o.percent+'%</title></path>');
    labels.push({a:oMid,text:o.name+'  '+o.percent+'%',deck:o.name});
    c=oEnd}
