@@ -3,6 +3,9 @@
 服务器只负责**发现房间、分配任务、去重、入库**；真正的观战连接由"观战端"
 （云端 / PC / 安卓）发起，因此每个观战端可以来自不同公网 IP、用不同萌卡账号。
 
+> **安卓端开发指南（推荐先读）**：[ANDROID_CLIENT.md](ANDROID_CLIENT.md)。
+> 本文是接口契约与运行规则；安卓的工程结构、Chaquopy/ Kotlin 路线、排障和验收清单在那边。
+
 > 2026-11-03 生产已切成 **server-only**：`watch.local_watch=false`，`ygo-collector`
 > 不再自己进房；记录由服务器上的云端客户端 `ygo-cloud-watch` 和后续 PC/安卓客户端完成。
 > 每个客户端一个账号、同一时刻只进 **1 间房**（MyCard 对同账号多房间会拒发回放）。
@@ -57,7 +60,7 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/watch-api/claim` | `{"worker":"pc-a","capacity":2,"ip":"1.2.3.4"}` → 200 `{"job":{...}}` 或 204 |
+| POST | `/watch-api/claim` | `{"worker":"android-1","capacity":1,"wait":15}` → 200 `{"job":{...}}` 或 204 |
 | POST | `/watch-api/heartbeat` | `{"worker":"pc-a","active":["<job-id>"]}` → `{"ok":true}` |
 | POST | `/watch-api/report` | `{"worker","job","outcome","detail"}` → `{"ok":true}` |
 | POST | `/watch-api/upload?job=<id>&name=<x.yrp>` | body 为原始字节；`X-Players` 用 URL 编码、`X-Recorded-At` 为时间戳 |
@@ -149,8 +152,9 @@ python tools/watch_worker.py --config tools/worker.json
 > **2026-11-03 生产已 server-only**：collector 只发现/派发，云端 `ygo-cloud-watch` +
 > PC/安卓客户端各看一间。一个萌卡账号同一时刻只能观战 **1 间房**（否则 MyCard
 > `blockedByMultipleRooms` 拒发回放），所以“观战端数量”实际上 = **可用账号数**：
-> 6 路需要 6 个账号。**单个公网 IP 的并发上限**：只有 1 个 IP 时 7，出现多个 IP 时 6，
-> 由任务板按 claim 请求 IP（`X-Real-IP`；云端直连为 `127.0.0.1`）强制。
+> 6 路需要 6 个账号。**单个公网 IP 的并发上限**：只有 1 个 IP 时 7；出现多个 IP 时
+> **每个 IP 各自 6**（两个 IP 合计最多 12，不是总共 6），由任务板按 claim 请求 IP
+> （`X-Real-IP`；云端直连为 `127.0.0.1`）强制。
 
 多账号 = 每台机器/每个 `worker.json` 写自己的 `account/password`；一个进程一个账号、
 一间房；同账号多端还会互相顶 u16Secret，并触发上面的回放屏蔽。
