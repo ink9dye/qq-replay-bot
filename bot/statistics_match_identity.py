@@ -7,22 +7,38 @@ def _read_capture_metadata(db, digests):
     """只读这些 digest 的证据行；避免为了几条证据扫描整张 stat_evidence。
 
     不做跨调用缓存：证据行随导入变化，缓存会让同一进程里先后变化的库读到旧值。
+    优先用 SQLite JSON1 只取 capture 的三个字段；payload 很大，逐行 json.loads
+    在 2C2G 上要 10 秒以上。JSON1 不可用或 payload 损坏时回退旧路径。
     """
     captures = {}
     values = list(dict.fromkeys(digests))
     for start in range(0, len(values), 400):
         chunk = values[start:start + 400]
         marks = ','.join('?' for _ in chunk)
-        for row in db.execute('SELECT digest,payload_json FROM stat_evidence '
-                              'WHERE digest IN (%s)' % marks, chunk):
-            try:
-                info = json.loads(row['payload_json']).get('capture', {})
-            except (ValueError, AttributeError):
-                continue
-            if type(info.get('game_no')) is int and info['game_no'] > 0 and (
-                    info.get('session_id') is None or isinstance(info.get('session_id'), str)):
-                captures.setdefault(row['digest'], set()).add(
-                    (info.get('session_id'), info['game_no'], info.get('captured_from_start') is True))
+        parsed = []
+        try:
+            parsed = [(row['digest'], row['game_no'], row['session_id'], row['captured_from_start'])
+                      for row in db.execute(
+                          "SELECT digest, json_extract(payload_json,'$.capture.game_no') game_no, "
+                          "json_extract(payload_json,'$.capture.session_id') session_id, "
+                          "json_extract(payload_json,'$.capture.captured_from_start') captured_from_start "
+                          'FROM stat_evidence WHERE digest IN (%s)' % marks, chunk)]
+        except sqlite3.DatabaseError:
+            parsed = []
+        if not parsed:
+            for row in db.execute('SELECT digest,payload_json FROM stat_evidence '
+                                  'WHERE digest IN (%s)' % marks, chunk):
+                try:
+                    info = json.loads(row['payload_json']).get('capture', {})
+                except (ValueError, AttributeError):
+                    continue
+                parsed.append((row['digest'], info.get('game_no'), info.get('session_id'),
+                               info.get('captured_from_start')))
+        for digest, game_no, session_id, captured_from_start in parsed:
+            if type(game_no) is int and game_no > 0 and (
+                    session_id is None or isinstance(session_id, str)):
+                captures.setdefault(digest, set()).add(
+                    (session_id, game_no, captured_from_start is True or captured_from_start == 1))
     return {digest: next(iter(found)) for digest, found in captures.items() if len(found) == 1}
 
 

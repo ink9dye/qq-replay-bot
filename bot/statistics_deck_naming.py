@@ -48,7 +48,8 @@ def _latest_views(db, now, replay_root=None, only=None):
     if replay_root is not None:
         # 前100 与玩家排名页完全同口径：取排名页实际使用的有效视角（含首局继承）。
         from .top100 import eligible_views
-        state = eligible_views(db, replay_root, now)
+        # series 字段在这条路径上没人用，跳过全量 series annotate（2C2G 上省十几秒）。
+        state = eligible_views(db, replay_root, now, annotate_series=False)
         eligible_rows = state.get('views') or []
         if eligible_rows:
             from .statistics_population import latest_views as common_latest
