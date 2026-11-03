@@ -8,7 +8,9 @@
 
 > 2026-11-03 生产已切成 **server-only**：`watch.local_watch=false`，`ygo-collector`
 > 不再自己进房；记录由服务器上的云端客户端 `ygo-cloud-watch` 和后续 PC/安卓客户端完成。
-> 每个客户端一个账号、同一时刻只进 **1 间房**（MyCard 对同账号多房间会拒发回放）。
+> 一个账号可以**并发进多个房间**（旧 collector 8 路就是同一账号）；但 MyCard 在同账号多房间时
+> **可能**拒发回放（取决于平台是否开启 `restrict_multi_room_spectator_replay`）。客户端默认
+> `capacity=1` 是保守策略，不是“一个账号不能进多间”的硬限制。
 
 > 2026-11-03 账号本地化：任务里不再下发入房口令，也不再下发服务器账号的昵称。
 > 观战端用自己的账号在本机 `watch.sign_in()` 拿 u16Secret，每局进场前用
@@ -116,11 +118,11 @@ python tools/watch_worker.py --config tools/worker.json
 - **房间去重**：服务器端已加 15 分钟房间记忆；客户端 `room.key` 去重仍保留兜底。
 - **客户端进场节流**：服务器派发绕过本地 `JoinGate`（不占 `in_flight`、不更新 20 秒间隔），
   worker 自己补：两次新连接至少隔 20 秒 + 0–5 秒抖动，避免几秒内连进多间被平台判异常。
-- **一个账号同一时刻只能看一间房**：MyCard 的 `mycard-spectator-replay` 会对
-  `blockedByMultipleRooms` 直接拒发回放（`CLIENT_send_replays()` 返回 false）。同一账号可以
-  **顺序**录 A→B→C，但不能同时 A+B。`capacity` 是**进程自己的并发**（服务器字段允许 >1），
-  但一个账号同时多间会没有回放，所以客户端固定 **1**；要 6 路就起 **6 个 worker / 6 个账号**，
-  不要用一个账号 `capacity 6`。2026-11-03 实测：单账号单间能收到 3 个小局回放并入库。
+- **同账号可以并发进多间，但回放可能被平台限制**：MyCard 的 `mycard-spectator-replay` 在
+  `restrict_multi_room_spectator_replay` 开启时，会对 `blockedByMultipleRooms` 拒发回放
+  （`CLIENT_send_replays()` 返回 false）；**这不阻止进房**，只影响回放包。`capacity` 是
+  **进程认领上限**，可以 >1；当前客户端默认 `capacity=1` 是保守策略。多间是否仍有回放必须按
+  平台当前配置实测，不能一概而论；2026-11-03 单间实测能收到 3 个小局回放并入库。
 
 ## 4.1 云端客户端（ygo-cloud-watch）
 
@@ -151,14 +153,14 @@ python tools/watch_worker.py --config tools/worker.json
 即：观战端数量 = min(可用公网 IP 数 - 1, 账号数)；-1 是留给主服务器的出口。
 
 > **2026-11-03 生产已 server-only**：collector 只发现/派发，云端 `ygo-cloud-watch` +
-> PC/安卓客户端各看一间。一个萌卡账号同一时刻只能观战 **1 间房**（否则 MyCard
-> `blockedByMultipleRooms` 拒发回放），所以“观战端数量”实际上 = **可用账号数**：
-> 6 路需要 6 个账号。**单个公网 IP 的并发上限**：只有 1 个 IP 时 7；出现多个 IP 时
+> PC/安卓客户端各看一间（默认）。一个账号可以并发进多间；但平台开启多房间回放限制时，
+> 回放会被拒。所以“观战端数量”不等于账号数：可以一账号 `capacity>1`，也可以多账号分摊；
+> 要稳拿回放先用单间/单进程实测。**单个公网 IP 的并发上限**：只有 1 个 IP 时 7；出现多个 IP 时
 > **每个 IP 各自 6**（两个 IP 合计最多 12，不是总共 6），由任务板按 claim 请求 IP
 > （`X-Real-IP`；云端直连为 `127.0.0.1`）强制。
 
-多账号 = 每台机器/每个 `worker.json` 写自己的 `account/password`；一个进程一个账号、
-一间房；同账号多端还会互相顶 u16Secret，并触发上面的回放屏蔽。
+多账号 = 每台机器/每个 `worker.json` 写自己的 `account/password`；一个进程一个账号，但
+`capacity` 可 >1（同账号多间）；同账号多端还可能互相顶 u16Secret，并触发上面的回放限制。
 
 ## 6. 安全注意
 
