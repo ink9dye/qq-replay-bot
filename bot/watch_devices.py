@@ -42,9 +42,8 @@ def format_status(snapshot, games, capture, now):
     waiting=str(max(0,int(capture.get('waiting_rooms') or 0))) if capture_fresh else '未知（采集状态过期）'
     summary=snapshot.get('summary') or {}
     total=str(summary.get('active',0)+local) if fresh and local is not None else '未知'
-    pending=str(summary.get('pending',0)) if fresh else '未知'
-    lines=['观战设备｜'+stamp(now)+' 北京时间',f'当前观战：{total} 场',
-           f'待派发对战：{waiting} 场｜派发中待接单：{pending} 个','']
+    lines=['观战设备｜'+stamp(now)+' 北京时间',f'正在观战：{total} 个房间',
+           f'等待观战：{waiting} 个房间','']
     if fresh:
         lines.append(f'在线设备：{len(workers)} 台（使用 / 客户端容量）')
         groups={row['ip']:row for row in snapshot.get('ips',[])}
@@ -62,7 +61,7 @@ def format_status(snapshot, games, capture, now):
         when='接收 '+stamp(g['received_at']) if g.get('received_at') is not None else '入库 '+stamp(g.get('saved_at'))+'（接收时间未记录）'
         lines.append(f'{i}. {names}\n   来源：{worker}｜{when}')
     if not games:lines.append('来源记录启用后尚未收到小局录像；不回扫旧录像。')
-    lines.append('已认领不等于录像已收到；时间为北京时间。')
+    lines.append('等待包含未到入场时间和待设备接单；已认领不等于录像已收到。')
     return '\n'.join(lines)
 
 
