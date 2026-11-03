@@ -513,19 +513,19 @@ class BotService:
         user = str(user_id)
         command = parse_command(text)
         op = command.get("op")
-        if op == "stats_page" and not self._statistics_allowed(user, conversation):
+        if op in ("stats_page", "watch_devices") and not self._statistics_allowed(user, conversation):
             return None
         if not self.authorized(user):
             if command.get("op") == "help":
                 text = HELP
                 if not self._statistics_allowed(user, conversation):
-                    text = "\n".join(line for line in text.splitlines() if not line.startswith("统计："))
+                    text = "\n".join(line for line in text.splitlines() if not line.startswith(("统计：", "观战设备：")))
                 return text + "\n\n你还没有使用权限，不能订阅或查看录像。"
             return "你没有使用权限，不能订阅或查看录像。"
         if op == "help":
             text = HELP
             if not self._statistics_allowed(user, conversation):
-                text = "\n".join(line for line in text.splitlines() if not line.startswith("统计："))
+                text = "\n".join(line for line in text.splitlines() if not line.startswith(("统计：", "观战设备：")))
             return text
         if op == "empty":
             return "请发送“帮助”查看用法。"

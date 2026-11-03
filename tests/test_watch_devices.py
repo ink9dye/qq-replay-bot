@@ -61,9 +61,10 @@ class WatchDevicesTests(unittest.TestCase):
         text=format_status(dict(remote_ok=False),g,{},1000)
         self.assertIn('历史未记录来源',text);self.assertIn('接收时间未记录',text)
 
-    def test_service_uses_normal_authorization_and_does_not_send_messages(self):
+    def test_service_uses_statistics_allowlist_and_normal_authorization(self):
         from test_bot import temporary_service
         with temporary_service() as service:
+            service.config['statistics']={'private_users':['10000','99999']}
             with patch('bot.watch_devices.device_message',return_value='device-status') as fetch:
                 self.assertEqual(service.handle_text('10000','观战设备'),'device-status')
                 self.assertIn('没有使用权限',service.handle_text('99999','观战设备'))
@@ -98,3 +99,25 @@ class WatchDevicesTests(unittest.TestCase):
         self.assertTrue(jobs.report('pc-a','old-job','saved'))
         self.assertFalse(jobs.report('pc-a','old-job','saved'))
         self.assertEqual(jobs.snapshot()['stats']['reported'],1)
+
+    def test_private_allowlist_blocks_other_authorized_users_and_hides_help(self):
+        from test_bot import temporary_service
+        with temporary_service() as service:
+            service.config['statistics']={'private_users':['10000']}
+            with patch('bot.watch_devices.device_message',return_value='device-status') as fetch:
+                self.assertIsNone(service.handle_text('10001','观战设备'))
+                self.assertIsNone(service.handle_text('99999','观战设备'))
+                fetch.assert_not_called()
+                self.assertNotIn('观战设备：',service.handle_text('10001','帮助'))
+                self.assertNotIn('观战设备：',service.handle_text('99999','帮助'))
+                self.assertIn('观战设备：',service.handle_text('10000','帮助'))
+
+    def test_groups_use_statistics_group_allowlist_even_for_admins(self):
+        from test_bot import temporary_service
+        with temporary_service() as service:
+            service.config['statistics']={'private_users':['10000'],'allowed_groups':['12345']}
+            with patch('bot.watch_devices.device_message',return_value='device-status') as fetch:
+                self.assertEqual(service.handle_text('10001','观战设备','group:12345'),'device-status')
+                self.assertIsNone(service.handle_text('10000','观战设备','group:99999'))
+                self.assertNotIn('观战设备：',service.handle_text('10000','帮助','group:99999'))
+                fetch.assert_called_once()
