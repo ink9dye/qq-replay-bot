@@ -249,7 +249,7 @@ class WatchApiServer:
             except OSError:
                 self.log('[远程] 来源记录写入失败，录像接收继续')
             self.jobs.enqueue_ingest(str(path), players or [folder], recorded, digest)
-            self.jobs.note_upload()
+            self.jobs.note_upload(job_id)
         self.log(f"[远程] 收到{'小局证据' if evidence else '录像'} "
                  f"{path.relative_to(self.replay_root)}（{len(body)} 字节，任务 {job_id}）")
         return dict(path=str(path), digest=digest)

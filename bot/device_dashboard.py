@@ -28,6 +28,10 @@ class DeviceDashboard:
         self._cached_at=-float('inf')
         self._remote={}
         self._status_at=None
+        # 服务端推断“房间结束但没回传”用：上一轮仍在并发列表里的房间 + 最近判定。
+        self._rooms_cache={}
+        self._ended=[]
+        self._receipts_path=Path(database).parent/'watch-receipts.json'
 
     def _fetch_remote(self):
         if not self.token: raise ValueError('remote_not_configured')
@@ -105,6 +109,35 @@ class DeviceDashboard:
         except (OSError,sqlite3.Error):
             return None
 
+    def _read_receipts(self):
+        """最近上传回执（有界）；用来在房间刚消失、任务板已看不到 upload 数时补判。"""
+        try:
+            data=json.loads(self._receipts_path.read_text(encoding='utf-8'))
+        except (OSError,ValueError):
+            return []
+        if not isinstance(data,list):
+            return []
+        return [row for row in data if isinstance(row,dict) and row.get('digest')][-9:]
+
+    @staticmethod
+    def _receipt_uploads(room, receipts):
+        claimed=float(room.get('claimed_at') or 0)
+        players={str(p) for p in (room.get('players') or []) if p}
+        count=0
+        for row in receipts:
+            worker=str(row.get('worker') or '')
+            if worker and room.get('worker') and worker!=room.get('worker'):
+                continue
+            rp={str(p) for p in (row.get('players') or []) if p}
+            if players and rp and not (players & rp):
+                continue
+            try: received=float(row.get('received_at') or 0)
+            except (TypeError,ValueError): received=0.0
+            if claimed and received and received<claimed:
+                continue
+            count+=1
+        return count
+
     def snapshot(self):
         with self._lock:
             now=self.clock()
@@ -137,9 +170,51 @@ class DeviceDashboard:
             except (OSError,sqlite3.Error): recordings=[];ingest=None;recordings_ok=False
             online=[row for row in workers if row['online']]
             raw_stats=self._remote.get('stats') or {}
+            # 服务端任务板已经知道每个已认领任务对应哪一间；这里只做有界透传。
+            # 局数不在服务端解析（客户端只负责收发），页面留空或按已回传数展示。
+            rooms=[]
+            for raw in self._remote.get('rooms') or []:
+                if not isinstance(raw,dict):continue
+                try:claimed=float(raw.get('claimed_at') or 0)
+                except (TypeError,ValueError):claimed=0.0
+                try:last_upload=float(raw.get('last_upload_at') or 0)
+                except (TypeError,ValueError):last_upload=0.0
+                players=raw.get('players') if isinstance(raw.get('players'),list) else []
+                rooms.append(dict(worker=str(raw.get('worker') or '')[:64],job=str(raw.get('job') or '')[:64],
+                    room=str(raw.get('room') or '')[:80],title=str(raw.get('title') or '')[:120],
+                    players=[str(p)[:100] for p in players[:4]],claimed_at=claimed,
+                    uploaded=max(0,min(999,int(raw.get('uploaded') or 0))),last_upload_at=last_upload,
+                    focus=[str(p)[:100] for p in (raw.get('focus') or [])[:4]],
+                    reason=str(raw.get('reason') or '')[:80]))
+                if len(rooms)>=64:break
+            # 用户口径：房间从并发列表消失（并发数减少）且没有回传，就判定“未能传回录像”。
+            # 只读服务端任务板和上传回执，不需要客户端额外上报。
+            receipts=self._read_receipts() if rooms or self._rooms_cache else []
+            live={}
+            for room in rooms:
+                if room['uploaded']<=0:
+                    room['uploaded']=self._receipt_uploads(room,receipts)
+                live[(room['worker'],room['job'])]=room
+            if remote_ok:
+                for key,old in list(self._rooms_cache.items()):
+                    if key in live:continue
+                    uploaded=max(int(old.get('uploaded') or 0),self._receipt_uploads(old,receipts))
+                    self._ended.append(dict(worker=old.get('worker',''),job=old.get('job',''),
+                        room=old.get('room',''),title=old.get('title',''),
+                        players=list(old.get('players') or []),claimed_at=float(old.get('claimed_at') or 0),
+                        ended_at=now,uploaded=uploaded,
+                        verdict=('已回传 %d 个'%uploaded) if uploaded else '未能传回录像'))
+                self._ended=self._ended[-40:]
+                self._rooms_cache=live
+            else:
+                for key,room in live.items():
+                    if key in self._rooms_cache:
+                        self._rooms_cache[key]=dict(self._rooms_cache[key],
+                            uploaded=max(int(self._rooms_cache[key].get('uploaded') or 0),int(room.get('uploaded') or 0)))
+            ended=self._ended[-40:]
             result=dict(generated_at=now,status_at=self._status_at,remote_ok=remote_ok,
                 error='' if remote_ok else '设备状态暂时不可用；以下为最后一次成功采样，不能视为当前状态。',
-                workers=workers,ips=list(ips.values()),
+                workers=workers,ips=list(ips.values()),rooms=rooms,ended=ended,
                 summary=dict(online=len(online),active=sum(row['active'] for row in online),
                     capacity=sum(row['limit'] for row in ips.values()),pending=int(self._remote.get('pending') or 0)),
                 stats={key:int(raw_stats.get(key) or 0) for key in ('offered','claimed','reported','unclaimed','expired','uploaded','failed')},

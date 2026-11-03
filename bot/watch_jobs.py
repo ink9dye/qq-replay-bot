@@ -27,8 +27,8 @@ DEFAULT_WORKER_TTL = 45.0
 
 
 class Job:
-    __slots__ = ("id", "payload", "created", "expires", "claimed_by", "lease_until",
-                 "done", "event", "outcome", "detail")
+    __slots__ = ("id", "payload", "created", "expires", "claimed_by", "claimed_at",
+                 "lease_until", "uploaded", "last_upload_at", "done", "event", "outcome", "detail")
 
     def __init__(self, payload: dict, ttl: float):
         self.id = uuid.uuid4().hex[:12]
@@ -36,7 +36,10 @@ class Job:
         self.created = time.time()
         self.expires = self.created + float(ttl)
         self.claimed_by = ""
+        self.claimed_at = 0.0
         self.lease_until = 0.0
+        self.uploaded = 0
+        self.last_upload_at = 0.0
         self.done = False
         self.event = threading.Event()
         self.outcome = ""
@@ -130,6 +133,7 @@ class RemoteJobs:
                         if job is None or job.claimed_by or job.done:
                             continue
                         job.claimed_by = worker
+                        job.claimed_at = now
                         job.lease_until = now + self.lease
                         info["active"] += 1
                         self.stats["claimed"] += 1
@@ -208,9 +212,13 @@ class RemoteJobs:
                    if job_id in active and now-float(self._workers.get(worker,{}).get('seen') or 0)<=self.worker_ttl]
         return matches[0] if len(matches)==1 else ''
 
-    def note_upload(self) -> None:
+    def note_upload(self, job_id: str = "") -> None:
         with self._lock:
             self.stats["uploaded"] += 1
+            job = self._jobs.get(job_id) if job_id else None
+            if job is not None:
+                job.uploaded += 1
+                job.last_upload_at = time.time()
 
     # ---- 状态 -----------------------------------------------------------
     def _online_ips(self, now: float) -> set[str]:
@@ -252,10 +260,30 @@ class RemoteJobs:
                                   ip=info.get("ip", ""),
                                   online=(now - float(info.get("seen") or 0) <= self.worker_ttl))
                        for name, info in self._workers.items()}
+            # 只读服务端已经知道的事实：哪个 worker 认领了哪一间、这间已收到几个录像。
+            # 不要求客户端上报局数；页面上局数无法得知时留空。
+            rooms = []
+            for job in self._jobs.values():
+                if not job.claimed_by:
+                    continue
+                payload_room = job.payload.get("room") if isinstance(job.payload.get("room"), dict) else {}
+                players = payload_room.get("players") if isinstance(payload_room.get("players"), list) else []
+                rooms.append(dict(
+                    job=job.id, worker=job.claimed_by,
+                    room=str(payload_room.get("key") or "")[:80],
+                    title=str(payload_room.get("title") or "")[:120],
+                    players=[str(p)[:100] for p in players[:4]],
+                    claimed_at=float(job.claimed_at or 0),
+                    uploaded=int(job.uploaded or 0),
+                    last_upload_at=float(job.last_upload_at or 0),
+                    focus=[str(p)[:100] for p in (job.payload.get("focus") or [])[:4]],
+                    reason=str(job.payload.get("reason") or "")[:80]))
+            rooms.sort(key=lambda row: (row["worker"], row["claimed_at"] or 0))
             pending = sum(1 for job in self._jobs.values() if not job.claimed_by)
             return dict(stats=dict(self.stats), workers=workers,
                         pending=pending, claimed=len(self._jobs) - pending,
-                        ips=sorted(self._online_ips(now)), ip_cap=self._ip_cap(now))
+                        ips=sorted(self._online_ips(now)), ip_cap=self._ip_cap(now),
+                        rooms=rooms)
 
     # ---- 内部 -----------------------------------------------------------
     def _drop(self, job_id: str) -> None:

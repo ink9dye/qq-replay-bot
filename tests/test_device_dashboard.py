@@ -82,6 +82,42 @@ class DeviceDashboardTests(unittest.TestCase):
         self.fetch.return_value=dict(ok=True,workers={},stats=dict(offered=3,claimed=2,reported=1,uploaded=4,failed=1))
         self.assertEqual(self.dashboard.snapshot()['stats']['uploaded'],4)
 
+    def _fake_room(self, uploaded=0):
+        return dict(job='j1',worker='a',room='M#1',title='房间',players=['A','B'],
+                    claimed_at=self.now-30,uploaded=uploaded,last_upload_at=0,focus=['A'],reason='test')
+
+    def test_room_disappears_without_upload_is_marked_failed(self):
+        self.fetch.return_value=dict(ok=True,workers={'a':dict(ip='1.2.3.4',online=True,active=1,capacity=2)},
+                                     rooms=[self._fake_room()],ip_cap=6,pending=0)
+        self.assertEqual(len(self.dashboard.snapshot()['rooms']),1)
+        self.now+=6
+        self.fetch.return_value=dict(ok=True,workers={'a':dict(ip='1.2.3.4',online=True,active=0,capacity=2)},
+                                     rooms=[],ip_cap=6,pending=0)
+        s=self.dashboard.snapshot()
+        self.assertEqual(s['ended'][0]['verdict'],'未能传回录像')
+
+    def test_room_disappears_with_upload_is_marked_returned(self):
+        self.fetch.return_value=dict(ok=True,workers={'a':dict(ip='1.2.3.4',online=True,active=1,capacity=2)},
+                                     rooms=[self._fake_room(uploaded=2)],ip_cap=6,pending=0)
+        self.assertEqual(self.dashboard.snapshot()['rooms'][0]['uploaded'],2)
+        self.now+=6
+        self.fetch.return_value=dict(ok=True,workers={'a':dict(ip='1.2.3.4',online=True,active=0,capacity=2)},
+                                     rooms=[],ip_cap=6,pending=0)
+        s=self.dashboard.snapshot()
+        self.assertEqual(s['ended'][0]['verdict'],'已回传 2 个')
+
+    def test_receipt_fills_upload_count_after_job_disappears(self):
+        self.fetch.return_value=dict(ok=True,workers={'a':dict(ip='1.2.3.4',online=True,active=1,capacity=2)},
+                                     rooms=[self._fake_room()],ip_cap=6,pending=0)
+        self.dashboard.snapshot()
+        (self.root/'watch-receipts.json').write_text(json.dumps([
+            dict(digest='d1',worker='a',players=['A','B'],received_at=self.now+1)]),encoding='utf-8')
+        self.now+=6
+        self.fetch.return_value=dict(ok=True,workers={'a':dict(ip='1.2.3.4',online=True,active=0,capacity=2)},
+                                     rooms=[],ip_cap=6,pending=0)
+        s=self.dashboard.snapshot()
+        self.assertEqual(s['ended'][0]['verdict'],'已回传 1 个')
+
     def test_owner_auth_and_redirect_allowlist(self):
         p=StatisticsPortal(self.database,self.root,lambda:self.now,'x'*43);p.device_dashboard=self.dashboard
         h={'Host':'127.0.0.1:8788'}

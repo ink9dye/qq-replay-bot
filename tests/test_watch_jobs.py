@@ -107,6 +107,25 @@ class RemoteJobsTests(unittest.TestCase):
         jobs.heartbeat("pc-a", [], "1.2.3.4")
         self.assertEqual(jobs.snapshot()["workers"]["pc-a"]["ip"], "1.2.3.4")
 
+    def test_snapshot_lists_room_and_upload_count(self):
+        """设备页只读服务端事实：谁认领了哪间、这间实际收到几个录像。"""
+        jobs = RemoteJobs(lease=30, job_ttl=60)
+        payload = {"room": {"key": "M#room", "title": "房间", "players": ["甲", "乙"]},
+                   "focus": ["甲"], "reason": "前100"}
+        threading.Thread(target=jobs.offer_sync, args=(payload, 5)).start()
+        deadline, job = time.time() + 5, {}
+        while time.time() < deadline and not job:
+            job = jobs.claim("pc-a", 1, "1.2.3.4")
+            time.sleep(0.01)
+        self.assertTrue(job)
+        jobs.note_upload(job["id"])
+        row = jobs.snapshot()["rooms"][0]
+        self.assertEqual(row["worker"], "pc-a")
+        self.assertEqual(row["room"], "M#room")
+        self.assertEqual(row["players"], ["甲", "乙"])
+        self.assertEqual(row["uploaded"], 1)
+        self.assertGreater(row["claimed_at"], 0)
+
     def test_heartbeat_trusts_client_active_count(self):
         jobs = RemoteJobs()
         jobs.heartbeat("pc-a", ["unknown-job"], "1.2.3.4")
