@@ -17,6 +17,7 @@ import hmac
 import json
 import os
 import re
+import shutil
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +32,10 @@ _SAFE_NAME = re.compile(r"[^0-9A-Za-z._\-()\u4e00-\u9fff ]+")
 def _safe_part(text: str, fallback: str = "unknown") -> str:
     cleaned = _SAFE_NAME.sub("_", str(text or "")).strip(" .")
     return cleaned[:80] or fallback
+
+
+class InsufficientStorageError(OSError):
+    pass
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -165,6 +170,9 @@ class _Handler(BaseHTTPRequestHandler):
             recorded = time.time()
         try:
             result = self.server.app.save_upload(job_id, name, body, players, recorded)
+        except InsufficientStorageError:
+            self._send(507, dict(ok=False, error="接收磁盘剩余空间不足，暂停接收新录像。"))
+            return
         except (OSError, ValueError) as exc:
             self._send(500, dict(ok=False, error=str(exc)[:120]))
             return
@@ -180,13 +188,14 @@ class WatchApiServer:
     """把 RemoteJobs 暴露成 HTTP。start()/stop() 幂等，可从任意线程调用。"""
 
     def __init__(self, jobs, replay_root, token: str, log=print,
-                 bind=("127.0.0.1", 8791), max_upload: int = MAX_UPLOAD):
+                 bind=("127.0.0.1", 8791), max_upload: int = MAX_UPLOAD, receipt_path=None):
         self.jobs = jobs
         self.replay_root = Path(replay_root)
         self.token = str(token or "")
         self.log = log
         self.bind = bind
         self.max_upload = max_upload
+        self.receipt_path = Path(receipt_path) if receipt_path else self.replay_root.parent / "watch-receipts.json"
         self._httpd = None
         self._thread = None
 
@@ -208,6 +217,9 @@ class WatchApiServer:
 
     def save_upload(self, job_id: str, name: str, body: bytes,
                     players: list[str], recorded: float) -> dict:
+        storage = self.replay_root if self.replay_root.exists() else self.replay_root.parent
+        if shutil.disk_usage(storage).free < max(64*1024*1024, 2*len(body)):
+            raise InsufficientStorageError("replay_storage_low")
         focus = ""
         with self.jobs._lock:                     # 只读任务载荷，锁很短
             job = self.jobs._jobs.get(job_id)
@@ -231,6 +243,11 @@ class WatchApiServer:
         os.replace(tmp, path)
         digest = hashlib.sha256(body).hexdigest()
         if not evidence:
+            try:
+                from .watch_receipts import record_receipt
+                record_receipt(self.receipt_path, digest, self.jobs.upload_source(job_id), players or [folder], recorded)
+            except OSError:
+                self.log('[远程] 来源记录写入失败，录像接收继续')
             self.jobs.enqueue_ingest(str(path), players or [folder], recorded, digest)
             self.jobs.note_upload()
         self.log(f"[远程] 收到{'小局证据' if evidence else '录像'} "

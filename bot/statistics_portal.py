@@ -51,7 +51,7 @@ class StatisticsPortal:
         except (KeyError,ValueError,CookieError):return False
 
     def route(self,path,headers,client):
-        if urlsplit(path).path.startswith('/statistics/api/'):
+        if urlsplit(path).path.startswith('/statistics/api/') and urlsplit(path).path!='/statistics/api/devices':
             if not self._query_compute_lock.acquire(timeout=1):
                 return self._reply(503,'统计正在计算，请稍后重试。',extra={'Retry-After':'3'})
             try:
@@ -73,12 +73,19 @@ class StatisticsPortal:
             if not hmac.compare_digest(parts[2],self.secret):return self._reply(403,'入口凭据无效。')
             value=self._session(int(self.clock())+SESSION_SECONDS)
             # 只允许跳到固定的本机后台页，避免成为开放重定向。
-            target='/statistics/deck-naming' if parse_qs(parsed.query).get('next')==['/statistics/deck-naming'] else '/statistics'
+            requested=parse_qs(parsed.query).get('next',[''])[0]
+            target=requested if requested in ('/statistics/deck-naming','/statistics/devices') else '/statistics'
             return self._reply(303,'',extra={'Location':target,'Set-Cookie':f'{COOKIE}={value}; Path=/statistics; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}'})
         if not self._authenticated(headers.get('Cookie')):return self._reply(403,'请使用本机“打开统计页面”入口。')
         if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js','statistics_busy.js'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
             return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
+        if parts==['statistics','devices']:
+            return self._reply(200,Path(__file__).with_name('statistics_devices.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
+        if parts==['statistics','api','devices']:
+            dashboard=getattr(self,'device_dashboard',None)
+            if dashboard is None:return self._reply(503,'设备看板尚未配置。')
+            return self._reply(200,json.dumps(dashboard.snapshot(),ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics']:
             return self._reply(200,Path(__file__).with_name('statistics_portal.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','build']:

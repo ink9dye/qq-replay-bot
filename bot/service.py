@@ -397,6 +397,7 @@ class BotService:
             "websocket_urls": url_items(watch.get("websocket_urls")),
             "room_list_username": "",
             "room_list_password": "",
+            "data_dir": str(self.data_dir),
             "replay_dir": str(self.replay_root),
             "deck_dir": str(self.deck_dir),
             "cleanup_files": False,
@@ -587,6 +588,9 @@ class BotService:
             if count:
                 return f"已取消 {count} 条卡价预定：{label}。"
             return f"没有找到这条预定：{label}。"
+        if op == "watch_devices":
+            from .watch_devices import device_message
+            return device_message(self)
         if op == "stats_page":
             if not self._statistics_allowed(user, conversation):
                 return None

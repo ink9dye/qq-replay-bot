@@ -109,6 +109,9 @@ def create_server(root,port=8788):
     data=Path(cfg.get('data_dir') or root/'data');replays=Path(cfg.get('replay_dir') or data/'replays')
     if not (data/'bot.sqlite3').is_file():raise ValueError('statistics_database_missing')
     portal=StatisticsPortal(data/'bot.sqlite3',replays,time.time,owner_secret(data/'statistics-owner.key'))
+    from .device_dashboard import DeviceDashboard
+    remote=cfg.get('remote') or (cfg.get('watch') or {}).get('remote') or {}
+    portal.device_dashboard=DeviceDashboard(data/'bot.sqlite3',replays,str(remote.get('token') or ''))
     server=ReplayHTTPServer(('127.0.0.1',port),make_handler(portal))
     server.portal=portal
     return server

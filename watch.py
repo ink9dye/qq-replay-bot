@@ -2794,6 +2794,7 @@ async def serve(
                           single_ip_max=int(remote_cfg.get("single_ip_max") or 7),
                           multi_ip_max=int(remote_cfg.get("multi_ip_max") or 6))
         api = WatchApiServer(jobs, Path(config["replay_dir"]), str(remote_cfg.get("token") or ""),
+                             receipt_path=Path(config.get("data_dir") or DATA_DIR)/"watch-receipts.json",
                              log=log, bind=(str(remote_cfg.get("bind_host") or "127.0.0.1"),
                                             int(remote_cfg.get("bind_port") or 8791)))
         if api.start():

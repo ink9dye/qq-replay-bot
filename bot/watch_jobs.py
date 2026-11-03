@@ -60,6 +60,7 @@ class RemoteJobs:
         self._jobs: dict[str, Job] = {}
         self._order: list[str] = []
         self._workers: dict[str, dict] = {}
+        self._heartbeat_jobs: dict[str, set[str]] = {}
         self.ingest: "queue.Queue[dict]" = queue.Queue()
         self._reports: list[dict] = []
         self.stats = dict(offered=0, claimed=0, reported=0, unclaimed=0,
@@ -153,6 +154,7 @@ class RemoteJobs:
             if ip:
                 info["ip"] = ip
             live = set(active or [])
+            if active is not None: self._heartbeat_jobs[worker] = live
             for job_id in list(self._jobs):
                 job = self._jobs[job_id]
                 if job.claimed_by != worker:
@@ -172,7 +174,11 @@ class RemoteJobs:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
-                return False
+                # Clients can finish old recordings after a collector restart.
+                # Accept only ownership explicitly recovered from a fresh heartbeat.
+                if self._upload_source_unlocked(job_id) != worker: return False
+                job = Job({}, 0)
+                job.claimed_by = worker
             job.outcome = str(outcome or "")
             job.detail = dict(detail or {})
             job.done = True
@@ -186,7 +192,21 @@ class RemoteJobs:
                                       detail=job.detail, room=job.payload.get("room", {}).get("key", ""),
                                       at=time.time()))
             self._drop(job_id)
+            self._heartbeat_jobs.get(worker, set()).discard(job_id)
             return True
+
+    def upload_source(self, job_id: str) -> str:
+        """Prefer assigned ownership; recover old job ownership only from explicit heartbeats."""
+        with self._lock:
+            return self._upload_source_unlocked(job_id)
+
+    def _upload_source_unlocked(self, job_id: str) -> str:
+        job = self._jobs.get(job_id)
+        if job is not None and job.claimed_by: return job.claimed_by
+        now = time.time()
+        matches = [worker for worker, active in self._heartbeat_jobs.items()
+                   if job_id in active and now-float(self._workers.get(worker,{}).get('seen') or 0)<=self.worker_ttl]
+        return matches[0] if len(matches)==1 else ''
 
     def note_upload(self) -> None:
         with self._lock:

@@ -56,6 +56,8 @@ def parse_command(text: str) -> dict:
     if not tokens:
         return {"op": "empty"}
     head, rest = tokens[0], tokens[1:]
+    if head == "观战设备":
+        return {"op": "error", "message": "直接发送“观战设备”即可。"} if rest else {"op": "watch_devices"}
     if head == "历史":
         player = " ".join(rest).strip()
         if not player or len(player) > 100:
