@@ -63,6 +63,7 @@ SLOW_COMMAND_HINTS = {
     "stats_page": "正在生成统计链接，约几秒…",
     "replays": "正在读取录像目录，约几秒…",
     "top100_pie": "前百饼图生成中，约几秒…",
+    "ocg_pie": "正在读取OCG赛事饼图，首次获取约需几十秒…",
     "card_usage": "使用量统计中，约几秒…",
     "card_flow": "单卡流向统计中，约几秒…",
     "top100_deck": "正在匹配前百构筑，约几秒；完成后把结果发到这里。",
@@ -246,6 +247,8 @@ class BotService:
         self._guess_reveal_lock: Optional[asyncio.Lock] = None
         self.card_search = CardSearch(self.data_dir)
         self.card_extras = CardExtras(self.data_dir, self.card_search)
+        from .ocg_pie import OcgPie
+        self.ocg_pie = OcgPie(self.data_dir)
         self.player_history = PlayerHistory(log=self.write_log)
         # 价格库可能被 price-watch 占用：不在这里打开，第一次用到“预定”时再连。
         self._price_db = (self.config.get("price_watch") or {}).get("db")
@@ -546,6 +549,8 @@ class BotService:
             return self._top100_deck_text(user, command["keyword"], conversation)
         if op == "top100_pie":
             return self._top100_pie_reply()
+        if op == "ocg_pie":
+            return self.ocg_pie.reply()
         if op == "card_usage":
             return self._card_usage_reply(command["name"])
         if op == "card_flow":

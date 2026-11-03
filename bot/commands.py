@@ -56,6 +56,10 @@ def parse_command(text: str) -> dict:
     if not tokens:
         return {"op": "empty"}
     head, rest = tokens[0], tokens[1:]
+    if head.casefold() == "ocg饼图":
+        if rest:
+            return {"op": "error", "message": "直接发送“OCG饼图”即可。"}
+        return {"op": "ocg_pie"}
     if head == "统计对局":
         value=" ".join(rest).strip()
         ranked=re.fullmatch(r"前(100|200)\s*(内战)?",value)
