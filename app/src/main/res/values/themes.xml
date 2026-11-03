@@ -1,0 +1,4 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Compose 使用 Material3 主题，这里仅提供启动窗口与兼容性主题 -->
+    <style name="Theme.MoeCardWatch" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

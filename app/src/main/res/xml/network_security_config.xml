@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 观战调度服务默认走明文 HTTP，且对战服为裸 TCP，这里放行明文流量。
+     仅用于内网/自用场景；正式发布建议改为 HTTPS 并收紧 domain 范围。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
