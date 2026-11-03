@@ -66,7 +66,7 @@ SLOW_COMMAND_HINTS = {
     "ocg_pie": "正在读取OCG赛事饼图，首次获取约需几十秒…",
     "card_usage": "使用量统计中，约几秒…",
     "card_flow": "单卡流向统计中，约几秒…",
-    "top100_deck": "正在匹配前百构筑，约几秒；完成后把结果发到这里。",
+    "top100_deck": "前百构筑请求已收到，按顺序处理；完成后把结果发到这里。",
 }
 
 
@@ -258,6 +258,9 @@ class BotService:
         self._history_tasks = set()
         self._deck_cache = {}
         self._top100_deck_candidates = {}
+        self._statistics_command_lock = None
+        self._top100_views_lock = threading.Lock()
+        self._top100_views_cache = None
         self._deck_tasks = set()
         self._slow_tasks = set()
         self._known_replays_at = 0.0
@@ -715,10 +718,17 @@ class BotService:
                     "ORDER BY g.recorded_at DESC LIMIT 1",
                     (player, float(self.clock()))).fetchone()
                 manual = db.execute("SELECT COALESCE(MAX(updated_at),0) FROM stat_manual_decks").fetchone()[0]
-            return ((str(user_id), player, row[0], row[1], row[2], manual)
-                    if row else (str(user_id), player, None, manual))
+                revision = db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
+                sessions = tuple(db.execute('SELECT f.digest,s.session_id,s.game_no FROM stat_files f '
+                    'JOIN replay_sessions s ON s.replay_id=f.replay_id JOIN replays r ON r.id=f.replay_id '
+                    'WHERE r.focus_player=? ORDER BY f.digest,s.session_id,s.game_no', (player,)))
+                exclusions = tuple(db.execute("SELECT digest,player FROM stat_exclusions WHERE player='' OR player=? ORDER BY digest,player", (player,)))
+                validity = (revision, sessions, exclusions)
+            return ((str(user_id), player, row[0], row[1], row[2], manual, validity)
+                    if row else (str(user_id), player, None, manual, validity))
         except sqlite3.Error:
             return (str(user_id), player, None)
+
 
     def _deck_build_text(self, user_id: str, player: str):
         """构筑 玩家名：最新构筑图（base64）+ 本链接的 ydk 下载地址。"""
@@ -756,8 +766,6 @@ class BotService:
             return f"没有找到 {player} 的有效构筑（最近14天没有可用录像）。"
         inferred = result.get('inferred_side') or {}
         include_inferred = bool(inferred.get('cards')) and not inferred.get('conflict')
-        validation = result.get('build_validation') or {}
-        validation_line = (validation.get('summary') + '\n') if validation.get('summary') else ''
         ydk_url = link['url'].rstrip('/') + '/build-ydk' + ('?inferred=1' if include_inferred else '') if link.get('url') else ''
         if not inferred.get('cards'):
             ydk_note = ''
@@ -792,7 +800,6 @@ class BotService:
         rank_line = f"排名：#{rank}\n" if rank else ""
         text = (f"玩家：{player}\n"
                 f"{rank_line}"
-                f"{validation_line}"
                 f"卡组：{person.get('deck_type') or '未识别'}\n"
                 f"观测小局：{format_time(recorded) if recorded else '时间未知'}\n"
                 f"{ydk_line}\n"
@@ -1235,8 +1242,14 @@ class BotService:
         forward = self.qq.send_group_forward if is_group else self.qq.send_private_forward
         conversation = "group:" + str(receiver) if is_group else ""
         parsed_command = parse_command(text)
-        if parsed_command.get('op') in ('deck_build', 'top100_rank_build'):
-            await send(receiver, "构筑图生成中，约几秒…")
+        answer = str(text or '').strip()
+        pending_key = conversation + ':' + str(user_id) if conversation else str(user_id)
+        pending = self._top100_deck_candidates.get(pending_key)
+        deck_selection = bool(pending and answer.isascii() and answer.isdigit()
+                              and int(answer) in pending.get('players', {})
+                              and self.clock() - pending['time'] <= 300)
+        if parsed_command.get('op') in ('deck_build', 'top100_rank_build') or deck_selection:
+            await send(receiver, "构筑请求已收到，按顺序生成；完成后把结果发到这里。")
             task = asyncio.create_task(self._deck_build_job(
                 user_id, text, conversation, receiver, send))
             self._deck_tasks.add(task)
@@ -1535,11 +1548,30 @@ class BotService:
                 f"已识别 {len(data['items'])} 类）")
         return CardReply(text, image_url)
 
+    def _top100_latest_views(self):
+        from . import deck_naming
+        # Single flight: a burst of different keywords computes the roster once.
+        with self._top100_views_lock:
+            now = float(self.clock())
+            with closing(deck_naming.connect(self.store.path, readonly=True)) as db:
+                stamp = (tuple(tuple(r) for r in db.execute(
+                    'SELECT rank,player FROM stat_current_top100 ORDER BY rank')),
+                    tuple(db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()),
+                    tuple(db.execute('SELECT COUNT(*),MAX(received_at) FROM stat_games WHERE expires_at>?', (now,)).fetchone()),
+                    tuple(tuple(r) for r in db.execute('SELECT * FROM stat_exclusions ORDER BY digest,player')))
+                cached = self._top100_views_cache
+                if cached and cached[0] == stamp and 0 <= now - cached[1] < 30:
+                    return cached[2]
+                views = {r['player']: r for r in deck_naming.latest_views(db, now, self.replay_root)}
+                self._top100_views_cache = (stamp, now, views)
+                return views
+
+
     def _top100_deck_text(self, user: str, keyword: str, conversation: str = "") -> str:
         from . import deck_naming
         with closing(deck_naming.connect(self.store.path, readonly=True)) as db:
             roster = deck_naming.roster(db)
-            views = {row["player"]: row for row in deck_naming.latest_views(db, self.clock(), self.replay_root)}
+        views = self._top100_latest_views()
         wanted = keyword.strip().lower()
         hits = []
         for row in roster:
@@ -1560,6 +1592,7 @@ class BotService:
         for rank, player, deck in hits:
             lines.append(f"#{rank} {player} · {deck}")
         return "\n".join(lines)
+
 
     def _card_name_known(self, name):
         """查价前确认本地卡库有明确卡名，避免把“沉默”等词当卡名去翻页面。"""
@@ -1609,10 +1642,17 @@ class BotService:
         finally:
             self._price_ui_lock.release()
 
+    def _statistics_queue_lock(self):
+        # Bind only inside a running event loop (also works on Python 3.9).
+        if self._statistics_command_lock is None:
+            self._statistics_command_lock = asyncio.Lock()
+        return self._statistics_command_lock
+
+
     async def _deck_build_job(self, user_id, text, conversation, receiver, send):
         try:
-            reply = await asyncio.wait_for(
-                asyncio.to_thread(self.handle_text, user_id, text, conversation), timeout=40)
+            async with self._statistics_queue_lock():
+                reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
         except asyncio.TimeoutError:
             reply = "构筑生成超时，请稍后再试。"
         except Exception as exc:
@@ -1622,11 +1662,16 @@ class BotService:
         except Exception as exc:
             self.write_log(f"构筑结果发送失败：{exc}")
 
+
     async def _slow_text_job(self, user_id, text, conversation, receiver, send, forward=None, self_id=None):
         """先回一句“正在…”，再在后台跑慢命令；结果（含合并转发卡片）单独发。"""
         try:
-            reply = await asyncio.wait_for(
-                asyncio.to_thread(self.handle_text, user_id, text, conversation), timeout=120)
+            if parse_command(text).get('op') in ('top100_deck', 'top100_pie', 'card_usage', 'card_flow'):
+                async with self._statistics_queue_lock():
+                    reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+            else:
+                reply = await asyncio.wait_for(
+                    asyncio.to_thread(self.handle_text, user_id, text, conversation), timeout=120)
         except asyncio.TimeoutError:
             reply = "处理超时，请稍后再试。"
         except Exception as exc:
@@ -1641,6 +1686,7 @@ class BotService:
             await send(receiver, str(reply) if pages else reply)
         except Exception as exc:
             self.write_log(f"慢命令结果发送失败：{exc}")
+
 
     async def _history_job(self, user_id, text, conversation, receiver, send):
         try:
@@ -1883,7 +1929,6 @@ class BotService:
         elif "share" in active and self.share_external():
             self.write_log("分享服务由独立 share_service 提供（share.mode=process），watch 不再监听 8787。")
         if getattr(self, "_index_on_start", False) and "watch" in active:
-            import threading
 
             def _index_in_background():
                 try:

@@ -16,6 +16,7 @@ from .card_search import card_name
 COOKIE='qqstats_owner'
 SESSION_SECONDS=5*3600
 QUERY_WAIT_SECONDS=8.0
+QUERY_CACHE_MAX_BYTES = 8 * 1024 * 1024
 CACHED_API_PATHS=frozenset('/statistics/api/'+name for name in (
     'recordings','deck-naming/groups','card-table','cards-extra','card-combo',
     'card-report','roster','build'))
@@ -570,10 +571,11 @@ class StatisticsPortal:
             if hit and hit[0]==stamp and now-hit[1]<=ttl and not force:
                 return hit[2]
         result=self._query_reply(callback)
-        if result[0]==200:
+        if result[0]==200 and len(result[2]) <= QUERY_CACHE_MAX_BYTES:
             with self._query_cache_lock:
                 self._query_cache[key]=(stamp,time.monotonic(),result)
-                if len(self._query_cache)>32:
+                while (len(self._query_cache)>32 or
+                       sum(len(entry[2][2]) for entry in self._query_cache.values()) > QUERY_CACHE_MAX_BYTES):
                     oldest=min(self._query_cache,key=lambda k:self._query_cache[k][1])
                     self._query_cache.pop(oldest,None)
         return result

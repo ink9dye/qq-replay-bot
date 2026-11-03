@@ -11,14 +11,17 @@ def _chunks(values, size=400):
         yield values[start:start + size]
 
 
-def snapshot(db,root,now,include_opponents=False,annotate_series=True,with_facts=True):
+def snapshot(db,root,now,include_opponents=False,annotate_series=True,with_facts=True,row_filter=None):
     """Shared eligible-view snapshot.
 
     with_facts=False 时跳过全部卡牌事实（stat_card_facts）与卡表聚合：只有带卡片
     条件的查询需要它们，录像筛选默认页不需要。口径不变，只是少读两张表。
     """
     basis=eligible_views(db,root,now,annotate_series=False)
-    rows=basis['views']; ids={(r['digest'],r['player']):r for r in rows}
+    rows=basis['views']
+    if row_filter is not None:
+        rows=[row for row in rows if row_filter(row)]
+    ids={(r['digest'],r['player']):r for r in rows}
     if include_opponents:
         digests={r['digest'] for r in rows}
         # Opponent context of an eligible game never expands the candidate pool.
@@ -195,9 +198,25 @@ def query(db,root,now,args,limit=2000):
 
 def _query(db,root,now,args,limit=2000,ranges=None):
     """limit=None 表示返回全部命中（给打包下载用）；默认仍只回 2000 条给页面。"""
+    # Match metadata is resolved by eligible_views before this filter, preserving
+    # first-game identity. Expensive facts/opponent data only cover survivors.
+    early_start = _time_arg(args, 'start'); early_end = _time_arg(args, 'end')
+    if early_start is not None and early_end is not None and early_start >= early_end:
+        raise ValueError('开始时间必须早于结束时间。')
+    early_outcomes = _list_arg(args, 'outcome', length=32, label='胜负')
+    if any(x not in ('win','loss','draw','unknown') for x in early_outcomes):
+        raise ValueError('胜负条件无效。')
+    early_firsts = _list_arg(args, 'first', length=8, label='先后攻')
+    if any(x not in ('1','0','None') for x in early_firsts):
+        raise ValueError('先后攻条件无效。')
+    def row_filter(row):
+        return ((early_start is None or row['recorded_at'] >= early_start)
+                and (early_end is None or row['recorded_at'] < early_end)
+                and (not early_outcomes or row['outcome'] in early_outcomes)
+                and (not early_firsts or str(row['first_player']) in early_firsts))
     needs_facts=any(args.get(key) for key in ('card','opponent_card','not_card','opponent_not_card'))
     basis,rows,draws,used,carried,canonical=snapshot(db,root,now,include_opponents=True,
-        annotate_series=bool(args.get('series')or args.get('opponent_series')),with_facts=needs_facts)
+        annotate_series=bool(args.get('series')or args.get('opponent_series')),with_facts=needs_facts,row_filter=row_filter)
     from .statistics_recording_names import decorate
     decorate(db,rows,root,now)
     if args.get('phase_none',['0'])[0]=='1':

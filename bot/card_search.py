@@ -76,58 +76,87 @@ def card_image_url(code):
 
 
 _IMAGE_BYTES = {}
-_IMAGE_BYTES_LOCK = None
+_IMAGE_BYTES_LOCK = threading.RLock()
+_IMAGE_REQUESTS = {}
+IMAGE_CACHE_MAX_BYTES = 8 * 1024 * 1024
+IMAGE_MAX_BYTES = 2 * 1024 * 1024
+IMAGE_WAIT_SECONDS = 25
+
+
+def _card_image_blob(code, data_dir):
+    """Use the existing shared downloader; never start a second fetch for a card."""
+    cache_dir = Path(data_dir) / 'card-images'
+    path = cache_dir / (str(code) + '.jpg')
+    if path.is_file() and 0 < path.stat().st_size <= IMAGE_MAX_BYTES:
+        return path.read_bytes()
+    from .statistics_local_cards import library_root, _existing_picture, _schedule
+    root = library_root(data_dir)
+    if root is not None:
+        pics = (root / 'pics').resolve()
+        found = _existing_picture(pics, code)
+        if not found:
+            future = _schedule(data_dir, code, pics)
+            if future is not None:
+                from concurrent.futures import TimeoutError
+                try:
+                    future.result(timeout=IMAGE_WAIT_SECONDS)
+                except TimeoutError:
+                    return b''
+            found = _existing_picture(pics, code)
+        if found and found[0].stat().st_size <= IMAGE_MAX_BYTES:
+            return found[0].read_bytes()
+        return b''
+    # Configurations without a local YGO library still support ordinary lookup.
+    for url in (f'https://cdn.233.momobako.com/ygopro/pics/{code}.jpg',
+                f'https://cdntx.moecube.com/ygopro-super-pre/data/pics/{code}.jpg'):
+        try:
+            with urlopen(Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=5) as response:
+                blob = response.read(IMAGE_MAX_BYTES + 1)
+            if blob[:2] == b'\xff\xd8' and len(blob) <= IMAGE_MAX_BYTES:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(blob)
+                return blob
+        except OSError:
+            continue
+    return b''
 
 
 def card_image_payload(code, data_dir):
-    """下载并缓存卡图，返回 base64://，避免 QQ 端再请求外部 CDN。"""
+    """Small byte-bounded cache; same-card single flight; no network under the cache lock."""
     import base64
-    import threading
-    global _IMAGE_BYTES_LOCK
-    if _IMAGE_BYTES_LOCK is None:
-        _IMAGE_BYTES_LOCK = threading.Lock()
+    from concurrent.futures import Future, TimeoutError
     code = _numeric_code(code)
     with _IMAGE_BYTES_LOCK:
         cached = _IMAGE_BYTES.get(code)
         if cached:
             return 'base64://' + cached
-        cache_dir = Path(data_dir) / 'card-images'
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        path = cache_dir / (str(code) + '.jpg')
-        blob = b''
-        if path.is_file() and path.stat().st_size <= 8 * 1024 * 1024:
-            blob = path.read_bytes()
-        if not blob:
-            try:
-                from .statistics_local_cards import picture
-                found = picture(data_dir, code)
-                if found:
-                    blob = Path(found[0]).read_bytes()
-            except Exception:
-                blob = b''
-        if not blob:
-            for url in (
-                f'https://cdn.233.momobako.com/ygopro/pics/{code}.jpg',
-                f'https://cdntx.moecube.com/ygopro-super-pre/data/pics/{code}.jpg',
-            ):
-                try:
-                    request = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urlopen(request, timeout=5) as response:
-                        data = response.read(8 * 1024 * 1024 + 1)
-                    if data[:2] == b'\xff\xd8' and len(data) <= 8 * 1024 * 1024:
-                        blob = data
-                        path.write_bytes(blob)
-                        break
-                except Exception:
-                    continue
-        if not blob:
+        pending = _IMAGE_REQUESTS.get(code)
+        leader = pending is None
+        if leader:
+            pending = _IMAGE_REQUESTS[code] = Future()
+    if not leader:
+        try:
+            return pending.result(timeout=IMAGE_WAIT_SECONDS)
+        except TimeoutError:
             return card_image_url(code)
-        encoded = base64.b64encode(blob).decode('ascii')
-        _IMAGE_BYTES[code] = encoded
-        # 2C2G 上不限量会随进程寿命涨到几百 MB；只保留最近 32 张。
-        while len(_IMAGE_BYTES) > 32:
-            _IMAGE_BYTES.pop(next(iter(_IMAGE_BYTES)))
-        return 'base64://' + encoded
+    reply = card_image_url(code)
+    try:
+        blob = _card_image_blob(code, data_dir)
+        if blob:
+            encoded = base64.b64encode(blob).decode('ascii')
+            reply = 'base64://' + encoded
+            with _IMAGE_BYTES_LOCK:
+                if len(encoded) <= IMAGE_CACHE_MAX_BYTES:
+                    _IMAGE_BYTES[code] = encoded
+                while len(_IMAGE_BYTES) > 32 or sum(map(len, _IMAGE_BYTES.values())) > IMAGE_CACHE_MAX_BYTES:
+                    _IMAGE_BYTES.pop(next(iter(_IMAGE_BYTES)))
+    except (OSError, ValueError):
+        pass
+    finally:
+        with _IMAGE_BYTES_LOCK:
+            pending.set_result(reply)
+            _IMAGE_REQUESTS.pop(code, None)
+    return reply
 
 
 class CardReply(str):
