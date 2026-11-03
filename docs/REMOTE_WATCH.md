@@ -132,6 +132,9 @@ python tools/watch_worker.py --config tools/worker.json
 - 2026-11-03 09:45 实测：cloud 进 1 间房（人杰地灵 vs DE恶魔），收到 **2 个小局回放**，
   上传 2 个，`replays` +2、`stat_games` +2、`stat_views` +4，`/watch-api/status` 显示
   `ips=["127.0.0.1"]`、`ip_cap=7`。
+- collector 重启后任务板为空，但客户端心跳里的 `active` 仍会占用自己的 capacity，
+  避免服务器误判空闲而空派发；旧任务跑完后 `report` 可能 409，但已录文件仍会走
+  `/watch-api/upload` 入库，客户端随后自动认领新任务。
 
 ## 5. 容量与账号的对应规则（用户口径）
 
