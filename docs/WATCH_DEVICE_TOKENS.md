@@ -240,17 +240,36 @@ CREATE TABLE watch_tokens (
 7. 用旧总令牌 + 临时每设备令牌做接口验证（见第 9 节），测试行用完删除/吊销。
 8. 更新交接文档。
 
-### 7.3 低内存注意
+### 7.3 2C2G / 磁盘约束（重要）
 
-这台生产是 2C2G。2026-11-03 部署前对 545MB 的数据库备份跑 `PRAGMA integrity_check`，造成磁盘 I/O 压力、SSH 短暂 banner 超时；检查进程结束后服务未受影响。  
-**不要在低内存生产机上对整库备份做 `integrity_check`/`quick_check` 全量扫描**。需要验证备份时只用：
+这台生产是 **2 vCPU / 2GB RAM**，磁盘 40GB。2026-11-03 21:39 上线后的实测：
+
+| 项 | 数值 |
+|---|---|
+| 内存 | total 1740MB，used 1464MB，available **276MB**；部署前低到 **146–160MB** |
+| 磁盘 | 40GB，used 12GB，available **26GB**（32%） |
+| 数据库备份 | 本次新增一份 **545MB** 的 `bot-before-watch-tokens-...sqlite3` |
+| 进程峰值 | collector **307.7MB**、qq **24.4MB**（systemd 停止时记录） |
+
+这不是“内存/磁盘很宽裕”的机器。部署前我对 545MB 的数据库备份跑了 `PRAGMA integrity_check`，造成磁盘 I/O 压力、SSH 短暂 banner 超时；检查进程结束后服务未受影响，但这是一次实际教训。
+
+**操作红线：**
+
+1. **available 低于 200MB**：不做非必要备份、全库校验、批量日志导出或多个服务同时重启；低于 **150MB** 不要重启 collector，先等内存恢复或只重启 qq。
+2. **磁盘可用低于 2GB**：停止新的全量备份/部署；低于 **1GB** 按故障处理，先清旧备份/旧日志，**不要删** `bot.sqlite3`、`bot.sqlite3-wal`、`bot.sqlite3-shm`、`data/replays`。
+3. **不要对 545MB 备份跑 `PRAGMA integrity_check` / `quick_check` 全量扫描**；也不要在生产库上跑 `VACUUM`。需要验证备份只做文件大小/时间检查，或轻量 `PRAGMA schema_version`。
+4. **不要用 `cp` 热复制正在写的 `bot.sqlite3`**（WAL 可能不一致）；用 SQLite `.backup` API，或停服务后复制。一次只保留一份待确认的全量备份，确认新备份可打开后再删旧快照。
+5. **串行操作**：2 vCPU 下不要并行跑全量测试、备份、索引和重启；令牌签发本身很轻，但不要在低内存时同时做整库备份。
+6. **磁盘不是无限**：`data/backup`、`data/code-backups`、旧 `bot*.sqlite3` 快照、`bot/*.bak-*` 都会累积；清理前先 `ls -lh`/`du -sh`，确认不是当前库/唯一备份。`/tmp` 与根分区同盘，不要把大 tar/整库复制到 `/tmp`。
+7. 例行检查只用轻量命令：
 
 ```bash
-ls -l <备份文件>
-python3 -c "import sqlite3; d=sqlite3.connect('<备份文件>'); print(d.execute('PRAGMA schema_version').fetchone())"
+free -m
+df -h /opt/ygobot
+du -sh /opt/ygobot/data/backup /opt/ygobot/data/code-backups /opt/ygobot/data/logs 2>/dev/null
 ```
 
-或直接依赖每日备份 + 文件大小/时间；不要为了“确认备份”再压一遍 I/O。
+`watch_tokens` 本身很小（每行只有哈希和元数据），令牌功能不是磁盘增长的主要来源；真正的空间大头是数据库、录像和旧备份。
 
 ### 7.4 回滚
 
@@ -379,6 +398,7 @@ revoked_status 401
 - 旧 `remote.token` 仍是全局总令牌，权限最大；泄露时需单独轮换，会影响所有旧客户端。
 - `public_url` 缺省硬编码当前生产地址；换域名/端口时需配置。
 - 过期行不会自动清理；表增长很慢，必要时手动归档/删除。
+- 生产是 2C2G/40GB 低资源机：磁盘 545MB 级备份、低可用内存和全库校验都可能拖垮 I/O；操作红线见 7.3。
 - QQ 命令的少部分管理报错文案仍写作“观战令牌”（旧称），实际命令以 `令牌分发` 为准。
 
 ## 12. 相关文件
