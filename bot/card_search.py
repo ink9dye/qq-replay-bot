@@ -47,7 +47,7 @@ def _numeric_code(code):
 
 
 def card_image_url(code):
-    """新卡在 cdntx super-pre，旧卡在 momobako；按卡号探测并缓存。"""
+    """旧卡在 momobako、先行卡在 cdntx super-pre；先探快的源再回退。"""
     import threading
     code = _numeric_code(code)
     global _IMAGE_LOCK
@@ -58,8 +58,8 @@ def card_image_url(code):
         if cached:
             return cached
         candidates = [
-            f"https://cdntx.moecube.com/ygopro-super-pre/data/pics/{int(code)}.jpg",
             f"https://cdn.233.momobako.com/ygopro/pics/{int(code)}.jpg",
+            f"https://cdntx.moecube.com/ygopro-super-pre/data/pics/{int(code)}.jpg",
         ]
         import urllib.request
         for url in candidates:
@@ -107,8 +107,8 @@ def card_image_payload(code, data_dir):
                 blob = b''
         if not blob:
             for url in (
-                f'https://cdntx.moecube.com/ygopro-super-pre/data/pics/{code}.jpg',
                 f'https://cdn.233.momobako.com/ygopro/pics/{code}.jpg',
+                f'https://cdntx.moecube.com/ygopro-super-pre/data/pics/{code}.jpg',
             ):
                 try:
                     request = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
