@@ -153,8 +153,9 @@ def _paste_wedge(image, center, out_r, in_r, start, end, code, color, thumb=Fals
         span = math.radians(abs(end - start))
         mid = math.radians((start + end) / 2)
         r_mid = (out_r + in_r) / 2
-        width = max(out_r * span * 0.98, (out_r - in_r) * 1.526)
-        height = width / 1.526
+        side = max(out_r * span, out_r - in_r) * 1.02
+        width = side * 1.526
+        height = side
         card = _card_art_rect(code, width, height)
         if card is not None:
             px = int(size / 2 + math.cos(mid) * r_mid - card.width / 2)

@@ -59,3 +59,21 @@ class DrawAnalysisWorkerTests(unittest.TestCase):
         self.source(stamp=NOW-RETENTION_SECONDS)
         self.source('乙',NOW-20)
         runner=Mock(); self.assertEqual(self.run_one(runner),'idle');runner.assert_not_called()
+
+    def test_snapshot_candidate_skips_rescan_and_checks_expiry(self):
+        from unittest.mock import patch
+        row,path=self.source()
+        item=next(candidates(self.root/'db.sqlite3',self.replays,NOW))
+        report=self.report(row);report['version']=VERSION
+        runner=Mock(return_value=SimpleNamespace(returncode=0,stdout=json.dumps(report).encode()))
+        with patch('bot.draw_analysis_worker.candidates',side_effect=AssertionError('unexpected scan')):
+            result=process_one(self.root/'db.sqlite3',self.replays,self.root,runner,lambda:NOW,candidate=item)
+        self.assertEqual(result,'analyzed');runner.assert_called_once()
+
+    def test_snapshot_expired_while_waiting_does_not_launch_analysis(self):
+        row,path=self.source()
+        item=next(candidates(self.root/'db.sqlite3',self.replays,NOW))
+        runner=Mock()
+        result=process_one(self.root/'db.sqlite3',self.replays,self.root,runner,
+                           lambda:item[0]['deadline']+1,candidate=item)
+        self.assertEqual(result,'source_gone');runner.assert_not_called()

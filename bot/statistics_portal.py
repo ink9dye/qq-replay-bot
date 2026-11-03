@@ -33,6 +33,7 @@ class StatisticsPortal:
         self.database=Path(database);self.replay_root=Path(replay_root);self.clock=clock;self.secret=secret
         self._query_cache={}
         self._query_cache_lock=threading.Lock()
+        self._query_compute_lock=threading.RLock()
         from .player_history import PlayerHistory
         self.player_history=PlayerHistory()
         from .statistics_pt import InteractiveHistory
@@ -50,6 +51,16 @@ class StatisticsPortal:
         except (KeyError,ValueError,CookieError):return False
 
     def route(self,path,headers,client):
+        if urlsplit(path).path.startswith('/statistics/api/'):
+            if not self._query_compute_lock.acquire(timeout=1):
+                return self._reply(503,'统计正在计算，请稍后重试。',extra={'Retry-After':'3'})
+            try:
+                return self._route(path,headers,client)
+            finally:
+                self._query_compute_lock.release()
+        return self._route(path,headers,client)
+
+    def _route(self,path,headers,client):
         try:host=urlsplit('//'+headers.get('Host','')).hostname
         except ValueError:return self._reply(403,'本机入口地址无效。')
         try:local=ip_address(client).is_loopback
@@ -498,6 +509,14 @@ class StatisticsPortal:
         return self._roster_reply(force=True)
 
     def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
+        if not self._query_compute_lock.acquire(timeout=1):
+            return self._reply(503,'统计正在计算，请稍后重试。',extra={'Retry-After':'3'})
+        try:
+            return self._cached_query_reply_locked(key,callback,ttl,stamp_seconds,force)
+        finally:
+            self._query_compute_lock.release()
+
+    def _cached_query_reply_locked(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
         """相同条件 + 相同数据库文件版本时复用完整响应；DB 一写就失效。
 
         force=True 跳过命中直接重算并覆盖缓存（供后台保活续期，命中本身不会续期）。

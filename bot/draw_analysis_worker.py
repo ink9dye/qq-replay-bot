@@ -20,8 +20,8 @@ def candidates(database, replay_root, now):
         db.row_factory = sqlite3.Row
         rows = db.execute('SELECT r.*,MIN((SELECT MIN(saved_at) FROM replays WHERE digest=r.digest)+?,COALESCE(g.expires_at,r.saved_at+?)) AS deadline '
             'FROM replays r LEFT JOIN stat_games g ON g.digest=r.digest '
-            'WHERE r.saved_at+?>? ORDER BY r.recorded_at DESC',
-            (REPLAY_WINDOW_SECONDS, REPLAY_WINDOW_SECONDS, REPLAY_WINDOW_SECONDS, now)).fetchall()
+            'WHERE r.saved_at>? ORDER BY r.recorded_at DESC',
+            (REPLAY_WINDOW_SECONDS, REPLAY_WINDOW_SECONDS, now-REPLAY_WINDOW_SECONDS)).fetchall()
     grouped = {}
     for row in rows:
         if row['deadline'] <= now: continue
@@ -33,11 +33,13 @@ def candidates(database, replay_root, now):
         if not any(sidecar(p).exists() for _, p in copies): yield copies[0]
 
 
-def process_one(database, replay_root, game_root, runner=subprocess.run, clock=time.time):
-    item = next(candidates(database, replay_root, clock()), None)
+def process_one(database, replay_root, game_root, runner=subprocess.run, clock=time.time, *, candidate=None):
+    item = candidate if candidate is not None else next(candidates(database, replay_root, clock()), None)
     if item is None: return 'idle'
     row, path = item
     digest = row['digest']
+    if candidate is not None and (clock() >= row['deadline'] or not path.is_file()): return 'source_gone'
+    if sidecar(path).exists(): return 'already_attempted'
     if hashlib.sha256(path.read_bytes()).hexdigest() != digest: return 'identity_mismatch'
     try:
         result = runner([sys.executable, '-m', 'bot.replay_analysis', str(path),
@@ -123,10 +125,23 @@ def start_worker(root):
                 lock.seek(0)
                 if not _lock(lock): return
                 try:
+                    pending = iter(())
+                    refresh_at = 0.0
                     while not stop.is_set():
-                        try: state = process_one(data/'bot.sqlite3', replays, game_root)
+                        try:
+                            now = time.monotonic()
+                            if now >= refresh_at:
+                                # Reuse a candidate snapshot instead of scanning/sorting the
+                                # entire replay table once for every analyzed replay.
+                                pending = iter(list(candidates(data/'bot.sqlite3', replays, time.time())))
+                                refresh_at = now + 60
+                            item = next(pending, None)
+                            if item is None:
+                                stop.wait(max(0, refresh_at-time.monotonic()))
+                                continue
+                            state = process_one(data/'bot.sqlite3', replays, game_root, candidate=item)
                         except (OSError, ValueError, sqlite3.Error): state = 'error'
-                        stop.wait(2 if state in ('analyzed', 'failed') else 30)
+                        stop.wait(5 if state in ('analyzed', 'failed') else 2)
                 finally:
                     lock.seek(0); _unlock(lock)
         except OSError: return
