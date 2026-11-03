@@ -68,6 +68,22 @@ class RemoteJobsTests(unittest.TestCase):
         self.assertTrue(jobs.report("pc-a", job["id"], "saved", {"saved": 2}))
         self.assertEqual(jobs.drain_reports()[0]["outcome"], "saved")
 
+    def test_claimed_job_survives_ttl_but_not_lease(self):
+        """长对局不能因为 job_ttl 到点被清掉；只要心跳还在就按租约续命。"""
+        jobs = RemoteJobs(lease=30, job_ttl=0.05)
+        threading.Thread(target=jobs.offer_sync, args=({"room": {"key": "C"}}, 5)).start()
+        deadline, job = time.time() + 5, {}
+        while time.time() < deadline and not job:
+            job = jobs.claim("pc-a", 1)
+            time.sleep(0.01)
+        self.assertTrue(job)
+        time.sleep(0.12)
+        jobs.heartbeat("pc-a", [job["id"]])
+        self.assertEqual(jobs.snapshot()["claimed"], 1)
+        with jobs._lock:
+            jobs._jobs[job["id"]].lease_until = time.time() - 1
+        self.assertEqual(jobs.snapshot()["claimed"], 0)
+
 
 class WatchApiTests(unittest.TestCase):
     def setUp(self):

@@ -1,1 +1,1 @@
-{"server":"http://101.201.108.188:8787","token":"REPLACE_WITH_SERVER_TOKEN","name":"pc-a","capacity":6,"work_dir":""}
+{"server":"http://101.201.108.188:8787","token":"REPLACE_WITH_SERVER_TOKEN","name":"pc-a","capacity":1,"work_dir":"","account":"YOUR_MYCARD_ACCOUNT","password":"YOUR_MYCARD_PASSWORD"}

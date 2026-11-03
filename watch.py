@@ -28,7 +28,9 @@ import ssl
 import struct
 import sys
 import tempfile
+import threading
 import time
+import weakref
 import zipfile
 from collections import Counter
 import urllib.error
@@ -1481,11 +1483,6 @@ def refresh_secret(config: dict) -> None:
     raise RuntimeError("请在 data/watch-config.json 填写萌卡 account 和 password")
 
 
-_SECRET_LOCK: Optional[asyncio.Lock] = None
-_SECRET_REFRESHED_AT = 0.0
-_SECRET_REFRESH_INTERVAL = 60.0
-
-
 def invalidate_secret_cache() -> None:
     """下一次进场前必须重新取 u16Secret。
 
@@ -1497,16 +1494,30 @@ def invalidate_secret_cache() -> None:
     _SECRET_REFRESHED_AT = 0.0
 
 
-async def refresh_secret_shared(config: dict) -> None:
-    """并发观战共用一次 u16Secret 刷新，避免多任务同时轮换互相失效。"""
-    global _SECRET_LOCK, _SECRET_REFRESHED_AT
-    if _SECRET_LOCK is None:
-        _SECRET_LOCK = asyncio.Lock()
-    async with _SECRET_LOCK:
+_SECRET_REFRESHED_AT = 0.0
+_SECRET_REFRESH_INTERVAL = 60.0
+# 远程观战端每个任务一个线程 + 一个事件循环；刷新凭据要跨循环串行。
+# 同一个 loop 用 asyncio.Lock 排队，不同 loop 之间用 threading.Lock 兜底。
+_SECRET_LOCKS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+_SECRET_THREAD_LOCK = threading.Lock()
+
+
+def _secret_lock_for_loop() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _SECRET_LOCKS.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SECRET_LOCKS[loop] = lock
+    return lock
+
+
+def _refresh_secret_locked(config: dict) -> None:
+    global _SECRET_REFRESHED_AT
+    with _SECRET_THREAD_LOCK:
         if time.time() - _SECRET_REFRESHED_AT < _SECRET_REFRESH_INTERVAL and config.get("mycard_secret"):
             return
         try:
-            await asyncio.to_thread(refresh_secret, config)
+            refresh_secret(config)
         except Exception as exc:
             _secret_failed(exc, True, "failed")
             if config.get("mycard_secret") not in (None, "", 0):
@@ -1516,6 +1527,14 @@ async def refresh_secret_shared(config: dict) -> None:
                 return
             raise
         _SECRET_REFRESHED_AT = time.time()
+
+
+async def refresh_secret_shared(config: dict) -> None:
+    """并发观战共用一次 u16Secret 刷新，避免多任务同时轮换互相失效（跨线程/事件循环安全）。"""
+    if time.time() - _SECRET_REFRESHED_AT < _SECRET_REFRESH_INTERVAL and config.get("mycard_secret"):
+        return
+    async with _secret_lock_for_loop():
+        await asyncio.to_thread(_refresh_secret_locked, config)
 
 
 def build_join_password(config: dict, room: RoomInfo) -> str:
@@ -1852,7 +1871,7 @@ class Spectator:
         self._allow_complete_start = not room.started
         self._previous_game = None
         self.is_host = False
-        self.fixed_password: Optional[str] = None  # 远程端由服务器下发入房口令，免登录
+        self.fixed_password: Optional[str] = None  # 仅兼容旧版远程任务直接下发的口令；新任务由观战端本地计算
         self.reader: Optional[asyncio.StreamReader] = None
         self.writer: Optional[asyncio.StreamWriter] = None
 
@@ -1945,7 +1964,7 @@ class Spectator:
         drop_failures = 0
         while True:
             if self.fixed_password:
-                # 远程观战端：服务器已经算好口令，本地不保存账号凭据。
+                # 兼容旧版远程任务：服务器直接下发了口令（已废弃，新任务走下方本地账号路径）。
                 nickname = str(self.config.get("nickname") or "Spectator")
                 password = self.fixed_password
             else:
@@ -2704,8 +2723,11 @@ class JoinConcurrencyTuner:
 
 def remote_payload(config: dict, room: RoomInfo, writer: ReplayWriter,
                    known_start, reason: str) -> dict:
-    """把房间整理成远程端可直接使用的任务。口令由服务器算好，远程端不碰账号凭据。"""
-    password = build_join_password(config, room)
+    """把房间整理成远程端可直接使用的任务。
+
+    只下发房间/服务器/归档目录，**不下发入房口令**：口令由观战端用自己的萌卡账号
+    在本地 `sign_in` 后按局计算（`build_join_password`），账号密码不出本机。
+    """
     focus = replay_folders(room.players, writer.targets, writer.mode)
     return dict(
         room=dict(key=room.key, title=room.title, join_id=room.join_id,
@@ -2714,8 +2736,6 @@ def remote_payload(config: dict, room: RoomInfo, writer: ReplayWriter,
                   started=bool(room.started)),
         server=dict(host=str(config["host"]), port=int(config["port"]),
                     version=int(parse_version(config.get("version") or DEFAULT_VERSION))),
-        password=password,
-        nickname=str(config.get("nickname") or "Spectator"),
         focus=focus,
         started_at=known_start,
         reason=reason,

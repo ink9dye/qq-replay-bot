@@ -129,7 +129,11 @@ class RemoteJobs:
             time.sleep(min(0.5, max(0.05, deadline - now)))
 
     def heartbeat(self, worker: str, active: list[str] | None = None) -> list[str]:
-        """续租；返回服务器认为应该放弃的任务 id（房间已结束/任务过期）。"""
+        """续租；返回服务器认为应该放弃的任务 id（房间已结束/任务过期）。
+
+        已被认领的任务由租约（lease）管生死，不能再按 job_ttl 丢：一局 Bo3 常常
+        十几分钟，若还按 180 秒的 TTL 清理，录像上传后就找不到 job、report 会 409。
+        """
         now = time.time()
         with self._lock:
             info = self._workers.setdefault(worker, dict(active=0, ip="", seen=0.0, capacity=1))
@@ -138,9 +142,6 @@ class RemoteJobs:
             for job_id in list(self._jobs):
                 job = self._jobs[job_id]
                 if job.claimed_by != worker:
-                    continue
-                if now >= job.expires:
-                    self._drop(job_id)
                     continue
                 if active is not None and job_id not in live:
                     # 远程端已经不在跑这个任务了：释放，允许重新派发
@@ -207,7 +208,8 @@ class RemoteJobs:
             if job.done:
                 self._drop(job_id)
                 continue
-            if now >= job.expires:
+            # 未认领的任务才按 TTL 过期；已认领的看租约，避免长对局被误清。
+            if not job.claimed_by and now >= job.expires:
                 self.stats["expired"] += 1
                 self._drop(job_id)
                 continue
