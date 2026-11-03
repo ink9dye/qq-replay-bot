@@ -1,0 +1,19 @@
+[Unit]
+Description=YGO cloud watch client (server-side spectator)
+After=network-online.target ygo-collector.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/usr/bin/python3 /opt/ygobot/tools/watch_worker.py --config /opt/ygobot/tools/worker-cloud.json
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

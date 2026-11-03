@@ -99,7 +99,10 @@ class _Handler(BaseHTTPRequestHandler):
             if not worker:
                 self._send(400, dict(ok=False, error="worker_required"))
                 return
-            job = self.server.app.claim(worker, int(data.get("capacity") or 1), str(data.get("ip") or ""),
+            # 并发上限按“公网 IP”算：nginx 会带 X-Real-IP；云端客户端直连 8791 时是 127.0.0.1。
+            # 不用请求体里的 ip，避免客户端伪造。
+            client_ip = (self.headers.get("X-Real-IP") or "").strip() or (self.client_address[0] if self.client_address else "")
+            job = self.server.app.claim(worker, int(data.get("capacity") or 1), client_ip,
                                         float(data.get("wait") or 0))
             if not job:
                 self._send(204, None)
@@ -114,7 +117,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             active = data.get("active")
             active = [str(item) for item in active] if isinstance(active, list) else None
-            cancel = self.server.app.heartbeat(worker, active)
+            client_ip = (self.headers.get("X-Real-IP") or "").strip() or (self.client_address[0] if self.client_address else "")
+            cancel = self.server.app.heartbeat(worker, active, client_ip)
             self._send(200, dict(ok=True, cancel=cancel))
             return
         if path == "/watch-api/report":
@@ -190,8 +194,8 @@ class WatchApiServer:
     def claim(self, worker: str, capacity: int, ip: str, wait: float = 0.0) -> dict:
         return self.jobs.claim(worker, capacity, ip, wait)
 
-    def heartbeat(self, worker: str, active) -> list[str]:
-        return self.jobs.heartbeat(worker, active)
+    def heartbeat(self, worker: str, active, ip: str = "") -> list[str]:
+        return self.jobs.heartbeat(worker, active, ip)
 
     def report(self, worker: str, job_id: str, outcome: str, detail: dict) -> bool:
         ok = self.jobs.report(worker, job_id, outcome, detail)

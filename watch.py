@@ -2790,13 +2790,22 @@ async def serve(
         from bot.watch_jobs import RemoteJobs
         from bot.watch_api import WatchApiServer
         jobs = RemoteJobs(lease=float(remote_cfg.get("lease_seconds") or 120),
-                          job_ttl=float(remote_cfg.get("job_ttl_seconds") or 180))
+                          job_ttl=float(remote_cfg.get("job_ttl_seconds") or 180),
+                          single_ip_max=int(remote_cfg.get("single_ip_max") or 7),
+                          multi_ip_max=int(remote_cfg.get("multi_ip_max") or 6))
         api = WatchApiServer(jobs, Path(config["replay_dir"]), str(remote_cfg.get("token") or ""),
                              log=log, bind=(str(remote_cfg.get("bind_host") or "127.0.0.1"),
                                             int(remote_cfg.get("bind_port") or 8791)))
         if api.start():
             remote = dict(jobs=jobs, api=api, wait=float(remote_cfg.get("claim_wait_seconds") or 3.0))
             log(f"远程观战：已启用，等待间隔 {remote['wait']:g} 秒，任务租期 {jobs.lease:g} 秒")
+    local_watch = bool(config.get("local_watch", True))
+    if not local_watch and remote is None:
+        log("local_watch=false 但远程接口未启用，回退为本地观战")
+        local_watch = True
+    if not local_watch:
+        log(f"server-only：本进程只发现/派发，不进房；单 IP 上限 {remote['jobs'].single_ip_max}、"
+            f"多 IP 上限 {remote['jobs'].multi_ip_max}，录制由云端/远程客户端完成")
     board = RoomBoard()
     stop = asyncio.Event()
     http_urls, ws_urls = candidate_sources(config)
@@ -2846,6 +2855,7 @@ async def serve(
     remote_dispatched = 0
     remote_reported = 0
     remote_rooms: dict[str, float] = {}
+    last_remote_dispatch = 0.0
     silent_tracker = SilentWindowTracker()
     probation_enabled = config_flag(config, "probation_enabled", True) and gate.min_interval > 0
     probation_until = time.monotonic() + PROBATION_SECONDS if probation_enabled else 0.0
@@ -3181,27 +3191,31 @@ async def serve(
                     # 已经交给远程端的房间不再派发/本地重进：房间推送可能延迟删房，
                     # 否则同一间会每 5 秒被重复派发一次（客户端只能拒绝，形成空转）。
                     continue
-                gate_now = time.monotonic()
-                allowed, wait_seconds = gate.allow(gate_now)
-                if not allowed:
-                    # 并发满/间隔未到/失败暂停：本轮不发起连接，只留等待日志（同一房间同一原因最多每 60 秒一行）。
-                    if wait_seconds is None:
-                        kind = 'concurrent'
-                    else:
-                        kind = 'paused' if gate_now < gate.paused_until else 'interval'
-                    last = gate_blocked.get(room.key)
-                    if last is None or last[0] != kind or gate_now - last[1] >= 60:
-                        gate_blocked[room.key] = (kind, gate_now)
-                        title = room.title or room.join_id or room.key
-                        if kind == 'concurrent':
-                            why = f"正在观战 {gate.in_flight}/{gate.max_concurrent} 个"
-                        elif kind == 'paused':
-                            why = f"失败暂停中，还需等 {wait_seconds:g} 秒"
-                        else:
-                            why = f"距上次进场还需等 {wait_seconds:g} 秒"
-                        log(f"进场节流：暂不进入「{title}」（{why}）")
+                if not local_watch and remote is not None and remote["jobs"].free_slots() <= 0:
+                    # server-only：没有空闲客户端时不要空派发（否则 offered 会空涨、还占 3 秒）。
                     continue
-                gate_blocked.pop(room.key, None)
+                gate_now = time.monotonic()
+                if local_watch:
+                    allowed, wait_seconds = gate.allow(gate_now)
+                    if not allowed:
+                        # 并发满/间隔未到/失败暂停：本轮不发起连接，只留等待日志（同一房间同一原因最多每 60 秒一行）。
+                        if wait_seconds is None:
+                            kind = 'concurrent'
+                        else:
+                            kind = 'paused' if gate_now < gate.paused_until else 'interval'
+                        last = gate_blocked.get(room.key)
+                        if last is None or last[0] != kind or gate_now - last[1] >= 60:
+                            gate_blocked[room.key] = (kind, gate_now)
+                            title = room.title or room.join_id or room.key
+                            if kind == 'concurrent':
+                                why = f"正在观战 {gate.in_flight}/{gate.max_concurrent} 个"
+                            elif kind == 'paused':
+                                why = f"失败暂停中，还需等 {wait_seconds:g} 秒"
+                            else:
+                                why = f"距上次进场还需等 {wait_seconds:g} 秒"
+                            log(f"进场节流：暂不进入「{title}」（{why}）")
+                        continue
+                    gate_blocked.pop(room.key, None)
                 shown = await asyncio.to_thread(room_label_with_ranks, room)
                 reason=selection_reason(room,str(config.get('name_match') or 'exact'))
                 if known_start is None:
@@ -3216,16 +3230,29 @@ async def serve(
                     continue
                 if remote is not None and remote["jobs"].online_workers() > 0:
                     # 远程端有在线且有余量时优先派发；派不出去再走本地观战。
+                    if not local_watch:
+                        now_remote = time.monotonic()
+                        if now_remote - last_remote_dispatch < gate.min_interval + random.uniform(0.0, gate.jitter):
+                            continue
                     worker = await dispatch_remote(remote, config, room, writer, known_start, shown, reason)
                     if worker:
                         remote_dispatched += 1
                         now_remote = time.monotonic()
+                        last_remote_dispatch = now_remote
                         for key, until in list(remote_rooms.items()):
                             if until <= now_remote:
                                 remote_rooms.pop(key, None)
                         remote_rooms[room.key] = now_remote + REMOTE_ROOM_TTL
                         monitor.joined(room.key)
                         continue
+                if not local_watch:
+                    # server-only：没有客户端接单就短冷却后重试，绝不本地进房。
+                    now_room = time.monotonic()
+                    for key, until in list(remote_rooms.items()):
+                        if until <= now_room:
+                            remote_rooms.pop(key, None)
+                    remote_rooms[room.key] = now_room + 30.0
+                    continue
                 gate.started(time.monotonic())
                 if room.key in preexisting and room.key not in direct_keys:
                     catchup_joined += 1

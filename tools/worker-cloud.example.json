@@ -1,0 +1,9 @@
+{
+  "server": "http://127.0.0.1:8791",
+  "token": "REPLACE_WITH_SERVER_TOKEN",
+  "name": "cloud",
+  "capacity": 1,
+  "work_dir": "/opt/ygobot/data/cloud-watch",
+  "account": "YOUR_MYCARD_ACCOUNT",
+  "password": "YOUR_MYCARD_PASSWORD"
+}

@@ -386,6 +386,8 @@ class BotService:
             "password": str(mycard.get("password") or ""),
             "mycard_secret": mycard.get("mycard_secret"),
             "join_mode": join_mode_value(watch.get("join_mode")),
+            # false = 服务器只发现/派发，不自己进房（云端客户端/远程客户端负责录制）。
+            "local_watch": bool(watch.get("local_watch", True)),
             "name_match": "exact",
             "watch_waiting_rooms": bool(watch.get("watch_waiting_rooms", True)),
             # 房间来源允许由 config.json 指定（三个都为空时用观战核心自带的萌卡进行中对局列表）。

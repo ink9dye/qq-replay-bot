@@ -84,6 +84,41 @@ class RemoteJobsTests(unittest.TestCase):
             jobs._jobs[job["id"]].lease_until = time.time() - 1
         self.assertEqual(jobs.snapshot()["claimed"], 0)
 
+    def test_per_ip_cap_switches_7_to_6(self):
+        jobs = RemoteJobs(single_ip_max=7, multi_ip_max=6)
+        now = time.time()
+        jobs._workers["a"] = dict(active=0, ip="1.1.1.1", seen=now, capacity=1)
+        self.assertEqual(jobs._ip_cap(now), 7)
+        jobs._workers["b"] = dict(active=0, ip="2.2.2.2", seen=now, capacity=1)
+        self.assertEqual(jobs._ip_cap(now), 6)
+        self.assertEqual(jobs._online_ips(now), {"1.1.1.1", "2.2.2.2"})
+
+    def test_active_for_ip_counts_all_workers(self):
+        jobs = RemoteJobs()
+        now = time.time()
+        jobs._workers["a"] = dict(active=2, ip="1.1.1.1", seen=now, capacity=2)
+        jobs._workers["b"] = dict(active=1, ip="1.1.1.1", seen=now, capacity=1)
+        jobs._workers["c"] = dict(active=1, ip="2.2.2.2", seen=now, capacity=1)
+        self.assertEqual(jobs._active_for_ip("1.1.1.1"), 3)
+        self.assertEqual(jobs._active_for_ip("2.2.2.2"), 1)
+
+    def test_heartbeat_sets_ip(self):
+        jobs = RemoteJobs()
+        jobs.heartbeat("pc-a", [], "1.2.3.4")
+        self.assertEqual(jobs.snapshot()["workers"]["pc-a"]["ip"], "1.2.3.4")
+
+    def test_free_slots_respects_capacity_and_ip_cap(self):
+        jobs = RemoteJobs(single_ip_max=7, multi_ip_max=6)
+        now = time.time()
+        jobs._workers["a"] = dict(active=0, ip="1.1.1.1", seen=now, capacity=1)
+        self.assertEqual(jobs.free_slots(now), 1)
+        jobs._workers["a"]["active"] = 1
+        self.assertEqual(jobs.free_slots(now), 0)
+        jobs._workers["b"] = dict(active=0, ip="1.1.1.1", seen=now, capacity=1)
+        self.assertEqual(jobs.free_slots(now), 1)
+        jobs._workers["c"] = dict(active=0, ip="2.2.2.2", seen=now, capacity=1)
+        self.assertEqual(jobs.free_slots(now), 2)
+
 
 class WatchApiTests(unittest.TestCase):
     def setUp(self):

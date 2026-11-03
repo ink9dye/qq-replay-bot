@@ -31,3 +31,5 @@ statistics-owner.key
 *.key
 secrets*
 tools/worker.json
+tools/worker-*.json
+!tools/worker-cloud.example.json

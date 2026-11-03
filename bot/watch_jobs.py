@@ -47,10 +47,14 @@ class RemoteJobs:
     """任务板 + 在线端登记 + 上传入库队列。所有公开方法都可跨线程调用。"""
 
     def __init__(self, lease: float = DEFAULT_LEASE, job_ttl: float = DEFAULT_JOB_TTL,
-                 worker_ttl: float = DEFAULT_WORKER_TTL):
+                 worker_ttl: float = DEFAULT_WORKER_TTL,
+                 single_ip_max: int = 7, multi_ip_max: int = 6):
         self.lease = float(lease)
         self.job_ttl = float(job_ttl)
         self.worker_ttl = float(worker_ttl)
+        # 单个公网 IP 的并发上限：只有 1 个 IP 时 7，出现多个 IP 时 6（平台风控口径）。
+        self.single_ip_max = max(1, int(single_ip_max))
+        self.multi_ip_max = max(1, int(multi_ip_max))
         self._lock = threading.Lock()
         self._jobs: dict[str, Job] = {}
         self._order: list[str] = []
@@ -103,7 +107,11 @@ class RemoteJobs:
 
     # ---- 远程端：认领/心跳/上报 -----------------------------------------
     def claim(self, worker: str, capacity: int = 1, ip: str = "", wait: float = 0.0) -> dict:
-        """认领任务。wait>0 时长轮询：没任务就挂住，最多等 wait 秒。"""
+        """认领任务。wait>0 时长轮询：没任务就挂住，最多等 wait 秒。
+
+        每个 worker 的 capacity 之外，还要受“单公网 IP 并发上限”约束：
+        在线 IP 只有 1 个时 7，多于 1 个时每个 IP 6。
+        """
         deadline = time.time() + max(0.0, float(wait or 0.0))
         while True:
             now = time.time()
@@ -111,7 +119,10 @@ class RemoteJobs:
                 self._prune(now)
                 info = self._workers.setdefault(worker, dict(active=0, ip="", seen=0.0, capacity=1))
                 info.update(seen=now, capacity=max(1, int(capacity or 1)), ip=ip or info.get("ip", ""))
-                if info["active"] < info["capacity"]:
+                client_ip = str(info.get("ip") or "")
+                ip_cap = self._ip_cap(now)
+                if info["active"] < info["capacity"] and (
+                        not client_ip or self._active_for_ip(client_ip) < ip_cap):
                     for job_id in self._order:
                         job = self._jobs.get(job_id)
                         if job is None or job.claimed_by or job.done:
@@ -128,7 +139,7 @@ class RemoteJobs:
                 return {}
             time.sleep(min(0.5, max(0.05, deadline - now)))
 
-    def heartbeat(self, worker: str, active: list[str] | None = None) -> list[str]:
+    def heartbeat(self, worker: str, active: list[str] | None = None, ip: str = "") -> list[str]:
         """续租；返回服务器认为应该放弃的任务 id（房间已结束/任务过期）。
 
         已被认领的任务由租约（lease）管生死，不能再按 job_ttl 丢：一局 Bo3 常常
@@ -138,6 +149,8 @@ class RemoteJobs:
         with self._lock:
             info = self._workers.setdefault(worker, dict(active=0, ip="", seen=0.0, capacity=1))
             info["seen"] = now
+            if ip:
+                info["ip"] = ip
             live = set(active or [])
             for job_id in list(self._jobs):
                 job = self._jobs[job_id]
@@ -177,11 +190,36 @@ class RemoteJobs:
             self.stats["uploaded"] += 1
 
     # ---- 状态 -----------------------------------------------------------
+    def _online_ips(self, now: float) -> set[str]:
+        return {str(info.get("ip")) for info in self._workers.values()
+                if info.get("ip") and now - float(info.get("seen") or 0) <= self.worker_ttl}
+
+    def _ip_cap(self, now: float) -> int:
+        return self.single_ip_max if len(self._online_ips(now)) <= 1 else self.multi_ip_max
+
+    def _active_for_ip(self, ip: str) -> int:
+        return sum(int(info.get("active") or 0) for info in self._workers.values()
+                   if str(info.get("ip") or "") == str(ip))
+
     def online_workers(self) -> int:
         now = time.time()
         with self._lock:
             return sum(1 for info in self._workers.values()
                        if now - float(info.get("seen") or 0) <= self.worker_ttl)
+
+    def free_slots(self, now: float | None = None) -> int:
+        """当前还能接几单（同时考虑 worker capacity 和单 IP 上限）。server-only 用它避免空派发。"""
+        now = time.time() if now is None else float(now)
+        with self._lock:
+            cap = self._ip_cap(now)
+            total = 0
+            for info in self._workers.values():
+                if now - float(info.get("seen") or 0) > self.worker_ttl:
+                    continue
+                ip = str(info.get("ip") or "")
+                ip_free = cap - self._active_for_ip(ip) if ip else cap
+                total += max(0, min(int(info.get("capacity") or 1) - int(info.get("active") or 0), ip_free))
+            return total
 
     def snapshot(self) -> dict:
         now = time.time()
@@ -193,7 +231,8 @@ class RemoteJobs:
                        for name, info in self._workers.items()}
             pending = sum(1 for job in self._jobs.values() if not job.claimed_by)
             return dict(stats=dict(self.stats), workers=workers,
-                        pending=pending, claimed=len(self._jobs) - pending)
+                        pending=pending, claimed=len(self._jobs) - pending,
+                        ips=sorted(self._online_ips(now)), ip_cap=self._ip_cap(now))
 
     # ---- 内部 -----------------------------------------------------------
     def _drop(self, job_id: str) -> None:
