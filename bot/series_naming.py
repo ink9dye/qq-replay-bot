@@ -348,7 +348,9 @@ def build_registry(catalog, config, names=None):
                                        exception=target in config['exception_order']))
     members = defaultdict(set)
     for code, row in reference.items():
-        for tag in row['tags']:
+        for raw_tag in row['tags']:
+            # 官方标签里偶有「水晶机巧|非「机巧」」这种写法，只取第一段做组名。
+            tag = normalize_tag(raw_tag)
             name = claimed.get(tag) or tag
             if name not in groups:
                 groups[name] = dict(name=name, sources={tag}, add=set(), remove=set(),

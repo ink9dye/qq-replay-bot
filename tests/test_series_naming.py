@@ -37,6 +37,12 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(result['name'], '系列甲')
         self.assertEqual(result['basis']['primary'], ('系列甲', 8))
 
+    def test_pipe_tag_is_normalized_to_its_first_name(self):
+        tags = {code: ['水晶机巧|非「机巧」'] for code in range(1, 9)}
+        result = self.propose(tags, {code: 1 for code in range(1, 9)})
+        self.assertEqual(result['name'], '水晶机巧')
+        self.assertEqual(result['basis']['primary'], ('水晶机巧', 8))
+
     def test_two_fields_put_the_larger_count_last(self):
         tags = {code: ['系列甲'] for code in range(1, 11)}
         tags.update({code: ['系列乙'] for code in range(11, 16)})
