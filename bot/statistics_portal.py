@@ -15,6 +15,10 @@ from .card_search import card_name
 
 COOKIE='qqstats_owner'
 SESSION_SECONDS=5*3600
+QUERY_WAIT_SECONDS=8.0
+CACHED_API_PATHS=frozenset('/statistics/api/'+name for name in (
+    'recordings','deck-naming/groups','card-table','cards-extra','card-combo',
+    'card-report','roster','build'))
 
 
 def owner_secret(path):
@@ -51,9 +55,12 @@ class StatisticsPortal:
         except (KeyError,ValueError,CookieError):return False
 
     def route(self,path,headers,client):
-        if urlsplit(path).path.startswith('/statistics/api/') and urlsplit(path).path!='/statistics/api/devices':
-            if not self._query_compute_lock.acquire(timeout=1):
-                return self._reply(503,'统计正在计算，请稍后重试。',extra={'Retry-After':'3'})
+        api_path=urlsplit(path).path
+        # Cached queries own their gate: cache hits must never queue behind a cold query.
+        if api_path.startswith('/statistics/api/') and api_path not in CACHED_API_PATHS and api_path not in (
+                '/statistics/api/devices','/statistics/api/card-search','/statistics/api/card-info'):
+            if not self._query_compute_lock.acquire(timeout=QUERY_WAIT_SECONDS):
+                return self._query_busy_reply()
             try:
                 return self._route(path,headers,client)
             finally:
@@ -519,12 +526,31 @@ class StatisticsPortal:
         return self._roster_reply(force=True)
 
     def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
-        if not self._query_compute_lock.acquire(timeout=1):
-            return self._reply(503,'统计正在计算，请稍后重试。',extra={'Retry-After':'3'})
+        hit=None if force else self._query_cache_hit(key,ttl,stamp_seconds)
+        if hit is not None:return hit
+        if not self._query_compute_lock.acquire(timeout=QUERY_WAIT_SECONDS):
+            # The owner may have finished just as our wait expired.
+            hit=None if force else self._query_cache_hit(key,ttl,stamp_seconds)
+            return hit if hit is not None else self._query_busy_reply()
         try:
             return self._cached_query_reply_locked(key,callback,ttl,stamp_seconds,force)
         finally:
             self._query_compute_lock.release()
+
+    def _query_busy_reply(self):
+        return self._reply(503,json.dumps(dict(error='统计正在计算，请稍后重试。',
+            code='query_busy',retry_after=3),ensure_ascii=False),
+            'application/json; charset=utf-8',extra={'Retry-After':'3'})
+
+    def _query_cache_hit(self,key,ttl,stamp_seconds):
+        try:
+            stamp=int(self.database.stat().st_mtime_ns//(stamp_seconds*1_000_000_000))
+        except OSError:return None
+        with self._query_cache_lock:
+            hit=self._query_cache.get(key)
+            if hit and hit[0]==stamp and time.monotonic()-hit[1]<=ttl:
+                return hit[2]
+        return None
 
     def _cached_query_reply_locked(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
         """相同条件 + 相同数据库文件版本时复用完整响应；DB 一写就失效。
@@ -546,7 +572,7 @@ class StatisticsPortal:
         result=self._query_reply(callback)
         if result[0]==200:
             with self._query_cache_lock:
-                self._query_cache[key]=(stamp,now,result)
+                self._query_cache[key]=(stamp,time.monotonic(),result)
                 if len(self._query_cache)>32:
                     oldest=min(self._query_cache,key=lambda k:self._query_cache[k][1])
                     self._query_cache.pop(oldest,None)

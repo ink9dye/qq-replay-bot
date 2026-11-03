@@ -518,7 +518,51 @@ function fail(error) {
 function setBusy(busy) {
   $('run').disabled = busy;
   $('run').textContent = busy ? '查询中…' : '查询';
-  $('export').disabled = busy || !state.result;
+  $('export').disabled = busy || !state.result || !state.result.rows || !state.result.rows.length;
+}
+
+function waitForRetry(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      reject(new DOMException('查询已取消', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+  });
+}
+
+async function fetchReport(url, signal, onRetry) {
+  for (let attempt = 0; ; attempt += 1) {
+    signal.throwIfAborted();
+    const response = await fetch(url,
+      { cache: 'no-store', credentials: 'same-origin', signal });
+    if (response.ok) return response.json();
+    const text = await response.text();
+    let payload;
+    try { payload = JSON.parse(text); } catch (_) { /* 兼容旧版纯文本错误 */ }
+    let message = payload && payload.error;
+    if (!message && (response.headers.get('Content-Type') || '').startsWith('text/plain')) {
+      message = text.trim().slice(0, 200);
+    }
+    if ([429, 502, 503, 504].includes(response.status) && attempt < 3) {
+      const retryAfter = response.headers.get('Retry-After');
+      const seconds = retryAfter && !Number.isNaN(Number(retryAfter)) ? Number(retryAfter)
+        : retryAfter && Number.isFinite(Date.parse(retryAfter)) ? (Date.parse(retryAfter) - Date.now()) / 1000
+        : Number(payload && payload.retry_after) || 2 ** attempt;
+      const delay = Math.min(10, Math.max(1, seconds));
+      signal.throwIfAborted();
+      onRetry(delay, attempt + 1);
+      await waitForRetry(delay * 1000, signal);
+      continue;
+    }
+    throw Error(message || '查询失败（' + response.status + '），请稍后重试。');
+  }
 }
 
 async function run(options) {
@@ -526,23 +570,19 @@ async function run(options) {
   const version = ++state.request;
   if (state.controller) state.controller.abort();
   state.controller = new AbortController();
+  const signal = state.controller.signal;
   targets.close();
   excludes.close();
   setBusy(true);
   $('status').textContent = '查询中…';
+  $('result').replaceChildren();
   try {
     const params = collect();
-    const response = await fetch('/statistics/api/card-report?' + params.toString(),
-      { cache: 'no-store', credentials: 'same-origin', signal: state.controller.signal });
-    if (!response.ok) {
-      let message = '查询失败（' + response.status + '）';
-      try {
-        const payload = JSON.parse(await response.text());
-        if (payload && payload.error) message = payload.error;
-      } catch (_) { /* 用状态码兜底 */ }
-      throw Error(message);
-    }
-    const data = await response.json();
+    const data = await fetchReport('/statistics/api/card-report?' + params.toString(), signal,
+      (seconds, attempt) => {
+        if (version === state.request) $('status').textContent =
+          '服务繁忙，' + seconds + ' 秒后自动重试（' + attempt + '/3）…';
+      });
     if (version !== state.request) return;        // 旧响应不覆盖新查询
     state.result = data;
     render(data);
