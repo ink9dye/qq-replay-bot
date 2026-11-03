@@ -756,6 +756,8 @@ class BotService:
             return f"没有找到 {player} 的有效构筑（最近14天没有可用录像）。"
         inferred = result.get('inferred_side') or {}
         include_inferred = bool(inferred.get('cards')) and not inferred.get('conflict')
+        validation = result.get('build_validation') or {}
+        validation_line = (validation.get('summary') + '\n') if validation.get('summary') else ''
         ydk_url = link['url'].rstrip('/') + '/build-ydk' + ('?inferred=1' if include_inferred else '') if link.get('url') else ''
         if not inferred.get('cards'):
             ydk_note = ''
@@ -767,6 +769,7 @@ class BotService:
                     else "YDK：公网暂未连接，链接暂不可用（构筑图仍见下）")
         from .statistics_local_cards import thumb_picture, wait_for_thumbs
         from . import deck_image
+        from .deck_sort import load_card_data
 
         image_codes = [int(card.get('code') or 0) for card in
                        (result.get('cards') or []) + ((result.get('inferred_side') or {}).get('cards') or [])]
@@ -777,7 +780,8 @@ class BotService:
 
         image_stats = {}
         try:
-            blob = deck_image.render(result, load, stats=image_stats)
+            blob = deck_image.render(result, load, stats=image_stats,
+                                     card_data=load_card_data(self.data_dir, image_codes))
         except Exception:
             return f"构筑图生成失败；YDK 可从这里下载：{ydk_url}"
         image_url = 'base64://' + base64.b64encode(blob).decode('ascii')
@@ -788,6 +792,7 @@ class BotService:
         rank_line = f"排名：#{rank}\n" if rank else ""
         text = (f"玩家：{player}\n"
                 f"{rank_line}"
+                f"{validation_line}"
                 f"卡组：{person.get('deck_type') or '未识别'}\n"
                 f"观测小局：{format_time(recorded) if recorded else '时间未知'}\n"
                 f"{ydk_line}\n"

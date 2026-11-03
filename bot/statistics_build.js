@@ -1,10 +1,21 @@
 const SS=window.StatisticsSamples,$=id=>document.getElementById(id),el=SS.el,args=new URLSearchParams(location.search),player=args.get('player')||'',digest=args.get('digest');let data=null,request=0,page=0;
 function rankText(rank){return rank?'当前#'+rank:'当前排名暂缺'}
 function cardImage(code,large=false){return 'https://cdn.233.momobako.com/ygopro/pics/'+code+(large?'.jpg!half':'.jpg!thumb2')}
-function updateDownload(){if(!data)return;const q=new URLSearchParams({player,digest:data.selected.digest,inferred:'1'});$('download').href='/statistics/build-ydk?'+q;$('download').textContent='下载YDK'}
+function updateDownload(){if(!data)return;const side=data.inferred_side||{},inferred=!!(side.cards&&side.cards.length)&&!side.conflict,q=new URLSearchParams({player,digest:data.selected.digest,inferred:inferred?'1':'0'});$('download').href='/statistics/build-ydk?'+q;$('download').textContent=inferred?'下载YDK（含推测Side）':'下载YDK（仅原始记录）'}
 function cardTile(card,inferred=false){const box=el('div',undefined,'deck-card'+(inferred?' side-inferred':'')),img=el('img'),badge=el('span','×'+card.copies,'count');const local=cardImage(card.code),remote='https://cdntx.moecube.com/ygopro-super-pre/data/pics/'+card.code+'.jpg';img.src=local;img.referrerPolicy='no-referrer';img.decoding='async';img.alt=card.name+' #'+card.code;img.loading='lazy';img.onerror=()=>{if(!img.dataset.cdn){img.dataset.cdn='1';img.src=remote;return}const empty=el('div','暂无卡图','missing-image');img.replaceWith(empty)};box.append(img,badge,el('div',card.name+' #'+card.code,'caption'));box.tabIndex=0;box.setAttribute('role','button');box.setAttribute('aria-label','查看'+card.name+'的卡片信息');box.onclick=e=>{if(!e.target.closest('details,a'))showCard(card,inferred)};box.onkeydown=e=>{if(e.target===box&&(e.key==='Enter'||e.key===' ')){e.preventDefault();showCard(card,inferred)}};box.title=card.name+' #'+card.code+' ×'+card.copies;return box}
-function renderDeck(){const container=$('deckCards');container.replaceChildren();for(const [part,label]of [['main','主卡'],['extra','额外'],['side','Side']]){const cards=data.cards.filter(c=>c.partition===part),section=el('section',undefined,'deck-section'),count=cards.reduce((n,c)=>n+c.copies,0);if(part==='side'&&!cards.length&&!data.completeness[part])continue;section.append(el('h3',`${label} · ${data.completeness[part]?count+'张（完整）':count+'张已记录（不完整／未知）'}`));const grid=el('div',undefined,'deck-grid');for(const c of cards)grid.append(cardTile(c));section.append(grid);if(!cards.length)section.append(el('p',data.completeness[part]?'已确认此分区为空。':'尚无直接记录，不能当作没有投入。','note'));container.append(section)}
-const side=data.inferred_side,n=$('sideCandidates');n.replaceChildren();if(side.cards.length){n.append(el('h3','Side'));const grid=el('div',undefined,'deck-grid');for(const c of side.cards)grid.append(cardTile(c,true));n.append(grid)}updateDownload()}
+
+function renderValidation(){
+ const box=$('buildValidation');if(!box)return;
+ const validation=data.build_validation||{},issues=validation.issues||[];
+ box.hidden=false;
+ box.className=issues.length?'notice':'note';
+ const conflict=!!(data.inferred_side&&data.inferred_side.cards&&data.inferred_side.cards.length&&data.inferred_side.conflict);
+ box.textContent=(validation.summary||(issues.length?'构筑校验发现基础张数冲突。':'实体张数检查通过。')+'禁限表未校验（缺少对应版本）。')
+  +(conflict?'推测 Side 存在冲突，未并入 YDK；页面上仍单独列出候选，供核对。':'');
+}
+
+function renderDeck(){renderValidation();const container=$('deckCards');container.replaceChildren();for(const [part,label]of [['main','主卡'],['extra','额外'],['side','Side']]){const cards=data.cards.filter(c=>c.partition===part),section=el('section',undefined,'deck-section'),count=cards.reduce((n,c)=>n+c.copies,0);if(part==='side'&&!cards.length&&!data.completeness[part])continue;section.append(el('h3',`${label} · ${data.completeness[part]?count+'张（完整）':count+'张已记录（不完整／未知）'}`));const grid=el('div',undefined,'deck-grid');for(const c of cards)grid.append(cardTile(c));section.append(grid);if(!cards.length)section.append(el('p',data.completeness[part]?'已确认此分区为空。':'尚无直接记录，不能当作没有投入。','note'));container.append(section)}
+const side=data.inferred_side,n=$('sideCandidates');n.replaceChildren();if(side.cards.length){n.append(el('h3','Side（推测）'));const grid=el('div',undefined,'deck-grid');for(const c of side.cards)grid.append(cardTile(c,true));n.append(grid)}updateDownload()}
 function renderHistory(){
  const container=$('history');container.replaceChildren();const groups=data.match_groups||[];
  for(const group of groups.slice(page*12,(page+1)*12)){

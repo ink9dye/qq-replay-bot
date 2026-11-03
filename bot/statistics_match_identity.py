@@ -7,39 +7,62 @@ def _read_capture_metadata(db, digests):
     """只读这些 digest 的证据行；避免为了几条证据扫描整张 stat_evidence。
 
     不做跨调用缓存：证据行随导入变化，缓存会让同一进程里先后变化的库读到旧值。
-    优先用 SQLite JSON1 只取 capture 的三个字段；payload 很大，逐行 json.loads
+    优先用 SQLite JSON1 一次提取小 capture 对象；payload 很大，逐行 json.loads
     在 2C2G 上要 10 秒以上。JSON1 不可用或 payload 损坏时回退旧路径。
     """
     captures = {}
+    explicit = set()
     values = list(dict.fromkeys(digests))
     for start in range(0, len(values), 400):
         chunk = values[start:start + 400]
         marks = ','.join('?' for _ in chunk)
-        parsed = []
         try:
-            parsed = [(row['digest'], row['game_no'], row['session_id'], row['captured_from_start'])
-                      for row in db.execute(
-                          "SELECT digest, json_extract(payload_json,'$.capture.game_no') game_no, "
-                          "json_extract(payload_json,'$.capture.session_id') session_id, "
-                          "json_extract(payload_json,'$.capture.captured_from_start') captured_from_start "
-                          'FROM stat_evidence WHERE digest IN (%s)' % marks, chunk)]
+            evidence = [(r['digest'], r['capture']) for r in db.execute(
+                "SELECT digest,json_extract(payload_json,'$.capture') capture "
+                'FROM stat_evidence WHERE digest IN (%s)' % marks, chunk)]
         except sqlite3.DatabaseError:
-            parsed = []
-        if not parsed:
+            evidence = []
             for row in db.execute('SELECT digest,payload_json FROM stat_evidence '
                                   'WHERE digest IN (%s)' % marks, chunk):
                 try:
-                    info = json.loads(row['payload_json']).get('capture', {})
-                except (ValueError, AttributeError):
+                    payload = json.loads(row['payload_json'])
+                    capture = payload.get('capture') if isinstance(payload, dict) else None
+                    evidence.append((row['digest'], json.dumps(capture)))
+                except (ValueError, TypeError):
                     continue
-                parsed.append((row['digest'], info.get('game_no'), info.get('session_id'),
-                               info.get('captured_from_start')))
-        for digest, game_no, session_id, captured_from_start in parsed:
+        parsed = []
+        for digest, capture in evidence:
+            try:
+                info = json.loads(capture) if isinstance(capture, str) else None
+            except ValueError:
+                continue
+            if not isinstance(info, dict):
+                continue
+            parsed.append((digest, info.get('game_no'), info.get('session_id'),
+                           info.get('captured_from_start'), 'game_no' in info or 'session_id' in info))
+        for digest, game_no, session_id, captured_from_start, is_explicit in parsed:
+            if is_explicit:
+                explicit.add(digest)
             if type(game_no) is int and game_no > 0 and (
                     session_id is None or isinstance(session_id, str)):
                 captures.setdefault(digest, set()).add(
-                    (session_id, game_no, captured_from_start is True or captured_from_start == 1))
-    return {digest: next(iter(found)) for digest, found in captures.items() if len(found) == 1}
+                    (session_id, game_no, captured_from_start is True))
+    result = {digest: next(iter(found)) for digest, found in captures.items() if len(found) == 1}
+    # Uploaded/legacy replays can have no capture payload but already have a
+    # recorded session association. Use only unique associations, never timestamps.
+    for start in range(0, len(values), 400):
+        chunk = [d for d in values[start:start + 400] if d not in result and d not in explicit]
+        if not chunk:
+            continue
+        marks = ','.join('?' for _ in chunk)
+        legacy = {}
+        for row in db.execute('SELECT f.digest,s.session_id,s.game_no FROM stat_files f '
+                              'JOIN replay_sessions s ON s.replay_id=f.replay_id '
+                              'WHERE f.digest IN (%s)' % marks, chunk):
+            if isinstance(row['session_id'], str) and row['session_id'] and type(row['game_no']) is int and row['game_no'] > 0:
+                legacy.setdefault(row['digest'], set()).add((row['session_id'], row['game_no'], True))
+        result.update({d: next(iter(found)) for d, found in legacy.items() if len(found) == 1})
+    return result
 
 
 def capture_metadata(db, digests):
@@ -86,6 +109,8 @@ def inherit_first_game_types(db,rows):
     pairs={}
     for row in db.execute('SELECT digest,player FROM stat_views'):
         pairs.setdefault(row['digest'],set()).add(row['player'])
+    for row in rows:
+        row['observed_match_players'] = tuple(sorted(pairs.get(row['digest'], ())))
     def key(row):
         meta=metadata.get(row['digest']);pair=tuple(sorted(pairs.get(row['digest'],())))
         return (row['player'],meta[0],pair)if meta and meta[0]and len(pair)==2 else None

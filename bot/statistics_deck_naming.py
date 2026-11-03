@@ -305,6 +305,13 @@ def detail(db, data_dir, now, player, replay_root=None):
             inferred['reason'] = side.get('reason')
         except (ValueError, LookupError, OSError):
             pass
+    # 展示顺序与构筑页一致：怪兽→魔法→陷阱；额外融合→同调→超量→连接。
+    from .deck_sort import load_card_data, sorted_cards
+    all_cards = cards['main'] + cards['extra'] + cards['side'] + inferred['cards']
+    card_data = load_card_data(data_dir, [card['code'] for card in all_cards])
+    for part in ('main', 'extra', 'side'):
+        cards[part] = sorted_cards(cards[part], card_data)
+    inferred['cards'] = sorted_cards(inferred['cards'], card_data)
     return dict(player=view['player'], rank=rank, points=points, observed=True,
                 deck_type=view['deck_type'], build=view['build'],
                 recorded_at=view['recorded_at'],

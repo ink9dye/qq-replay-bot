@@ -11,7 +11,7 @@ def latest_views(basis):
     for row in basis['views']:
         player = row['player']
         session = row.get('observed_session_id')
-        key = session if session else row['digest']
+        key = (session, tuple(row.get('observed_match_players') or ())) if session else row['digest']
         grouped.setdefault(player, {}).setdefault(key, []).append(row)
     latest = {}
     for player, matches in grouped.items():

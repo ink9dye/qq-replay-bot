@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+from .deck_sort import sorted_cards
 
 CARD_W, CARD_H = 76, 109
 GAP = 5
@@ -38,12 +39,12 @@ def _font(size):
     return ImageFont.load_default()
 
 
-def _sections(cards):
+def _sections(cards, card_data=None):
     result = {'main': [], 'extra': [], 'side': []}
     for card in cards:
         result.setdefault(card.get('partition') or 'main', []).append(card)
     for items in result.values():
-        items.sort(key=lambda c: (str(c.get('name') or ''), int(c.get('code') or 0)))
+        items[:] = sorted_cards(items, card_data)
     return result
 
 
@@ -51,17 +52,17 @@ def _grid_rows(count):
     return max(1, math.ceil(count / COLS))
 
 
-def render(result, picture, title=None, stats=None):
+def render(result, picture, title=None, stats=None, card_data=None):
     """result 用 statistics_build_detail.query 的返回；picture(code) 返回本地卡图路径或 None。
 
     直接记录的 Side 之外，把 inferred_side 的推测候选单独画成“Side（推测）”，不混入直接记录。
     """
     cards = list(result.get('cards') or [])
     missing = 0
-    sections = _sections(cards)
+    sections = _sections(cards, card_data)
     inferred = list((result.get('inferred_side') or {}).get('cards') or [])
     if inferred:
-        sections['inferred'] = sorted(inferred, key=lambda c: (str(c.get('name') or ''), int(c.get('code') or 0)))
+        sections['inferred'] = sorted_cards(inferred, card_data)
     person = result.get('person') or {}
     player = person.get('player') or '玩家'
     deck = person.get('deck_type') or '卡组未识别'

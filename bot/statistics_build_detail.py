@@ -7,6 +7,63 @@ from .player_statistics import capture_metadata
 from .card_statistics import win_rate
 
 
+
+def validate_build(cards, inferred_cards=(), mapping=None, completeness=None):
+    """Basic physical-copy/partition checks; never mutate recorded observations.
+
+    Inferred Side overlaps direct Side rather than being another copy of it.
+    This deliberately does not claim to validate a current or historical banlist.
+    """
+    mapping = mapping or {}
+    completeness = completeness or {}
+    counts = {p: Counter() for p in ('main', 'extra', 'side')}
+    for card in cards:
+        part = card['partition']
+        if part in counts:
+            code = mapping.get(card['code'], (card['code'],))[0]
+            counts[part][code] += card['copies']
+    inferred = Counter()
+    for card in inferred_cards:
+        code = mapping.get(card['code'], (card['code'],))[0]
+        inferred[code] += card['copies']
+    counts['side'] |= inferred
+    issues = []
+    for part, maximum in (('main', 60), ('extra', 15), ('side', 15)):
+        total = sum(counts[part].values())
+        if total > maximum:
+            issues.append(dict(kind='partition_overflow', partition=part, copies=total, limit=maximum))
+    if completeness.get('main') and sum(counts['main'].values()) < 40:
+        issues.append(dict(kind='main_below_minimum', partition='main', copies=sum(counts['main'].values()), limit=40))
+    total = counts['main'] + counts['extra'] + counts['side']
+    for code, copies in sorted(total.items()):
+        if copies > 3:
+            issues.append(dict(kind='copy_overflow', code=code, copies=copies, limit=3,
+                               partitions={p: counter[code] for p, counter in counts.items() if counter[code]}))
+    labels = dict(main='主卡', extra='额外', side='Side')
+    details = []
+    for issue in issues:
+        if issue['kind'] == 'copy_overflow':
+            details.append('卡号%d在主卡、额外和Side合计%d张，超过基础上限%d张'
+                           % (issue['code'], issue['copies'], issue['limit']))
+        elif issue['kind'] == 'main_below_minimum':
+            details.append('完整主卡记录仅%d张，少于%d张' % (issue['copies'], issue['limit']))
+        else:
+            details.append('%s共%d张，超过%d张'
+                           % (labels.get(issue['partition'], issue['partition']), issue['copies'], issue['limit']))
+    summary = ('构筑校验：' + '；'.join(details) + '。原始记录已保留。'
+               if details else
+               '实体张数检查通过（主卡＋额外＋Side 同一卡号合计≤3张，分区未超上限）。')
+    # 禁限表按历史对局版本才能判断；本库没有对应版本时明确标为未校验。
+    summary += '禁限表未校验（缺少对应版本）。'
+    # 分区超量或同一实体超过 3 张才会阻止推测 Side 并入导出；
+    # 「完整主卡不足 40 张」只作为来源记录告警，不改变可确认的 Side 证据。
+    blocking = any(issue['kind'] in ('copy_overflow', 'partition_overflow') for issue in issues)
+    return dict(status='conflict' if blocking else 'warning' if issues else 'no_basic_conflict',
+                issues=issues, blocking=blocking,
+                scope='physical_copy_and_partition_counts', banlist_checked=False,
+                banlist_status='unverified_missing_version', summary=summary)
+
+
 def query(db, replay_root, now, player, digest=None, scope='build',allowed_digests=None,history_digests=None):
     if not isinstance(player, str) or not player or len(player) > 128 or scope not in ('build', 'player'):
         raise ValueError('invalid_player_or_scope')
@@ -147,13 +204,31 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
         canonical=mapping.get(card['code'],(card['code'],))[0]
         card['swap_contexts']=contexts.get(canonical,[])
     stats_rows=rows if history_digests is None else [r for r in rows if r['digest'] in history_digests]
+    from .deck_sort import load_card_data, sorted_cards
+    from pathlib import Path
+    data_dir = Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
+    selected_cards = cards[selected['build']]
+    sort_data = load_card_data(data_dir, [c['code'] for c in selected_cards + inferred['cards']])
+    selected_cards = sorted_cards(selected_cards, sort_data)
+    inferred['cards'] = sorted_cards(inferred['cards'], sort_data)
+    # YDK 导出时直接 Side 与推测 Side 会合并；这里先给出合并后的显示顺序。
+    side_codes = sorted({card['code'] for card in selected_cards if card['partition'] == 'side'} |
+                        {card['code'] for card in inferred['cards']})
+    side_order = [card['code'] for card in sorted_cards(
+        [dict(code=code, partition='side') for code in side_codes], sort_data)]
+    validation = validate_build(selected_cards, inferred['cards'], mapping,
+                                {p: bool(selected[p + '_complete']) for p in ('main', 'extra', 'side')})
+    if validation.get('blocking'):
+        # 基础张数冲突（分区超量/同一实体>3）不让推测 Side 并入导出；原始记录仍照常展示。
+        inferred['conflict'] = True
     person_out=dict(person, deck_type=selected['deck_type'])
     return dict(generated_at=now, person=person_out,
                 roster={k: v for k, v in basis['roster'].items() if k != 'members'},
                 selected=dict(digest=selected['digest'], build=selected['build'], recorded_at=selected['recorded_at'],
                               expires_at=selected['expires_at'], observation_kind=person['observation_kind'] if selected['digest'] == latest[player]['digest'] else 'historical_observation'),
-                cards=cards[selected['build']], completeness={p: bool(selected[p + '_complete']) for p in ('main', 'extra', 'side')},
-                inferred_side=inferred, matches=matches, match_groups=match_groups, scope=scope, scope_win_rate=win_rate(matches),
+                cards=selected_cards, completeness={p: bool(selected[p + '_complete']) for p in ('main', 'extra', 'side')},
+                side_order=side_order,
+                inferred_side=inferred, build_validation=validation, matches=matches, match_groups=match_groups, scope=scope, scope_win_rate=win_rate(matches),
                 exact_build_games=sum(r['build']==selected['build'] for r in stats_rows),
                 same_main_games=sum(r['digest'] in same_main for r in stats_rows),match_main_source_digest=main_anchor['digest'],
                 match_scope_basis='same_match_first_main'if main_anchor is not selected else'selected_main',
@@ -220,7 +295,10 @@ def infer_side(rows, selected, cards, metadata, mapping=None):
     chosen_session = chosen_meta[0] if chosen_meta else None
     own = sessions.get(chosen_session, [])
     own_first = [r for r in own if metadata[r['digest']][1] == 1]
-    anchor = own_first[0] if len(own_first) == 1 else selected
+    if len(own_first) != 1:
+        # 没有唯一、可确认的首局就没有 Side 基准；不拿所选局或时间上相邻的局顶替。
+        return dict(cards=[], sources=[], complete=False, conflict=False, reason='first_game_unavailable')
+    anchor = own_first[0]
     inferred = Counter(); sources = []; per_card = {}
     session_sets = {}
     for session, group in sessions.items():
@@ -236,8 +314,10 @@ def infer_side(rows, selected, cards, metadata, mapping=None):
         pool = Counter()
         for row in group:
             pool |= combined(row)
-        # 以 game1（未换 side 的基准）为减数，而不是 selected（可能是第 2/3 局、已换过 side）。
-        candidate = pool - combined(anchor)
+        # Match eligibility is anchored to game1; displayed Side belongs to the
+        # selected build. Subtract its Main+Extra to avoid counting swapped-in
+        # copies both in Main and in inferred Side on historical game2/3 pages.
+        candidate = pool - combined(selected)
         if not candidate:
             continue
         kind = 'same_match' if session == chosen_session else 'historical_same_build'
@@ -287,7 +367,9 @@ def infer_side(rows, selected, cards, metadata, mapping=None):
         used = list(session_sets)
     else:
         chosen = Counter()
-        for code, _ in sorted(score.items(), key=lambda kv: (-kv[1], -inferred[kv[0]], kv[0])):
+        same_match_codes = {code for code, evidence in per_card.items()
+                            if any(item['kind'] == 'same_match' for item in evidence)}
+        for code, _ in sorted(score.items(), key=lambda kv: (kv[0] not in same_match_codes, -kv[1], -inferred[kv[0]], kv[0])):
             room = 15 - sum(chosen.values())
             if room <= 0:
                 break
@@ -316,7 +398,8 @@ def infer_side(rows, selected, cards, metadata, mapping=None):
                 latent_cards=latent,
                 omitted_codes=omitted,
                 sources=sources, complete=False,
-                conflict=sum((chosen | direct).values()) > 15,
+                conflict=(sum((chosen | direct).values()) > 15 or
+                          any(sum(info['cards'].values()) > 15 for session, info in session_sets.items() if session == chosen_session)),
                 observed_overflow=observed_overflow,
                 selection_basis=basis,
                 selected_sessions=len(used), observed_sessions=len(session_sets),
@@ -356,8 +439,14 @@ def ydk(result, include_inferred=False):
         if sum(partitions['side'].values()) > 15:
             raise ValueError('side_candidates_exceed_limit')
     lines = ['#created by local statistics']
+    side_rank = {code: index for index, code in enumerate(result.get('side_order') or [])}
     for part, label in (('main', '#main'), ('extra', '#extra'), ('side', '!side')):
+        if part == 'side' and include_inferred:
+            lines.append('# inferred Side candidates are included; not a complete side deck')
         lines.append(label)
-        for code, copies in partitions[part].items():
+        items = list(partitions[part].items())
+        if part == 'side':
+            items.sort(key=lambda item: (side_rank.get(item[0], len(side_rank)), item[0]))
+        for code, copies in items:
             lines.extend([str(code)] * copies)
     return '\n'.join(lines) + '\n'
