@@ -126,6 +126,18 @@ class RemoteJobsTests(unittest.TestCase):
         jobs._workers["c"] = dict(active=0, ip="2.2.2.2", seen=now, capacity=1)
         self.assertEqual(jobs.free_slots(now), 2)
 
+    def test_two_ips_each_get_six_slots(self):
+        """多个 IP 时是每个 IP 各自 6，不是总共 6。"""
+        jobs = RemoteJobs(single_ip_max=7, multi_ip_max=6)
+        now = time.time()
+        jobs._workers["a"] = dict(active=0, ip="1.1.1.1", seen=now, capacity=6)
+        jobs._workers["b"] = dict(active=0, ip="2.2.2.2", seen=now, capacity=6)
+        self.assertEqual(jobs.free_slots(now), 12)
+        jobs._workers["a"]["active"] = 6
+        self.assertEqual(jobs.free_slots(now), 6)
+        jobs._workers["b"]["active"] = 6
+        self.assertEqual(jobs.free_slots(now), 0)
+
 
 class WatchApiTests(unittest.TestCase):
     def setUp(self):

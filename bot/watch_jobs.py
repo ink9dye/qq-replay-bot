@@ -52,7 +52,8 @@ class RemoteJobs:
         self.lease = float(lease)
         self.job_ttl = float(job_ttl)
         self.worker_ttl = float(worker_ttl)
-        # 单个公网 IP 的并发上限：只有 1 个 IP 时 7，出现多个 IP 时 6（平台风控口径）。
+        # 单个公网 IP 的并发上限：只有 1 个 IP 时 7；出现多个 IP 时**每个 IP 各自 6**
+        # （不是所有 IP 合计 6），平台风控口径。
         self.single_ip_max = max(1, int(single_ip_max))
         self.multi_ip_max = max(1, int(multi_ip_max))
         self._lock = threading.Lock()
@@ -210,7 +211,7 @@ class RemoteJobs:
                        if now - float(info.get("seen") or 0) <= self.worker_ttl)
 
     def free_slots(self, now: float | None = None) -> int:
-        """当前还能接几单（同时考虑 worker capacity 和单 IP 上限）。server-only 用它避免空派发。"""
+        """当前还能接几单（同时考虑 worker capacity 和单 IP 上限；多 IP 时每个 IP 各自 6）。"""
         now = time.time() if now is None else float(now)
         with self._lock:
             cap = self._ip_cap(now)

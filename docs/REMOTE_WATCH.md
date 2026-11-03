@@ -47,8 +47,8 @@
 - 接口只监听回环，由 8787 的 nginx 反代：`location /watch-api/ { proxy_pass http://127.0.0.1:8791; }`。
 - `token` 是独立令牌，**不要复用** QQ/NapCat/统计的 token。
 - `single_ip_max` / `multi_ip_max`：**单个公网 IP** 的并发上限。在线客户端只有 1 个 IP 时
-  上限 7；出现第二个 IP 时每个 IP 降到 6。按 claim 请求的 `X-Real-IP`（云端直连则是
-  `127.0.0.1`）统计，客户端伪造请求体里的 `ip` 无效。
+  上限 7；出现第二个 IP 时每个 IP **各自**降到 6（两个 IP 合计最多 12，不是总共 6）。按 claim
+  请求的 `X-Real-IP`（云端直连则是 `127.0.0.1`）统计，客户端伪造请求体里的 `ip` 无效。
 - `job_ttl_seconds` 只约束**未被认领**的任务；认领后由 `lease_seconds` 续命，心跳在就一直保留
   （长对局不能按 180 秒 TTL 清掉，否则上传后 `report` 会 409）。
 - nginx 的 `/watch-api/` 需要 `client_max_body_size` ≥ 录像大小（线上 8m），否则大录像 413。
