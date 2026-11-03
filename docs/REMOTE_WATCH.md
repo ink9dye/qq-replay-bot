@@ -124,6 +124,9 @@ python tools/watch_worker.py --config tools/worker.json
   **进程认领上限**，可以 >1；当前客户端默认 `capacity=1` 是保守策略。多间是否仍有回放必须按
   平台当前配置实测，不能一概而论；2026-11-03 单间实测能收到 3 个小局回放并入库。
 
+> 2026-11-03 10:13 生产云端/PC 均已改成 `capacity=6`（6+6 并发，两个 IP 各自上限 6）；
+> 多间回放仍在观察。新客户端建议先用 1 验证，再按账号/平台实测放大。
+
 ## 4.1 云端客户端（ygo-cloud-watch）
 
 服务器上独立 systemd，使用 `config.json` 的 `mycard` 账号，只看一间：
