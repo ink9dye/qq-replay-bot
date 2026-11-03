@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule YGO resources checks
+
+[Timer]
+OnBootSec=90
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=ygo-health-resources.service
+
+[Install]
+WantedBy=timers.target

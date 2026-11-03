@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule YGO heartbeat checks
+
+[Timer]
+OnBootSec=90
+OnUnitInactiveSec=60s
+AccuracySec=1s
+Unit=ygo-health-heartbeat.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=YGO heartbeat health check
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/ygobot
+Environment=TZ=Asia/Shanghai
+ExecStart=/usr/bin/python3 /opt/ygobot/tools/healthcheck.py --heartbeat
+TimeoutStartSec=180
+Nice=10

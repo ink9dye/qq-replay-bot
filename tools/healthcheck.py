@@ -285,19 +285,116 @@ def check_qq():
 
 
 
-def load_state():
+def load_state(path=None):
     try:
-        return json.loads(STATE.read_text(encoding='utf-8'))
+        return json.loads((path or STATE).read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return {}
 
 
-def save_state(state):
-    STATE.parent.mkdir(parents=True, exist_ok=True)
-    STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+def save_state(state, path=None):
+    target = path or STATE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def issue_id(detail):
+    if detail.startswith('可用内存低于 '): return 'memory_low'
+    if detail.startswith('磁盘使用 '): return 'disk_high'
+    if detail.startswith('watch-metrics 已 '): return 'metrics_stale'
+    return detail
+
+
+def update_alerts(state, issues, now, hold=0, max_gap=None):
+    """Track stable identities; duration and notification cooldown are independent."""
+    normalized = {}
+    for key, value in state.items():
+        if key.startswith('_') or not isinstance(value, dict): continue
+        ident = issue_id(key)
+        old = normalized.get(ident)
+        merged = dict(value, detail=value.get('detail', key))
+        if old is not None:
+            merged['active'] = bool(old.get('active') or merged.get('active'))
+            merged['ts'] = max(old.get('ts', 0), merged.get('ts', 0))
+        normalized[ident] = merged
+    metadata = {key: value for key, value in state.items() if key.startswith('_')}
+    state.clear(); state.update(metadata); state.update(normalized)
+    current = {issue_id(detail): detail for detail in issues}
+    events = []
+    for ident, detail in current.items():
+        prior = state.get(ident) or {}
+        active = bool(prior.get('active'))
+        continuous = bool(prior) and (max_gap is None or 0 <= now-prior.get('last_seen', now) <= max_gap)
+        first = prior.get('first_seen', now) if continuous else now
+        # A missed resource sampler or reboot cannot prove continuous failure.
+        if not continuous: active = False
+        due = now-first >= hold
+        ts = prior.get('ts', 0)
+        if due and (not active or not ts or now-ts >= ALERT_EVERY):
+            events.append(('alert', detail)); ts = now
+        state[ident] = dict(first_seen=first, last_seen=now, active=bool(due or active),
+                            ts=ts, detail=detail)
+    for ident in list(normalized):
+        if ident not in current:
+            prior = state.pop(ident)
+            if prior.get('active'):
+                events.append(('recovered', prior.get('detail', ident)))
+    return events
+
+
+def emit_events(events, host, observation=''):
+    for kind, detail in events:
+        extra = EXTRA.get(detail, '')
+        if kind == 'alert':
+            subject = '[ygo] 异常：' + detail.split('，')[0]
+            body = detail + (('\n' + extra) if extra else '')
+        else:
+            # The old measurement is context, not the current recovered value.
+            title = {'memory_low': '可用内存', 'disk_high': '磁盘容量',
+                     'metrics_stale': 'watch-metrics 心跳'}.get(issue_id(detail), detail)
+            subject = '[ygo] 已恢复：' + title
+            body = '此前异常：' + detail
+        if observation: body += '\n本次测量：' + observation
+        notify(subject, body + '\n\n主机：' + host + '\n时间：' + time.strftime('%Y-%m-%d %H:%M:%S'))
+        log(kind + ': ' + detail)
+
+
+def resources_main():
+    global ALERT_EVERY
+    cfg = load_env()
+    minimum = int(cfg.get('HEALTH_MIN_AVAILABLE_MB', '150'))
+    maximum = float(cfg.get('HEALTH_MAX_DISK_PERCENT', '80'))
+    hold = max(0, int(cfg.get('HEALTH_RESOURCE_HOLD_SECONDS', '120')))
+    ALERT_EVERY = max(60, int(cfg.get('HEALTH_REPEAT_SECONDS', '1800')))
+    # Read failures must not turn an existing resource alarm into a recovery.
+    mem = {}
+    for line in Path('/proc/meminfo').read_text().splitlines():
+        key, _, value = line.partition(':')
+        if key == 'MemAvailable': mem[key] = int(value.strip().split()[0])
+    available = mem['MemAvailable']
+    usage = shutil.disk_usage('/')
+    percent = usage.used / usage.total * 100
+    issues = []
+    if available < minimum * 1024:
+        issues.append('可用内存低于 %dMB（%d MB）' % (minimum, available//1024))
+    if percent > maximum: issues.append('磁盘使用 %.0f%%' % percent)
+    observation = '可用内存 %d MB，磁盘使用 %.1f%%' % (available//1024, percent)
+    path = ROOT / 'data' / 'resource-health-state.json'
+    state = load_state(path)
+    boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    if state.get('_boot_id') != boot_id: state = {'_boot_id': boot_id}
+    if DRY:
+        print(json.dumps(dict(issues=issues, observation=observation, hold_seconds=hold), ensure_ascii=False))
+        return 0
+    events = update_alerts(state, issues, time.time(), hold=hold, max_gap=90)
+    emit_events(events, socket.gethostname(), observation)
+    save_state(state, path)
+    return 0
 
 
 def main():
+    global ALERT_EVERY
+    ALERT_EVERY = max(60, int(load_env().get('HEALTH_REPEAT_SECONDS', '1800')))
     state = load_state()
     now = time.time()
     issues = []
@@ -349,48 +446,24 @@ def main():
     if age > 900:
         issues.append('watch-metrics 已 %.0f 分钟未更新' % (age / 60))
 
-    usage = shutil.disk_usage('/')
-    percent = usage.used / usage.total * 100
-    if percent > 80:
-        issues.append('磁盘使用 %.0f%%' % percent)
-
-    mem = {}
-    try:
-        for line in Path('/proc/meminfo').read_text().splitlines():
-            key, _, value = line.partition(':')
-            if key in ('MemAvailable', 'MemTotal'):
-                mem[key] = int(value.strip().split()[0])
-    except OSError:
-        pass
-    if mem.get('MemAvailable', 10 ** 9) < 150 * 1024:
-        issues.append('可用内存低于 150MB（%d MB）' % (mem.get('MemAvailable', 0) // 1024))
-
     host = socket.gethostname()
     if DRY:
         print(json.dumps({'issues': issues, 'detail': EXTRA}, ensure_ascii=False, indent=2))
         return 0
-    for issue in issues:
-        prior = state.get(issue) or {}
-        if now - prior.get('ts', 0) < ALERT_EVERY and prior.get('ts'):
-            continue
-        state[issue] = {'ts': now, 'active': True}
-        body = issue + (('\n' + EXTRA[issue]) if EXTRA.get(issue) else '')
-        notify('[ygo] 异常：' + issue.split('，')[0],
-               body + '\n\n主机：' + host + '\n时间：' + time.strftime('%Y-%m-%d %H:%M:%S'))
-        log('alert: ' + issue)
-
-    for key, value in list(state.items()):
-        if value.get('active') and key not in issues:
-            value['active'] = False
-            value['ts'] = now
-            notify('[ygo] 已恢复：' + key.split('，')[0], key + '\n\n主机：' + host)
-            log('recovered: ' + key)
+    # Resource alarms now have their own timer/state; silently retire legacy keys.
+    state = {key: value for key, value in state.items()
+             if issue_id(key) not in ('memory_low', 'disk_high')}
+    events = update_alerts(state, issues, now)
+    emit_events(events, host)
 
     save_state(state)
     return 0
 
 
 if __name__ == '__main__':
+    if '--resources' in sys.argv:
+        DRY = '--dry-run' in sys.argv
+        raise SystemExit(resources_main())
     if len(sys.argv) > 1 and sys.argv[1] in ('test-mail', 'test-notify'):
         ok = notify('[ygo] 测试通知', '通知通道可用，之后异常会推送到这里。')
         print('sent' if ok else 'failed')

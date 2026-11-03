@@ -1,2 +1,2 @@
-*/5 * * * * root /usr/bin/python3 /opt/ygobot/tools/healthcheck.py >> /opt/ygobot/data/logs/health-cron.log 2>&1
+# Health checks use ygo-health-heartbeat.timer and ygo-health-resources.timer.
 15 4 * * * ygo /opt/ygobot/tools/backup.sh >> /opt/ygobot/data/logs/backup.log 2>&1

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Watchdog: restart dead services, email state transitions."""
+import asyncio
 import json
 import shutil
 import smtplib
@@ -18,6 +19,16 @@ STATE = ROOT / 'data' / 'health-state.json'
 LOG = ROOT / 'data' / 'logs' / 'health.log'
 UNITS = ('ygo-collector', 'ygo-web', 'ygo-qq')
 ALERT_EVERY = 1800
+
+# QQ 会话“假在线”检测：在线但长时间收不到任何群消息，通常是 QQ 端掉了、NapCat 还在报 online。
+QQ_SILENT_ALERT = 'QQ 可能假在线（长时间没有新消息）'
+QQ_LOGIN_ALERT = 'QQ 未登录（需要扫码）'
+QQ_API_ALERT = 'QQ 接口无响应（OneBot 未连接）'
+QQ_SILENT_HOURS = 4
+QQ_ACTIVE_HOURS = (10, 24)
+EXTRA = {}
+DRY = False
+
 
 
 def log(message):
@@ -147,6 +158,15 @@ def wait_port(port, timeout=20):
         time.sleep(1)
 
 
+def http_ok(url, timeout=5):
+    """端口通不代表上游活着：nginx 在、share 挂了时 8787 仍是 502/端口通。"""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
 def docker_running(name):
     out = run(['docker', 'inspect', '-f', '{{.State.Running}}', name])
     return bool(out and out.returncode == 0 and out.stdout.strip() == 'true')
@@ -164,19 +184,217 @@ def file_age(path):
         return 10 ** 9
 
 
-def load_state():
+def qq_probe(timeout=10):
+    """问 OneBot：QQ 是否真在线、最近一条群消息是什么时候。
+
+    返回 dict(login=bool, newest=float|None, groups=int)；接口不通返回 None。
+    只做只读查询，不发送任何 QQ 消息。
+    """
     try:
-        return json.loads(STATE.read_text(encoding='utf-8'))
+        sys.path.insert(0, str(ROOT))
+        import watch  # 项目自带的 OneBot WS 客户端，模块级无副作用
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        cfg = json.loads((ROOT / 'config.json').read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        return None
+    qq = cfg.get('qq') or {}
+    url = qq.get('onebot_ws') or 'ws://127.0.0.1:3001'
+    token = qq.get('access_token') or ''
+    headers = {'Authorization': 'Bearer ' + token} if token else {}
+
+    async def probe():
+        client = watch.WebSocketClient(url)
+        await asyncio.wait_for(client.connect(headers=headers), timeout=timeout)
+        counter = {'n': 0}
+
+        async def call(action, params):
+            counter['n'] += 1
+            echo = 'hc%d' % counter['n']
+            await client.send_text(json.dumps({'action': action, 'params': params, 'echo': echo}))
+            deadline = asyncio.get_running_loop().time() + timeout
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return None
+                try:
+                    raw = await asyncio.wait_for(client.recv_text(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    return None
+                if not raw:
+                    continue
+                try:
+                    payload = json.loads(raw)
+                except ValueError:
+                    continue
+                if payload.get('echo') == echo:
+                    return payload
+
+        try:
+            login = await call('get_login_info', {})
+            info = (login or {}).get('data') or {}
+            if login is None or login.get('status') == 'failed' or not info.get('user_id'):
+                return {'login': False, 'newest': None, 'groups': 0}
+            listing = await call('get_group_list', {})
+            groups = (listing or {}).get('data') or []
+            newest = None
+            for group in groups[:3]:
+                gid = group.get('group_id')
+                if not gid:
+                    continue
+                history = await call('get_group_msg_history', {'group_id': gid, 'count': 1})
+                data = (history or {}).get('data') or {}
+                messages = data.get('messages') if isinstance(data, dict) else data
+                for message in messages or []:
+                    stamp = message.get('time')
+                    if isinstance(stamp, (int, float)) and (newest is None or stamp > newest):
+                        newest = stamp
+            return {'login': True, 'newest': newest, 'groups': len(groups)}
+        finally:
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        return asyncio.run(probe())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def check_qq():
+    """QQ 链路健康：在线、且最近确实有群消息进来（防“假在线”）。"""
+    if not (docker_exists('napcat') and port_open(3001)):
+        return []
+    probe = qq_probe()
+    if probe is None:
+        return [(QQ_API_ALERT, 'OneBot 连接或查询超时；检查 napcat 容器、3001 端口和机器人进程。')]
+    if not probe.get('login'):
+        return [(QQ_LOGIN_ALERT, '账号不在线，需要在 127.0.0.1:6099 WebUI 扫码登录。')]
+    newest = probe.get('newest')
+    if newest:
+        idle = time.time() - newest
+        hour = time.localtime().tm_hour
+        if idle > QQ_SILENT_HOURS * 3600 and QQ_ACTIVE_HOURS[0] <= hour < QQ_ACTIVE_HOURS[1]:
+            return [(QQ_SILENT_ALERT,
+                     '最近 %.1f 小时没有收到任何群消息（监控 %d 个群）。'
+                     '通常是 QQ 端静默掉线、NapCat 仍报 online；需要重启 napcat 并扫码。'
+                     % (idle / 3600, probe.get('groups', 0)))]
+    return []
+
+
+
+def load_state(path=None):
+    try:
+        return json.loads((path or STATE).read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return {}
 
 
-def save_state(state):
-    STATE.parent.mkdir(parents=True, exist_ok=True)
-    STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+def save_state(state, path=None):
+    target = path or STATE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def issue_id(detail):
+    if detail.startswith('可用内存低于 '): return 'memory_low'
+    if detail.startswith('磁盘使用 '): return 'disk_high'
+    if detail.startswith('watch-metrics 已 '): return 'metrics_stale'
+    return detail
+
+
+def update_alerts(state, issues, now, hold=0, max_gap=None):
+    """Track stable identities; duration and notification cooldown are independent."""
+    normalized = {}
+    for key, value in state.items():
+        if key.startswith('_') or not isinstance(value, dict): continue
+        ident = issue_id(key)
+        old = normalized.get(ident)
+        merged = dict(value, detail=value.get('detail', key))
+        if old is not None:
+            merged['active'] = bool(old.get('active') or merged.get('active'))
+            merged['ts'] = max(old.get('ts', 0), merged.get('ts', 0))
+        normalized[ident] = merged
+    metadata = {key: value for key, value in state.items() if key.startswith('_')}
+    state.clear(); state.update(metadata); state.update(normalized)
+    current = {issue_id(detail): detail for detail in issues}
+    events = []
+    for ident, detail in current.items():
+        prior = state.get(ident) or {}
+        active = bool(prior.get('active'))
+        continuous = bool(prior) and (max_gap is None or 0 <= now-prior.get('last_seen', now) <= max_gap)
+        first = prior.get('first_seen', now) if continuous else now
+        # A missed resource sampler or reboot cannot prove continuous failure.
+        if not continuous: active = False
+        due = now-first >= hold
+        ts = prior.get('ts', 0)
+        if due and (not active or not ts or now-ts >= ALERT_EVERY):
+            events.append(('alert', detail)); ts = now
+        state[ident] = dict(first_seen=first, last_seen=now, active=bool(due or active),
+                            ts=ts, detail=detail)
+    for ident in list(normalized):
+        if ident not in current:
+            prior = state.pop(ident)
+            if prior.get('active'):
+                events.append(('recovered', prior.get('detail', ident)))
+    return events
+
+
+def emit_events(events, host, observation=''):
+    for kind, detail in events:
+        extra = EXTRA.get(detail, '')
+        if kind == 'alert':
+            subject = '[ygo] 异常：' + detail.split('，')[0]
+            body = detail + (('\n' + extra) if extra else '')
+        else:
+            # The old measurement is context, not the current recovered value.
+            title = {'memory_low': '可用内存', 'disk_high': '磁盘容量',
+                     'metrics_stale': 'watch-metrics 心跳'}.get(issue_id(detail), detail)
+            subject = '[ygo] 已恢复：' + title
+            body = '此前异常：' + detail
+        if observation: body += '\n本次测量：' + observation
+        notify(subject, body + '\n\n主机：' + host + '\n时间：' + time.strftime('%Y-%m-%d %H:%M:%S'))
+        log(kind + ': ' + detail)
+
+
+def resources_main():
+    global ALERT_EVERY
+    cfg = load_env()
+    minimum = int(cfg.get('HEALTH_MIN_AVAILABLE_MB', '150'))
+    maximum = float(cfg.get('HEALTH_MAX_DISK_PERCENT', '80'))
+    hold = max(0, int(cfg.get('HEALTH_RESOURCE_HOLD_SECONDS', '120')))
+    ALERT_EVERY = max(60, int(cfg.get('HEALTH_REPEAT_SECONDS', '1800')))
+    # Read failures must not turn an existing resource alarm into a recovery.
+    mem = {}
+    for line in Path('/proc/meminfo').read_text().splitlines():
+        key, _, value = line.partition(':')
+        if key == 'MemAvailable': mem[key] = int(value.strip().split()[0])
+    available = mem['MemAvailable']
+    usage = shutil.disk_usage('/')
+    percent = usage.used / usage.total * 100
+    issues = []
+    if available < minimum * 1024:
+        issues.append('可用内存低于 %dMB（%d MB）' % (minimum, available//1024))
+    if percent > maximum: issues.append('磁盘使用 %.0f%%' % percent)
+    observation = '可用内存 %d MB，磁盘使用 %.1f%%' % (available//1024, percent)
+    path = ROOT / 'data' / 'resource-health-state.json'
+    state = load_state(path)
+    boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    if state.get('_boot_id') != boot_id: state = {'_boot_id': boot_id}
+    if DRY:
+        print(json.dumps(dict(issues=issues, observation=observation, hold_seconds=hold), ensure_ascii=False))
+        return 0
+    events = update_alerts(state, issues, time.time(), hold=hold, max_gap=90)
+    emit_events(events, socket.gethostname(), observation)
+    save_state(state, path)
+    return 0
 
 
 def main():
+    global ALERT_EVERY
+    ALERT_EVERY = max(60, int(load_env().get('HEALTH_REPEAT_SECONDS', '1800')))
     state = load_state()
     now = time.time()
     issues = []
@@ -186,6 +404,9 @@ def main():
         if not unit_exists(unit):
             continue
         if not active(unit):
+            if DRY:
+                issues.append('%s 未运行' % unit)
+                continue
             log('restart %s' % unit)
             run(['systemctl', 'restart', unit], timeout=40)
             restarted = True
@@ -195,64 +416,60 @@ def main():
                 log('%s restarted ok' % unit)
 
     if shutil.which('docker') and docker_exists('napcat') and not docker_running('napcat'):
-        log('restart napcat')
-        run(['docker', 'restart', 'napcat'], timeout=60)
-        time.sleep(8)
-        if not docker_running('napcat'):
-            issues.append('NapCat 容器未运行，自动重启失败')
+        if DRY:
+            issues.append('NapCat 容器未运行')
+        else:
+            log('restart napcat')
+            run(['docker', 'restart', 'napcat'], timeout=60)
+            time.sleep(8)
+            if not docker_running('napcat'):
+                issues.append('NapCat 容器未运行，自动重启失败')
 
-    for port in (8787, 8788):
+    # 8787 由 nginx 监听，8789 才是 share 本体；两个都要在，nginx 在/上游死也算故障。
+    for port in (8787, 8789, 8788):
         # 刚重启的进程可能还在加载（M3 初始化、卡表索引等），不能按立即探测判故障。
         if not (wait_port(port, 30) if restarted else port_open(port)):
             issues.append('端口 %d 未监听' % port)
 
+    if not http_ok('http://127.0.0.1:8787/health'):
+        issues.append('8787 /health 非 200（nginx 上游异常）')
+
     if docker_exists('napcat') and not port_open(3001):
         issues.append('端口 3001（OneBot）未监听')
+
+    # QQ 假在线/未登录：端口和进程都正常，但消息实际进不来。
+    for qq_issue, detail in check_qq():
+        EXTRA[qq_issue] = detail
+        issues.append(qq_issue)
 
     age = file_age(ROOT / 'data' / 'logs' / 'watch-metrics.jsonl')
     if age > 900:
         issues.append('watch-metrics 已 %.0f 分钟未更新' % (age / 60))
 
-    usage = shutil.disk_usage('/')
-    percent = usage.used / usage.total * 100
-    if percent > 80:
-        issues.append('磁盘使用 %.0f%%' % percent)
-
-    mem = {}
-    try:
-        for line in Path('/proc/meminfo').read_text().splitlines():
-            key, _, value = line.partition(':')
-            if key in ('MemAvailable', 'MemTotal'):
-                mem[key] = int(value.strip().split()[0])
-    except OSError:
-        pass
-    if mem.get('MemAvailable', 10 ** 9) < 150 * 1024:
-        issues.append('可用内存低于 150MB（%d MB）' % (mem.get('MemAvailable', 0) // 1024))
-
     host = socket.gethostname()
-    for issue in issues:
-        prior = state.get(issue) or {}
-        if now - prior.get('ts', 0) < ALERT_EVERY and prior.get('ts'):
-            continue
-        state[issue] = {'ts': now, 'active': True}
-        notify('[ygo] 异常：' + issue.split('，')[0],
-               issue + '\n\n主机：' + host + '\n时间：' + time.strftime('%Y-%m-%d %H:%M:%S'))
-        log('alert: ' + issue)
-
-    for key, value in list(state.items()):
-        if value.get('active') and key not in issues:
-            value['active'] = False
-            value['ts'] = now
-            notify('[ygo] 已恢复：' + key.split('，')[0], key + '\n\n主机：' + host)
-            log('recovered: ' + key)
+    if DRY:
+        print(json.dumps({'issues': issues, 'detail': EXTRA}, ensure_ascii=False, indent=2))
+        return 0
+    # Resource alarms now have their own timer/state; silently retire legacy keys.
+    state = {key: value for key, value in state.items()
+             if issue_id(key) not in ('memory_low', 'disk_high')}
+    events = update_alerts(state, issues, now)
+    emit_events(events, host)
 
     save_state(state)
     return 0
 
 
 if __name__ == '__main__':
+    if '--resources' in sys.argv:
+        DRY = '--dry-run' in sys.argv
+        raise SystemExit(resources_main())
     if len(sys.argv) > 1 and sys.argv[1] in ('test-mail', 'test-notify'):
         ok = notify('[ygo] 测试通知', '通知通道可用，之后异常会推送到这里。')
         print('sent' if ok else 'failed')
         raise SystemExit(0 if ok else 1)
+    if len(sys.argv) > 1 and sys.argv[1] in ('check', 'dry-run'):
+        # 只体检不动手：打印当前问题，不重启服务、不发通知。
+        DRY = True
+        raise SystemExit(main())
     raise SystemExit(main())
