@@ -16,6 +16,13 @@ CST = timezone(timedelta(hours=8))
 
 def _latest_views(db, now, replay_root=None, only=None):
     """每位玩家最新一条视角；前100按排名页同口径（来源有效、未排除、继承首局）。"""
+    if replay_root is not None and only and set(only).issubset(_roster(db)):
+        # Same population and latest-match choice as the ranking/pie endpoint.
+        from .top100 import eligible_views
+        from .statistics_population import latest_views
+        basis = eligible_views(db, replay_root, now, check_files=False, annotate_series=False)
+        return {name.strip(): dict(row) for name, row in latest_views(basis).items()
+                if name.strip() in only}
     players = sorted(only) if only else []
     player_clause = ' AND v.player IN (%s)' % ','.join('?' for _ in players) if players else ''
     params = [float(now)] + players
@@ -159,7 +166,7 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
     if cached is not None and _time.monotonic() - cached[0] <= 300:
         return cached[1]
     roster = _roster(db)
-    views = _latest_views(db, now, replay_root if scope == 'unnamed' else None,
+    views = _latest_views(db, now, replay_root if scope in ('100', 'unnamed') else None,
                           only=set(roster) if scope == '100' else None)
     names = set(roster) | set(views)
     searched = bool(query or deck_query)
@@ -243,7 +250,7 @@ def detail(db, data_dir, now, player, replay_root=None):
     player = (player or '').strip()
     if not player:
         raise ValueError('player_required')
-    views = _latest_views(db, now, None, only={player})
+    views = _latest_views(db, now, replay_root, only={player})
     view = views.get(player)
     member = db.execute('SELECT rank,player,points FROM stat_current_top100 WHERE player=?',
                         (player,)).fetchone()

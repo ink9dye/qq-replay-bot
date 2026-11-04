@@ -54,6 +54,29 @@ class NamingListCacheTests(unittest.TestCase):
             naming.list_rows(self.db, 1000.0, '100')
         self.assertEqual(fetch.call_count, 1)
 
+    def test_top100_list_uses_same_replay_context_as_rankings(self):
+        roster = {'甲': dict(points=1, rank=1)}
+        replay_root = Path(self.tmp.name) / 'replays'
+        with patch.object(naming, '_roster', return_value=roster), \
+                patch.object(naming, '_latest_views', return_value={'甲': view(None)}) as fetch:
+            result = naming.list_rows(self.db, 1000.0, '100', replay_root=replay_root)
+        self.assertEqual(fetch.call_args.args[2], replay_root)
+        self.assertEqual(result['recognized'], 0)
+
+    def test_shared_latest_selection_keeps_unknown_first_game_over_named_side_game(self):
+        replay_root = Path(self.tmp.name) / 'replays'
+        first = dict(view(None), player='甲', digest='first', recorded_at=100,
+                     observed_session_id='same', observed_match_players=('甲','乙'), observed_game_no=1)
+        side = dict(view('不该当主卡名'), player='甲', digest='side', recorded_at=200,
+                    observed_session_id='same', observed_match_players=('甲','乙'), observed_game_no=2)
+        with patch.object(naming, '_roster', return_value={'甲': {}}), \
+                patch('bot.top100.eligible_views', return_value={'views':[first,side]}) as eligible:
+            result = naming._latest_views(self.db, 1000, replay_root, only={'甲'})
+        self.assertIsNone(result['甲']['deck_type'])
+        self.assertEqual(result['甲']['digest'], 'first')
+        self.assertFalse(eligible.call_args.kwargs['check_files'])
+        self.assertFalse(eligible.call_args.kwargs['annotate_series'])
+
 
 if __name__ == '__main__':
     unittest.main()
