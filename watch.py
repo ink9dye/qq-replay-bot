@@ -3294,6 +3294,13 @@ async def serve(
                         except Exception as exc:
                             log(f"远程录像入库失败：{exc}")
                 for report in remote["jobs"].drain_reports():
+                    if report.get('retry'):
+                        # Release the existing scheduler suppression, rather than
+                        # creating an independent redispatch loop. The next normal
+                        # candidate pass still checks room/rank/age/capacity gates.
+                        room_key = report.get('room')
+                        remote_rooms.pop(room_key, None)
+                        remote_assigned_rooms.discard(room_key)
                     remote_reported += 1
                     detail = report.get("detail") or {}
                     extra = f"，录像 {detail.get('saved')} 个" if detail.get("saved") else ""

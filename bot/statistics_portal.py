@@ -561,6 +561,11 @@ class StatisticsPortal:
     def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
         hit=None if force else self._query_cache_hit(key,ttl,stamp_seconds)
         if hit is not None:return hit
+        if not force and key and key[0]=='card-report':
+            from .statistics_report_intermediate import response_get,response_identity
+            try:hit=response_get(response_identity(self.database,key),ttl)
+            except OSError:hit=None
+            if hit is not None:return hit
         if not self._query_compute_lock.acquire(timeout=QUERY_WAIT_SECONDS):
             # The owner may have finished just as our wait expired.
             hit=None if force else self._query_cache_hit(key,ttl,stamp_seconds)
@@ -602,7 +607,14 @@ class StatisticsPortal:
             hit=self._query_cache.get(key)
             if hit and hit[0]==stamp and now-hit[1]<=ttl and not force:
                 return hit[2]
+        from .statistics_report_intermediate import response_identity,response_put
+        try:disk_identity=response_identity(self.database,key)
+        except OSError:disk_identity=None
         result=self._query_reply(callback)
+        try:
+            if disk_identity is not None and disk_identity==response_identity(self.database,key):
+                response_put(disk_identity,result)
+        except OSError:pass
         if result[0]==200 and len(result[2]) <= QUERY_CACHE_MAX_BYTES:
             with self._query_cache_lock:
                 self._query_cache[key]=(stamp,time.monotonic(),result)

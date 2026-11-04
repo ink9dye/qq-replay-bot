@@ -12,6 +12,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 TOKEN_PREFIX = "wt_"
@@ -60,7 +61,7 @@ class WatchTokenStore:
     def __init__(self, path, *, migrate: bool = False, clock=None):
         self.path = Path(path)
         self.clock = clock or time.time
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.path), check_same_thread=False, timeout=5.0)
         self._db.row_factory = sqlite3.Row
@@ -79,6 +80,36 @@ class WatchTokenStore:
             self._db.close()
 
     # ---- QQ 侧：签发/吊销 ------------------------------------------------
+    @contextmanager
+    def lifecycle_lock(self):
+        from .watch_task_state import process_lock
+        with self._lock, process_lock(self.path.parent / 'watch-token-lifecycle.lock'):
+            yield
+
+    @contextmanager
+    def authorize_id(self, token_id, worker):
+        from .watch_task_state import AuthorizationExpired
+        with self.lifecycle_lock():
+            row = self._db.execute('SELECT id,worker,created_at,expires_at FROM watch_tokens '
+                                   'WHERE id=? AND worker=? AND revoked_at IS NULL AND expires_at>?',
+                                   (token_id, worker, self.clock())).fetchone()
+            if row is None:
+                raise AuthorizationExpired('unauthorized')
+            yield dict(row)
+
+    def valid_ids(self, token_ids):
+        values = sorted(set(token_ids))
+        result = set()
+        with self._lock:
+            for start in range(0, len(values), 200):
+                chunk = values[start:start+200]
+                if not chunk: continue
+                marks = ','.join('?' for _ in chunk)
+                result.update(r[0] for r in self._db.execute(
+                    'SELECT id FROM watch_tokens WHERE id IN (' + marks + ') AND revoked_at IS NULL AND expires_at>?',
+                    chunk + [self.clock()]))
+        return result
+
     def issue(self, worker: str, owner: str, *, hours=None, label: str = "",
               now=None, revoke_existing: bool = True) -> dict:
         """签发一个绑定 worker 的令牌；同一 worker 的旧活动令牌先吊销。
@@ -95,7 +126,7 @@ class WatchTokenStore:
         except (TypeError, ValueError):
             duration = DEFAULT_HOURS
         expires = moment + (LONG_TERM_HOURS if duration <= 0 else duration) * 3600.0
-        with self._lock:
+        with self.lifecycle_lock():
             try:
                 self._db.execute("BEGIN IMMEDIATE")
                 if revoke_existing:
@@ -146,7 +177,7 @@ class WatchTokenStore:
 
     def _revoke(self, where: str, value, *, by: str = "", now=None) -> int:
         moment = float(self.clock() if now is None else now)
-        with self._lock:
+        with self.lifecycle_lock():
             try:
                 self._db.execute("BEGIN IMMEDIATE")
                 cur = self._db.execute(
@@ -173,13 +204,13 @@ class WatchTokenStore:
         moment = float(self.clock())
         with self._lock:
             row = self._db.execute(
-                "SELECT id, worker, owner, expires_at FROM watch_tokens "
+                "SELECT id, worker, owner, created_at, expires_at FROM watch_tokens "
                 "WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?",
                 (hash_token(text), moment),
             ).fetchone()
         if row is None:
             return None
-        return dict(id=row["id"], worker=row["worker"], owner=row["owner"],
+        return dict(id=row["id"], worker=row["worker"], owner=row["owner"], created_at=row['created_at'],
                     expires_at=row["expires_at"])
 
     # ---- 管理列表 -------------------------------------------------------

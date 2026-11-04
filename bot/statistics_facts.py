@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS stat_games (
  digest TEXT PRIMARY KEY, recorded_at REAL NOT NULL, received_at REAL NOT NULL,
  expires_at REAL NOT NULL, report_version INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS stat_fact_revisions (
+ digest TEXT PRIMARY KEY REFERENCES stat_games(digest) ON DELETE CASCADE,
+ revision INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS stat_files (
  replay_id INTEGER PRIMARY KEY REFERENCES replays(id) ON DELETE CASCADE,
  digest TEXT NOT NULL REFERENCES stat_games(digest) ON DELETE CASCADE
@@ -238,6 +242,10 @@ def import_replay(db, replay, path, report=None, now=None):
                     int(usage_complete) if replace_use else old['usage_complete'],
                     int(draw_complete) if replace_draw else old['draw_complete'], version, digest, name))
     db.execute('UPDATE stat_games SET report_version=MAX(report_version,?) WHERE digest=?', (version, digest))
+    # One indexed update per imported report, in the same transaction as facts.
+    # Do not infer freshness from report_version: same-version evidence can improve.
+    db.execute('INSERT INTO stat_fact_revisions VALUES(?,1) ON CONFLICT(digest) '
+               'DO UPDATE SET revision=revision+1', (digest,))
     if report is not None and (existing is None or version >= existing['report_version']):
         payload = {key: report.get(key) for key in ('winner', 'first_player', 'initiative_chooser',
                    'result_source', 'result_conflict', 'inference_rule', 'match_evidence', 'version')}

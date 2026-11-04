@@ -96,18 +96,17 @@ def _issue(service, user, slot: int, conversation) -> str:
         if now - last < COOLDOWN_SECONDS:
             return "令牌刚发过，请先使用上一条；30 秒后再试。"
 
-    remote = service.config.get("remote") or {}
-    hours = remote.get("device_token_hours", DEFAULT_HOURS)
-    label = conversation or "private"
-    try:
-        row = _store(service).issue(worker, user, hours=hours, label=label)
-    except Exception as exc:  # noqa: BLE001 - 用户侧只看到失败，不暴露数据库细节
-        writer = getattr(service, "write_log", None)
-        if callable(writer):
-            writer(f"观战令牌签发失败：{type(exc).__name__}")
-        return "令牌签发失败，请稍后再试。"
+        remote = service.config.get("remote") or {}
+        hours = remote.get("device_token_hours", DEFAULT_HOURS)
+        label = conversation or "private"
+        try:
+            row = _store(service).issue(worker, user, hours=hours, label=label)
+        except Exception as exc:  # noqa: BLE001 - 用户侧只看到失败，不暴露数据库细节
+            writer = getattr(service, "write_log", None)
+            if callable(writer):
+                writer(f"观战令牌签发失败：{type(exc).__name__}")
+            return "令牌签发失败，请稍后再试。"
 
-    with _LOCK:
         issued[key] = now
     return ("观战接口令牌（已绑定客户端）\n"
             f"服务器地址：{_public_url(service)}\n"
@@ -115,8 +114,8 @@ def _issue(service, user, slot: int, conversation) -> str:
             f"客户端名称：{row['worker']}\n"
             f"有效期至：{_format_expiry(row['expires_at'])}\n"
             "只复制“接口令牌：”后以 wt_ 开头的完整一串，不要复制标签、Bearer 或列表中的省略号。\n"
-            "客户端名称必须原样填；保存后先停止再启动观战。\n"
-            "同一设备重发会使旧令牌失效；到期或泄露后重新发送“令牌分发”换新。")
+            "客户端名称必须原样填；先停止再启动观战。停止期间替换完整新令牌并保存，随后重新启动。\n"
+            "同槽位成功重发后旧令牌失效（立即生效）；服务器会释放旧代任务占用。手机仍须手动停止旧观战，释放不代表手机连接已关闭。不同槽位互不影响。")
 
 
 def _list(service, user, conversation) -> str:

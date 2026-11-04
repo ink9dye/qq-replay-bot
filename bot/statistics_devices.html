@@ -76,10 +76,13 @@ function render(d){
     const card=el('article',undefined,'device'),head=el('div',undefined,'devicehead');
     head.append(el('div',w.name,'name'),el('span',fresh?(w.online?'在线':'离线'):'旧采样',w.online&&fresh?'badge':'badge off'));
     card.append(head,el('div',w.ip==='127.0.0.1'?'127.0.0.1 · 服务器本机':(w.ip||'出口未知'),'ip'));
-    const line=el('div',undefined,'capacity');line.append(el('span','任务占用'),el('b',w.active+' / '+w.capacity));
+    const line=el('div',undefined,'capacity');line.append(el('span',fresh&&w.online?'在线容量占用':'上次容量记录'),el('b',w.active+' / '+w.capacity));
     card.append(line,track(w.active,w.capacity));
-    if(!w.online)card.append(el('div','心跳已过期，占用数为最后一次记录','sub'));
-    else if(w.active>0&&!(d.rooms||[]).some(r=>r.worker===w.name))card.append(el('div','已认领任务，等待录像回传','sub'));
+    card.append(el('div','客户端自报活跃：'+(w.client_reported_active??'未提供')+'；服务器有效任务：'+(w.server_active??'未提供'),'sub'));
+    card.append(el('div','最近心跳：'+stamp(w.seen)+'；状态采样：'+stamp(w.sampled_at||d.status_at),'sub'));
+    if(!fresh)card.append(el('div','旧采样，不能据此判断当前是否在录制','sub'));
+    else if(!w.online)card.append(el('div','心跳已过期；离线记录不占用同IP并发名额','sub'));
+    else if(w.active>0&&!(d.rooms||[]).some(r=>r.worker===w.name))card.append(el('div','客户端仍报告录制任务；服务器当前没有对应房间分配，可能为重启前任务','sub'));
     for(const r of (d.rooms||[]).filter(r=>r.worker===w.name)){
       const room=el('div',undefined,'sub');
       room.append(el('b',r.title||r.room||'房间未知'));

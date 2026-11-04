@@ -195,10 +195,13 @@ const HAND_TRAP_PRESET = [
   { code: 49036338, name: 'PSY骨架驱动者' },
   { code: 26084285, name: '守墓的监视者' },
   { code: 97462632, name: '栗球兽卫' },
+  { code: 59438930, name: '幽鬼兔' },
 ];
 const HAND_TRAP_COMBO_PRESET = [
   [{ code: 38814750, name: 'PSY骨架装备·γ' }, { code: 49036338, name: 'PSY骨架驱动者' }],
   [{ code: 49036338, name: 'PSY骨架驱动者' }, { code: 74203495, name: 'PSY骨架装备·δ' }],
+  [{ code: 10045474, name: '无限泡影' }, { code: 27204311, name: '原始生命态 尼比鲁' }],
+  [{ code: 97268402, name: '效果遮蒙者' }, { code: 27204311, name: '原始生命态 尼比鲁' }],
 ];
 const presetButton = $('handtrap-preset');
 if (presetButton) {
@@ -214,13 +217,9 @@ if (presetButton) {
     renderComboDefs();
     $('combo-status').textContent = skipped
       ? `单卡已加入；组合上限为4个，本次加入${added}个，另有${skipped}个未加入。`
-      : `手坑单卡及PSY组合已加入，点“查询”查看。`;
+      : `手坑单卡及四组组合已加入，点“查询”查看。`;
   });
 }
-const NIBIRU_COMBO_PRESET = [
-  [{ code: 10045474, name: '无限泡影' }, { code: 27204311, name: '原始生命态 尼比鲁' }],
-  [{ code: 97268402, name: '效果遮蒙者' }, { code: 27204311, name: '原始生命态 尼比鲁' }],
-];
 const BOARD_BREAKER_PRESET = [
   { code: 101307067, name: '决斗者之力' },
   { code: 24203749, name: '天下独步之大义贼' },
@@ -312,19 +311,6 @@ function addComboCards(cards) {
   comboDefs.push({ codes: [...codes], cards: cards.map(card => ({ ...card })) });
   return true;
 }
-$('nibiru-combo-preset').onclick = () => {
-  let added = 0;
-  for (const pair of NIBIRU_COMBO_PRESET) {
-    const result = addComboCards(pair);
-    if (result === null) {
-      $('combo-status').textContent = '最多设置 4 个组合。';
-      break;
-    }
-    if (result) added += 1;
-  }
-  renderComboDefs();
-  if (added) $('combo-status').textContent = `已加入 ${added} 个组合，点“查询”查看。`;
-};
 
 /* ---------- 条件收集与还原 ---------- */
 

@@ -307,22 +307,28 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
 
     idents = {code: identify(code) for code in targets}
     parts = {code: _partition_for(code, names, wanted_partition) for code in targets}
+    def read_raw_tables():
+        return dict(copies=[tuple(row) for row in db.execute(
+            'SELECT build,partition,code,SUM(copies) copies FROM stat_build_cards '
+            'WHERE build IN (SELECT build FROM _report_builds) GROUP BY build,partition,code')],
+            facts=[dict(row) for row in db.execute(
+            'SELECT f.code,f.digest,f.player,f.partition,f.drawn,f.used,f.used_after_draw,f.appeared,'
+            'f.draw_count,f.initial_count,f.use_count,f.appearance_count '
+            'FROM stat_card_facts f WHERE (f.digest,f.player) IN '
+            '(SELECT digest,player FROM _report_selected)')])
+    from .statistics_report_intermediate import raw_tables
+    raw = raw_tables(db, read_raw_tables)
     copies_lookup = {}
-    for card in db.execute('SELECT build,partition,code,SUM(copies) copies FROM stat_build_cards '
-                           'WHERE build IN (SELECT build FROM _report_builds) '
-                           'GROUP BY build,partition,code'):
-        copies_lookup.setdefault((card['code'], card['partition']), {})[card['build']] = card['copies']
+    for build, part, code, count in raw.pop('copies'):
+        copies_lookup.setdefault((code, part), {})[build] = count
     rows_by_build = {}
     for row in selected:
         rows_by_build.setdefault(row['build'], []).append(row)
     # 本次 selected 的 facts 一次查回，按 (code,partition) 聚合；不再逐卡调用 card_identity.facts。
     facts_by_code = {}
-    for fact in db.execute(
-            'SELECT f.code,f.digest,f.player,f.partition,f.drawn,f.used,f.used_after_draw,f.appeared,'
-            'f.draw_count,f.initial_count,f.use_count,f.appearance_count '
-            'FROM stat_card_facts f WHERE (f.digest,f.player) IN '
-            '(SELECT digest,player FROM _report_selected)'):
-        facts_by_code.setdefault((fact['code'], fact['partition']), []).append(dict(fact))
+    for fact in raw['facts']:
+        facts_by_code.setdefault((fact['code'], fact['partition']), []).append(fact)
+    del raw
     view_by_key = {(row['digest'], row['player']): row for row in selected}
     fact_cache = {}
     rows = []

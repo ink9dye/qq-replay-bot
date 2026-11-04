@@ -156,6 +156,9 @@ class DeviceDashboard:
                 active=max(0,int(info.get('active') or 0));capacity=max(1,int(info.get('capacity') or 1))
                 online=bool(info.get('online'))
                 row=dict(name=str(name)[:64],ip=str(info.get('ip') or ''),active=active,capacity=capacity,online=online)
+                row.update(client_reported_active=info.get('client_reported_active'),
+                           server_active=info.get('server_active'),seen=info.get('seen'),
+                           reported_at=info.get('reported_at'),sampled_at=info.get('sampled_at',self._status_at))
                 workers.append(row)
                 if online:
                     group=ips.setdefault(row['ip'],dict(ip=row['ip'],active=0,capacity=0,devices=0))

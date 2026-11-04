@@ -22,6 +22,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from .watch_task_state import AuthorizationExpired
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -63,6 +64,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _auth(self) -> bool:
         # 旧版 remote.token 是兼容总令牌；每设备令牌从 SQLite 哈希表验证。
         self.auth_worker = ""
+        self.auth = None
         token = getattr(self.server, "app_token", "")
         header = self.headers.get("Authorization") or ""
         if header.lower().startswith("bearer "):
@@ -70,6 +72,7 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             got = (self.headers.get("X-Watch-Token") or "").strip()
         if token and got and hmac.compare_digest(got, token):
+            self.auth = dict(id=None, worker='', generation=self.server.app.lifecycle.legacy_generation, created_at=0)
             return True
         store = getattr(self.server, "token_store", None)
         if store is not None and got:
@@ -83,6 +86,7 @@ class _Handler(BaseHTTPRequestHandler):
                 row = None
             if row and str(row.get("worker") or "").strip():
                 self.auth_worker = str(row.get("worker") or "")
+                self.auth = dict(row, generation='device:' + str(row['id']))
                 return True
         self._send(401, dict(ok=False, error="unauthorized"))
         return False
@@ -118,6 +122,18 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._auth():
             return
+        try:
+            self._post_authorized()
+        except AuthorizationExpired:
+            self._send(401, dict(ok=False, error='unauthorized'))
+        except PermissionError:
+            self._send(403, dict(ok=False, error='job_owner_mismatch'))
+        except (TimeoutError, sqlite3.Error):
+            self._send(503, dict(ok=False, error='task_state_busy'))
+        except ValueError:
+            self._send(400, dict(ok=False, error='invalid_task_request'))
+
+    def _post_authorized(self):
         parts = urlsplit(self.path)
         path = parts.path
         if path == "/watch-api/claim":
@@ -132,8 +148,8 @@ class _Handler(BaseHTTPRequestHandler):
             # 并发上限按“公网 IP”算：nginx 会带 X-Real-IP；云端客户端直连 8791 时是 127.0.0.1。
             # 不用请求体里的 ip，避免客户端伪造。
             client_ip = (self.headers.get("X-Real-IP") or "").strip() or (self.client_address[0] if self.client_address else "")
-            job = self.server.app.claim(worker, int(data.get("capacity") or 1), client_ip,
-                                        float(data.get("wait") or 0))
+            job = self.server.app.lifecycle.claim(worker, int(data.get("capacity") or 1), client_ip,
+                                                  float(data.get("wait") or 0), self.auth)
             if not job:
                 self._send(204, None)
             else:
@@ -151,7 +167,7 @@ class _Handler(BaseHTTPRequestHandler):
             active = data.get("active")
             active = [str(item) for item in active] if isinstance(active, list) else None
             client_ip = (self.headers.get("X-Real-IP") or "").strip() or (self.client_address[0] if self.client_address else "")
-            cancel = self.server.app.heartbeat(worker, active, client_ip)
+            cancel = self.server.app.lifecycle.heartbeat(worker, active, client_ip, self.auth)
             self._send(200, dict(ok=True, cancel=cancel))
             return
         if path == "/watch-api/report":
@@ -164,8 +180,8 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._worker_allowed(worker):
                 self._send(403, dict(ok=False, error="worker_mismatch"))
                 return
-            ok = self.server.app.report(worker, job, str(data.get("outcome") or ""),
-                                        data.get("detail") if isinstance(data.get("detail"), dict) else {})
+            ok = self.server.app.lifecycle.report(worker, job, str(data.get("outcome") or ""),
+                                        data.get("detail") if isinstance(data.get("detail"), dict) else {}, self.auth)
             self._send(200 if ok else 409, dict(ok=ok))
             return
         if path == "/watch-api/upload":
@@ -210,10 +226,13 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             recorded = time.time()
         try:
-            result = self.server.app.save_upload(job_id, name, body, players, recorded)
+            with self.server.app.lifecycle.upload_authorized(self.auth, job_id):
+                result = self.server.app.save_upload(job_id, name, body, players, recorded)
         except InsufficientStorageError:
             self._send(507, dict(ok=False, error="接收磁盘剩余空间不足，暂停接收新录像。"))
             return
+        except PermissionError:
+            raise
         except (OSError, ValueError) as exc:
             self._send(500, dict(ok=False, error=str(exc)[:120]))
             return
@@ -241,6 +260,8 @@ class WatchApiServer:
         self.receipt_path = Path(receipt_path) if receipt_path else self.replay_root.parent / "watch-receipts.json"
         self._httpd = None
         self._thread = None
+        from .watch_task_api import TaskLifecycle
+        self.lifecycle = TaskLifecycle(self)
 
     # ---- 供 handler 调用 -------------------------------------------------
     def claim(self, worker: str, capacity: int, ip: str, wait: float = 0.0) -> dict:
@@ -331,10 +352,12 @@ class WatchApiServer:
         self._httpd = httpd
         self._thread = threading.Thread(target=httpd.serve_forever, name="watch-api", daemon=True)
         self._thread.start()
+        self.lifecycle.start()
         self.log(f"[远程] 接口监听 http://{self.bind[0]}:{self.bind[1]}/watch-api/")
         return True
 
     def stop(self) -> None:
+        self.lifecycle.stop()
         httpd, self._httpd = self._httpd, None
         if httpd is not None:
             try:
