@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -37,6 +38,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -227,7 +229,25 @@ fun TasksTab(vm: MainViewModel) {
 @Composable
 fun LogsTab(vm: MainViewModel) {
     val logs by vm.logs.collectAsStateWithLifecycle()
-    LazyColumn(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+    val listState = rememberLazyListState()
+
+    // 进入日志页就定位到最新一条，不用每次手动往下滑。
+    // （LogsTab 随页签切换会重建，所以每次点开「日志」都会重新执行）
+    LaunchedEffect(Unit) {
+        if (logs.isNotEmpty()) listState.scrollToItem(logs.lastIndex)
+    }
+
+    // 新日志到达时：用户本来就停在底部则继续跟随；已经往上翻看历史则不去打扰。
+    // 用最后一条日志做 key（日志上限 500 条，到顶后 size 就不再变化了）。
+    LaunchedEffect(logs.lastOrNull()) {
+        if (logs.isEmpty()) return@LaunchedEffect
+        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        if (lastVisible >= logs.size - 2) {
+            listState.animateScrollToItem(logs.lastIndex)
+        }
+    }
+
+    LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(8.dp)) {
         items(logs) { entry ->
             val color = when (entry.level) {
                 "error" -> androidx.compose.ui.graphics.Color(0xFFB00020)

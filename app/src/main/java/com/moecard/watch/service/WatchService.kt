@@ -12,11 +12,11 @@ import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.getSystemService
 import com.moecard.watch.ui.MainActivity
@@ -33,13 +33,17 @@ import com.moecard.watch.domain.WatchManager
  *  3. 被杀后自动拉起：START_REDELIVER_INTENT 让系统重建服务，配合 AlarmManager 看门狗
  *     （每 15 分钟探活，发现没跑且用户仍在运行态就拉起）+ 开机自启（autoStart）。
  *
- * 另外监听网络变化，WiFi ↔ 移动数据切换时主动断开活跃连接以加速重连。
+ * 另外监听默认网络：只有真正换网/断网时才主动断开活跃连接（加速重连），
+ * 信号强弱、带宽变化等抖动一律不干预——连接断了也会由客户端任务内自动重连续看。
  */
 class WatchService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
+    /** 当前默认网络，用于识别"真的换网了"。 */
+    private var lastNetwork: Network? = null
+    private var lastDropAt = 0L
 
     override fun onBind(intent: Intent?) = null
 
@@ -110,26 +114,56 @@ class WatchService : Service() {
     }
 
     // ---------------------------------------------------------------- 网络变化监听
+    /**
+     * 只盯「默认网络」的**真实切换/断开**，不再因为信号强度、带宽、已用流量等
+     * capability 抖动而断开观战连接。
+     *
+     * 旧实现监听的是 onCapabilitiesChanged，这个回调在 WiFi 信号稍微波动、
+     * 网速统计刷新时都会触发（部分设备几秒一次），导致刚连上的观战被反复掐断。
+     * 现在连接断了也会由 WatchClient 的任务内重连兜住，所以这里只需要在真正换网时
+     * 提醒一下（加速重连），其余情况都别插手。
+     */
     private fun registerNetworkCallback() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val req = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
         netCallback = object : ConnectivityManager.NetworkCallback() {
-            // 默认网络切换（WiFi ↔ 移动数据）或断网恢复时主动断开加速重连
-            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                WatchManager.dropActiveConnections()
+            override fun onAvailable(network: Network) {
+                val prev = lastNetwork
+                lastNetwork = network
+                if (prev != null && prev != network) {
+                    dropConnections("默认网络已切换（$prev → $network）")
+                }
             }
 
             override fun onLost(network: Network) {
-                WatchManager.dropActiveConnections()
+                if (lastNetwork == network) lastNetwork = null
+                // 只有在彻底没有任何可用网络时才主动断开，避免切换过程中的重复断开
+                val active = try {
+                    cm.activeNetwork
+                } catch (_: Exception) {
+                    null
+                }
+                if (active == null) dropConnections("网络已断开")
+            }
+
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                // 刻意不处理：带宽/信号波动属于正常抖动，断开只会让观战反复中断
             }
         }
         try {
-            cm.registerNetworkCallback(req, netCallback!!)
+            cm.registerDefaultNetworkCallback(netCallback!!)
+            lastNetwork = cm.activeNetwork
         } catch (_: Exception) {
             netCallback = null
         }
+    }
+
+    /** 主动断开活跃连接以加速重连（5 秒内只做一次，避免回调风暴）。 */
+    private fun dropConnections(reason: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastDropAt < DROP_COOLDOWN_MS) return
+        lastDropAt = now
+        Log.i(TAG, "网络变化：$reason")
+        WatchManager.dropActiveConnections()
     }
 
     private fun unregisterNetworkCallback() {
@@ -224,5 +258,7 @@ class WatchService : Service() {
         private const val NOTIF_ID = 1
         private const val WATCHDOG_REQ = 1001
         private const val WATCHDOG_INTERVAL = 15 * 60 * 1000L // 15 分钟探活一次
+        private const val DROP_COOLDOWN_MS = 5_000L
+        private const val TAG = "MoeCardWatch"
     }
 }

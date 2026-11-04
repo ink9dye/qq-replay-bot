@@ -63,7 +63,7 @@ class WatchApi(private val server: String, private val token: String) {
         }
         val builder = Request.Builder().url("${base()}$path").method(method, bodyObj)
         builder.header("Authorization", "Bearer $token")
-        builder.header("User-Agent", "MoeCardWatch/1.0.0")
+        builder.header("User-Agent", "MoeCardWatch/1.0.1")
         headers.forEach { (k, v) -> builder.header(k, v) }
         Http.client.newCall(builder.build()).execute().use { resp ->
             val data = resp.body?.bytes() ?: ByteArray(0)
