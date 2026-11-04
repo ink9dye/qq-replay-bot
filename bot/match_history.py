@@ -16,6 +16,8 @@ def build_match_groups(store, available: list, player: str) -> list[dict]:
     groups = {}
     for replay, path in available:
         known = mapping.get(replay['id'])
+        if known and known['session_id'].startswith('prefix:'):
+            known = None  # Remote per-job counters can collide across matches.
         key = known['session_id'] if known else f'ungrouped:{replay["id"]}'
         group = groups.setdefault(key, {'id': key, 'entries': [], 'games': [], 'confirmed': bool(known)})
         number = known['game_no'] if known else 1
@@ -131,25 +133,9 @@ def recover_legacy_sessions(store, replay_root: Path, deck_root: Path) -> int:
 
 
 def recover_sessions_from_prefix(store, replay_root: Path, player: str) -> int:
-    """新命名格式的前缀数字表示当天第几场对战：同一玩家、同一天、同一前缀属于同一场，按录制时间排局次。"""
-    from .share import safe_replay_file
-    mapping = store.session_map(player)
-    by_match = {}
-    for replay in store.replays_for_player(player):
-        if replay['id'] in mapping:
-            continue
-        path = safe_replay_file(replay_root, replay['rel_path'])
-        if not path:
-            continue
-        number = match_number_from_filename(path.name)
-        if number is None:
-            continue
-        day = datetime.fromtimestamp(float(replay['saved_at'])).strftime('%Y%m%d')
-        by_match.setdefault((day, number), []).append(replay)
-    recovered = 0
-    for (day, number), batch in by_match.items():
-        batch.sort(key=lambda row: (row['recorded_at'], row['id']))
-        session = f"prefix:{safe_filename_part(player)}:{day}:{number}"
-        store.recover_session(session, [(row['id'], game_no) for game_no, row in enumerate(batch, 1)])
-        recovered += 1
-    return recovered
+    """兼容旧入口；文件前缀不再授权场次恢复或首局推定。
+
+    远程每个任务新建计数器，多个比赛都可能编号为 1。可信身份由
+    capture / 上传任务来源提供，历史错误关联通过有清单的修复工具处理。
+    """
+    return 0

@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -286,12 +287,32 @@ class WatchApiServer:
         digest = hashlib.sha256(body).hexdigest()
         if not evidence:
             try:
+                from .watch_upload_sessions import record as record_session_upload
+                record_session_upload(self.replay_root.parent, digest, job_id, players or [folder], recorded)
+            except (OSError, ValueError, sqlite3.Error):
+                self.log('[远程] 场次来源留存失败，录像接收继续；不推定首局')
+            try:
                 from .watch_receipts import record_receipt
                 record_receipt(self.receipt_path, digest, self.jobs.upload_source(job_id), players or [folder], recorded)
             except OSError:
                 self.log('[远程] 来源记录写入失败，录像接收继续')
             self.jobs.enqueue_ingest(str(path), players or [folder], recorded, digest)
             self.jobs.note_upload(job_id)
+        else:
+            # Evidence may arrive after ingest. Keep its small identity separately
+            # so readers see it without replaying the fact database.
+            try:
+                capture = json.loads(body)
+                replay = target_dir / safe_name[:-len('.evidence.json')]
+                if (isinstance(capture, dict) and replay.is_file()
+                        and replay.stat().st_size <= self.max_upload
+                        and hashlib.sha256(replay.read_bytes()).hexdigest() == capture.get('digest')):
+                    from .watch_upload_sessions import record as record_session_upload
+                    record_session_upload(self.replay_root.parent, capture['digest'], job_id,
+                                          players or [folder], recorded,
+                                          {k: capture.get(k) for k in ('session_id','game_no','captured_from_start')})
+            except (OSError, ValueError, sqlite3.Error):
+                self.log('[远程] 首局证据留存失败，保持首局未确认')
         self.log(f"[远程] 收到{'小局证据' if evidence else '录像'} "
                  f"{path.relative_to(self.replay_root)}（{len(body)} 字节，任务 {job_id}）")
         return dict(path=str(path), digest=digest)

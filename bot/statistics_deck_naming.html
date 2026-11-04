@@ -67,7 +67,7 @@ function renderFields(items){const box=$('fieldBreakdown'),host=$('fieldRows');h
  for(const field of items.slice(0,12)){const chip=el('button',field.field+'×'+field.copies,'badge');chip.title='字段明细：\n'+(field.cards||[]).map(c=>c.name+'×'+c.copies).join('、');host.append(chip)}}
 async function openDetail(row){current=row;$('title').textContent=`#${row.rank==null?'排名暂缺':row.rank} ${row.player}`;$('meta').textContent='正在读取构筑…';$('cards').replaceChildren();$('fieldBreakdown').hidden=true;$('dialog').showModal();
  try{const d=await api('/statistics/api/deck-naming?player='+encodeURIComponent(row.player));current=Object.assign({},row,d);
-  $('title').textContent=`#${d.rank==null?'排名暂缺':d.rank} ${d.player}`;$('meta').textContent=`构筑 ${d.build?d.build.slice(0,12):'—'} · 采集 ${d.recorded_text||'—'} · 当前 ${d.deck_type||'未命名'}${d.label_source==='same_match_first_game'?'（继承同场首局）':''}`;
+  $('title').textContent=`#${d.rank==null?'排名暂缺':d.rank} ${d.player}`;$('meta').textContent=`构筑 ${d.build?d.build.slice(0,12):'—'} · 采集 ${d.recorded_text||'—'} · 当前观测 ${d.deck_type||'未命名'}${d.label_source==='same_match_first_game'?'（继承同场首局）':''} · ${{confirmed:'已确认首局',available:'已关联同场首局'}[d.first_game_status]||'首局未确认'}`;
   const cols=[section('主卡组',d.cards.main||[]),section('额外',d.cards.extra||[])];if((d.cards.side||[]).length)cols.push(section('Side',d.cards.side));const inferred=(d.inferred_side||{}).cards||[];if(inferred.length)cols.push(section((d.inferred_side||{}).fallback?'Side（推测，来自最近可推测对局）':'Side（推测，非直接记录）',inferred));$('cards').replaceChildren(...cols);
   renderFields(d.field_breakdown||[]);
   }catch(e){$('meta').textContent='读取失败：'+e.message}}

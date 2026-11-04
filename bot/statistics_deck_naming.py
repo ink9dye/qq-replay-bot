@@ -43,6 +43,8 @@ def _latest_views(db, now, replay_root=None, only=None):
     effective = {(row['player'], row['digest']): row for row in all_rows}
     for view in views.values():
         row = effective.get((view['player'], view['digest']))
+        if row:
+            view['first_game_status'] = row.get('first_game_status','unconfirmed')
         if row and not view['deck_type'] and row['deck_type']:
             view['deck_type'] = row['deck_type']
             view['classification_status'] = row.get('classification_status') or view['classification_status']
@@ -63,6 +65,7 @@ def _latest_views(db, now, replay_root=None, only=None):
                                     recorded_at=row['recorded_at'], deck_type=row['deck_type'],
                                     classification_status=row['classification_status'],
                                     classification_source=row.get('classification_source'),
+                                    first_game_status=row.get('first_game_status','unconfirmed'),
                                     label_source='same_match_first_game'
                                     if row.get('classification_source') == 'same_match_first_game' else None)
             for name in _roster(db):
@@ -125,6 +128,7 @@ def _row(name, member, view, rank):
                 build=view['build'] if view else None,
                 recorded_at=view['recorded_at'] if view else None,
                 classification_status=view['classification_status'] if view else None,
+                first_game_status=view.get('first_game_status','unconfirmed') if view else None,
                 label_source=view.get('label_source') if view else None,
                 label_score=view.get('label_score') if view else None,
                 in_top100=bool(member))
@@ -147,7 +151,8 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
     try:
         # WAL 模式下主库 mtime 可能滞后，-wal 也要算进来。
         stamp = tuple(os.stat(path).st_mtime_ns if os.path.exists(path) else 0
-                      for path in (db_path, db_path + '-wal'))
+                      for path in (db_path, db_path + '-wal',
+                                   str(__import__('pathlib').Path(db_path).parent / 'watch-upload-sessions.sqlite3')))
     except OSError:
         stamp = (0, 0)
     try:
@@ -320,6 +325,7 @@ def detail(db, data_dir, now, player, replay_root=None):
                 recorded_text=datetime.fromtimestamp(view['recorded_at'], CST).strftime('%m-%d %H:%M')
                 if view.get('recorded_at') else None,
                 classification_status=view['classification_status'],
+                first_game_status=view.get('first_game_status','unconfirmed'),
                 label_source=view.get('label_source'),
                 label_score=view.get('label_score'),
                 cards=cards, series=series, inferred_side=inferred,

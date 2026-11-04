@@ -260,6 +260,7 @@ def run_job(server: str, token: str, name: str, job: dict, work_dir: Path, creds
                                 "exact")
     saved = {"games": 0, "uploaded": 0, "bytes": 0}
     seen: set[str] = set()
+    pending_evidence = {}
 
     def on_saved(written, players, when, digest) -> None:
         if digest in seen:
@@ -276,11 +277,10 @@ def run_job(server: str, token: str, name: str, job: dict, work_dir: Path, creds
                 if upload(server, token, job_id, path, [str(item) for item in players], recorded):
                     saved["uploaded"] += 1
                     saved["bytes"] += path.stat().st_size
-            sidecar = Path(str(path) + ".evidence.json")
-            if sidecar.is_file():
-                upload(server, token, job_id, sidecar, [str(item) for item in players], recorded)
-                sidecar.unlink(missing_ok=True)
-            path.unlink(missing_ok=True)
+            # Spectator writes/synchronizes evidence after this callback and may
+            # update it when MSG_WIN arrives late. Keep the replay until it ends.
+            if index == 0:
+                pending_evidence[path] = ([str(item) for item in players], recorded)
         saved["games"] += 1
 
     writer.on_saved = on_saved
@@ -302,6 +302,14 @@ def run_job(server: str, token: str, name: str, job: dict, work_dir: Path, creds
         print(f"[worker] 任务异常 {job_id}：{error}", flush=True)
         outcome = "failed"
     finally:
+        # Finish evidence uploads before reporting/dropping the task lease.
+        for replay_path, (players, recorded) in pending_evidence.items():
+            sidecar = Path(str(replay_path) + '.evidence.json')
+            if sidecar.is_file():
+                try:
+                    upload(server, token, job_id, sidecar, players, recorded)
+                except (OSError, RuntimeError):
+                    print('[worker] 首局证据上传失败，服务器保持首局未确认', flush=True)
         detail = dict(saved=saved["games"], uploaded=saved["uploaded"], bytes=saved["bytes"])
         if error:
             detail["error"] = error

@@ -10,13 +10,6 @@ CST=timezone(timedelta(hours=8))
 def catalog(db,player):
     rows=[dict(r)for r in db.execute('SELECT v.digest,g.received_at FROM stat_views v JOIN stat_games g ON g.digest=v.digest WHERE v.player=?',(player,))]
     digests={r['digest']for r in rows};meta=capture_metadata(db,digests)
-    explicit={r['digest']for r in db.execute("SELECT digest FROM stat_evidence WHERE payload_json LIKE '%session_id%' OR payload_json LIKE '%game_no%'")}
-    legacy={}
-    for r in db.execute('SELECT f.digest,s.session_id,s.game_no FROM stat_files f JOIN replay_sessions s ON s.replay_id=f.replay_id JOIN replays r ON r.id=f.replay_id WHERE r.focus_player=?',(player,)):
-        if r['session_id']and type(r['game_no'])is int and r['game_no']>0:
-            legacy.setdefault(r['digest'],set()).add((r['session_id'],r['game_no'],True))
-    for digest,values in legacy.items():
-        if digest not in meta and digest not in explicit and len(values)==1:meta[digest]=next(iter(values))
     pairs={}
     for r in db.execute('SELECT digest,player FROM stat_views'):
         if r['digest']in digests:pairs.setdefault(r['digest'],[]).append(r['player'])
@@ -36,7 +29,7 @@ def catalog(db,player):
             for row in group:
                 m=meta.get(row['digest'])
                 result[row['digest']]=dict(observed_date=day.isoformat(),observed_day=f'{day.month:02}/{day.day:02}',
-                    observed_match_no=number,observed_game_no=m[1]if m else None,
+                    observed_match_no=number,observed_game_no=m[1]if m and m[1]>0 else None,
                     identity_first_digest=first[0]if len(first)==1 else None,
                     observed_match_id=hashlib.sha256((player+'\0'+key).encode()).hexdigest()[:20])
     return result
@@ -57,23 +50,6 @@ def catalog_many(db, players):
         rows_by_player.setdefault(r['player'], []).append(dict(r))
         digests.add(r['digest'])
     meta = capture_metadata(db, digests)
-    explicit = set()
-    digest_values = list(digests)
-    for start in range(0, len(digest_values), 400):
-        digest_chunk = digest_values[start:start + 400]
-        digest_marks = ','.join('?' for _ in digest_chunk)
-        # 只关心本次这些 digest 是否带显式 session/game 证据，结果与全表 LIKE 一致。
-        explicit.update(r['digest'] for r in db.execute(
-            'SELECT digest FROM stat_evidence WHERE digest IN (' + digest_marks + ') AND ('
-            "payload_json LIKE '%session_id%' OR payload_json LIKE '%game_no%')", digest_chunk))
-    legacy = {}
-    for r in db.execute(
-            f'SELECT f.digest,r.focus_player,s.session_id,s.game_no FROM stat_files f '
-            f'JOIN replay_sessions s ON s.replay_id=f.replay_id JOIN replays r ON r.id=f.replay_id '
-            f'WHERE r.focus_player IN ({marks})', players):
-        if r['session_id'] and type(r['game_no']) is int and r['game_no'] > 0:
-            legacy.setdefault(r['focus_player'], {}).setdefault(r['digest'], set()).add(
-                (r['session_id'], r['game_no'], True))
     pairs = {}
     for r in db.execute('SELECT digest,player FROM stat_views'):
         if r['digest'] in digests:
@@ -81,11 +57,7 @@ def catalog_many(db, players):
     result = {}
     for player in players:
         rows = rows_by_player.get(player, [])
-        player_legacy = legacy.get(player, {})
-        player_meta = dict(meta)
-        for digest, values in player_legacy.items():
-            if digest not in player_meta and digest not in explicit and len(values) == 1:
-                player_meta[digest] = next(iter(values))
+        player_meta = meta
         groups = {}
         for row in rows:
             m = player_meta.get(row['digest'])
@@ -107,7 +79,7 @@ def catalog_many(db, players):
                     m = player_meta.get(row['digest'])
                     player_result[row['digest']] = dict(
                         observed_date=day.isoformat(), observed_day=f'{day.month:02}/{day.day:02}',
-                        observed_match_no=number, observed_game_no=m[1] if m else None,
+                        observed_match_no=number, observed_game_no=m[1] if m and m[1]>0 else None,
                         identity_first_digest=first[0] if len(first) == 1 else None,
                         observed_match_id=hashlib.sha256((player + '\0' + key).encode()).hexdigest()[:20])
         result[player] = player_result

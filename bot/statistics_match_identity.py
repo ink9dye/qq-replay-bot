@@ -48,6 +48,12 @@ def _read_capture_metadata(db, digests):
                 captures.setdefault(digest, set()).add(
                     (session_id, game_no, captured_from_start is True))
     result = {digest: next(iter(found)) for digest, found in captures.items() if len(found) == 1}
+    from .watch_upload_sessions import metadata as upload_metadata
+    try:
+        uploaded = upload_metadata(db, [d for d in values if d not in explicit])
+    except (sqlite3.Error, OSError):
+        uploaded = {}
+    result.update(uploaded)
     # Uploaded/legacy replays can have no capture payload but already have a
     # recorded session association. Use only unique associations, never timestamps.
     for start in range(0, len(values), 400):
@@ -60,7 +66,11 @@ def _read_capture_metadata(db, digests):
                               'JOIN replay_sessions s ON s.replay_id=f.replay_id '
                               'WHERE f.digest IN (%s)' % marks, chunk):
             if isinstance(row['session_id'], str) and row['session_id'] and type(row['game_no']) is int and row['game_no'] > 0:
-                legacy.setdefault(row['digest'], set()).add((row['session_id'], row['game_no'], True))
+                # A filename counter is not globally unique, nor start evidence.
+                item = (('unverified:'+row['digest'], 0, False)
+                        if row['session_id'].startswith('prefix:') else
+                        (row['session_id'], row['game_no'], False))
+                legacy.setdefault(row['digest'], set()).add(item)
         result.update({d: next(iter(found)) for d, found in legacy.items() if len(found) == 1})
     return result
 
@@ -104,8 +114,10 @@ def inherit_first_game_types(db,rows):
     for row in rows:
         meta=metadata.get(row['digest'])
         row['observed_session_id']=meta[0] if meta else None
-        row['observed_game_no']=meta[1] if meta else None
+        row['observed_game_no']=meta[1] if meta and meta[1] > 0 else None
         row['observed_captured_from_start']=bool(meta[2]) if meta else None
+        row['first_game_status']='confirmed' if meta and meta[1:]==(1,True) else 'unconfirmed'
+        row['observed_deck_type']=row.get('deck_type')
     pairs={}
     for row in db.execute('SELECT digest,player FROM stat_views'):
         pairs.setdefault(row['digest'],set()).add(row['player'])
@@ -129,10 +141,17 @@ def inherit_first_game_types(db,rows):
     cores = _core_signatures(db, needed_builds)
     for row in rows:
         meta=metadata.get(row['digest'])
-        if not meta or meta[1]<=1:continue
+        if not meta or meta[1]<=1 or not meta[2]:continue
         row['observed_deck_type']=row['deck_type']
         initial=first.get(key(row),[])
         anchor=initial[0]if len(initial)==1 else None
+        if anchor is None:
+            # Missing a verified first game does not erase this observed build's
+            # own field-based classification. It remains unsafe for Side inference.
+            row['first_game_status']='unconfirmed'
+            row['classification_reason']='first_game_unconfirmed_observed_build'
+            continue
+        row['first_game_status']='available'
         # Side 换边不改变主卡+额外；核心不同或缺失说明不能安全继承。
         current_core=cores.get(row.get('build')) if cores is not None else None
         anchor_core=cores.get(anchor.get('build')) if cores is not None and anchor else None
@@ -153,4 +172,5 @@ def inherit_first_game_types(db,rows):
 def classification_builds(db):
     rows=list(db.execute('SELECT digest,build FROM stat_views'));metadata=capture_metadata(db,{r['digest']for r in rows})
     # Legacy sources without reliable game numbers cannot be labelled "post-side".
-    return {row['build']for row in rows if not metadata.get(row['digest'])or metadata[row['digest']][1]==1}
+    return {row['build']for row in rows if not metadata.get(row['digest'])
+            or not metadata[row['digest']][2] or metadata[row['digest']][1]==1}

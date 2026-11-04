@@ -722,7 +722,9 @@ class BotService:
                     'JOIN replay_sessions s ON s.replay_id=f.replay_id JOIN replays r ON r.id=f.replay_id '
                     'WHERE r.focus_player=? ORDER BY f.digest,s.session_id,s.game_no', (player,)))
                 exclusions = tuple(db.execute("SELECT digest,player FROM stat_exclusions WHERE player='' OR player=? ORDER BY digest,player", (player,)))
-                validity = (revision, sessions, exclusions)
+                ledger = self.data_dir / 'watch-upload-sessions.sqlite3'
+                ledger_stamp = ledger.stat().st_mtime_ns if ledger.is_file() else 0
+                validity = (revision, sessions, exclusions, ledger_stamp)
             return ((str(user_id), player, row[0], row[1], row[2], validity)
                     if row else (str(user_id), player, None, validity))
         except sqlite3.Error:
@@ -805,6 +807,8 @@ class BotService:
                 f"链接最晚到期：{format_time(link['expires_at'])}（最长 {self.link_hours:g} 小时；构筑图见下）"
                 if link.get('expires_at') else
                 f"{ydk_line}\n构筑图见下")
+        if selected.get('observation_kind') != 'confirmed_first_game':
+            text += '\n此图为当前观测构筑，首局尚未确认。'
         reply = CardReply(text, image_url)
         # 有缺图时不进 1 小时缓存：否则同一张缺图会被反复返回，直到缓存过期。
         if not image_stats.get('missing'):

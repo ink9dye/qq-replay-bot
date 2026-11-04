@@ -74,26 +74,8 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
         return None
     person = next(p for p in people if p['player'] == player)
     metadata = capture_metadata(db, {r['digest'] for r in rows})
-    explicit_capture = set()
-    import json
     row_digests = tuple({r['digest'] for r in rows})
-    evidence_rows = ()
-    if row_digests:
-        marks = ','.join('?' * len(row_digests))
-        evidence_rows = db.execute('SELECT digest,payload_json FROM stat_evidence WHERE digest IN (' + marks + ')', row_digests)
-    for evidence in evidence_rows:
-        try:
-            capture = json.loads(evidence['payload_json']).get('capture')
-            if isinstance(capture,dict) and ('session_id' in capture or 'game_no' in capture): explicit_capture.add(evidence['digest'])
-        except (ValueError,AttributeError): pass
-    # Reuse already-recorded legacy session associations, never infer grouping from time alone.
-    legacy = {}
-    for record in db.execute('SELECT f.digest,s.session_id,s.game_no FROM stat_files f JOIN replay_sessions s ON s.replay_id=f.replay_id JOIN replays r ON r.id=f.replay_id WHERE r.focus_player=?', (player,)):
-        if isinstance(record['session_id'], str) and record['session_id'] and type(record['game_no']) is int and record['game_no'] > 0:
-            legacy.setdefault(record['digest'], set()).add((record['session_id'], record['game_no'], True))
-    for d, values in legacy.items():
-        if d not in metadata and d not in explicit_capture and len(values) == 1:
-            metadata[d] = next(iter(values))
+    # Shared resolver also handles upload provenance and quarantines old prefixes.
     builds = {r['build'] for r in rows}
     cards = {build: [] for build in builds}
     if builds:
@@ -140,7 +122,8 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
                             outcome=row['outcome'], current_rank=row['rank'], historical_rank=None,
                             opponent=other['player'], opponent_deck_type=other['deck_type'],
                             opponent_current_rank=ranks.get(other['player']), opponent_historical_rank=None,
-                            game_no=meta[1] if meta else None, session_id=meta[0] if meta else None))
+                            game_no=meta[1] if meta and meta[1] > 0 else None,
+                            session_id=meta[0] if meta else None))
     groups={}
     for match in matches:
         row=next(r for r in rows if r['digest']==match['digest'])
@@ -157,7 +140,7 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
         for game in games:
             number=game['game_no']
             change=dict(status='unassociated',added=[],removed=[])
-            if game['session_id']:
+            if game['session_id'] and number is not None and metadata.get(game['digest'],(None,0,False))[2]:
                 if number==1:change['status']='first_game'
                 elif len(by_no.get(number,[]))!=1 or len(by_no.get(1,[]))>1:change['status']='ambiguous_sequence'
                 elif 1 not in by_no:change['status']='missing_first_game'
