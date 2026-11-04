@@ -77,3 +77,31 @@ class DrawAnalysisWorkerTests(unittest.TestCase):
         result=process_one(self.root/'db.sqlite3',self.replays,self.root,runner,
                            lambda:item[0]['deadline']+1,candidate=item)
         self.assertEqual(result,'source_gone');runner.assert_not_called()
+
+
+class DrawMemoryGateTests(unittest.TestCase):
+    def test_pause_hysteresis_and_unreadable_metrics(self):
+        from bot.draw_analysis_worker import MemoryGate
+        from unittest.mock import patch
+        gate = MemoryGate()
+        with patch('bot.draw_analysis_worker.sys.platform', 'linux'), \
+                patch('bot.draw_analysis_worker.available_memory_mb', side_effect=[249,275,299,300,250,None,299,301]):
+            self.assertEqual([gate.ready() for _ in range(8)], [False,False,False,True,True,False,False,True])
+
+    def test_memavailable_is_used_instead_of_memfree(self):
+        from bot.draw_analysis_worker import available_memory_mb
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/'meminfo';p.write_text('MemFree: 1024 kB\nMemAvailable: 307200 kB\n')
+            self.assertEqual(available_memory_mb(p),300)
+            p.write_text('MemAvailable: invalid kB\n')
+            self.assertIsNone(available_memory_mb(p))
+
+    def test_low_memory_does_not_scan_queue_or_launch_child(self):
+        from unittest.mock import patch
+        with patch('bot.draw_analysis_worker.MemoryGate.ready',return_value=False), \
+                patch('bot.draw_analysis_worker.candidates',side_effect=AssertionError('must not scan')):
+            runner=Mock()
+            self.assertEqual(process_one('unused','unused','unused',runner), 'memory_paused')
+            runner.assert_not_called()

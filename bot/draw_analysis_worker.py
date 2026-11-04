@@ -15,6 +15,39 @@ from .replay_window import REPLAY_WINDOW_SECONDS
 from .share import safe_replay_file
 
 
+MIN_AVAILABLE_MB = 250
+RESUME_AVAILABLE_MB = 300
+MEMORY_CHECK_SECONDS = 15
+_LOCAL_WORKER_LOCK = threading.Lock()
+
+
+def available_memory_mb(path=Path('/proc/meminfo')):
+    """Linux available memory; unreadable metrics never authorize a new job."""
+    try:
+        for line in Path(path).read_text(encoding='ascii').splitlines():
+            if line.startswith('MemAvailable:'):
+                fields = line.split()
+                if len(fields) == 3 and fields[2] == 'kB':
+                    return max(0, int(fields[1])) / 1024
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+class MemoryGate:
+    def __init__(self):
+        self.paused = False
+
+    def ready(self):
+        if not sys.platform.startswith('linux'):
+            return True
+        available = available_memory_mb()
+        threshold = RESUME_AVAILABLE_MB if self.paused else MIN_AVAILABLE_MB
+        ready = available is not None and available >= threshold
+        self.paused = not ready
+        return ready
+
+
 def candidates(database, replay_root, now):
     with closing(sqlite3.connect(database)) as db:
         db.row_factory = sqlite3.Row
@@ -34,6 +67,7 @@ def candidates(database, replay_root, now):
 
 
 def process_one(database, replay_root, game_root, runner=subprocess.run, clock=time.time, *, candidate=None):
+    if not MemoryGate().ready(): return 'memory_paused'
     item = candidate if candidate is not None else next(candidates(database, replay_root, clock()), None)
     if item is None: return 'idle'
     row, path = item
@@ -41,7 +75,9 @@ def process_one(database, replay_root, game_root, runner=subprocess.run, clock=t
     if candidate is not None and (clock() >= row['deadline'] or not path.is_file()): return 'source_gone'
     if sidecar(path).exists(): return 'already_attempted'
     if hashlib.sha256(path.read_bytes()).hexdigest() != digest: return 'identity_mismatch'
+    if not MemoryGate().ready(): return 'memory_paused'
     try:
+        # subprocess.run kills and waits for the child on TimeoutExpired.
         result = runner([sys.executable, '-m', 'bot.replay_analysis', str(path),
             '--game-root', str(game_root)], cwd=ROOT, capture_output=True, timeout=40,
             env=dict(os.environ, PYTHONIOENCODING='utf-8'),
@@ -117,6 +153,7 @@ def start_worker(root):
         print('draw-analysis 未启动：本机没有可用的解析引擎（runtime/ocgcore.dll 或 runtime/ocgcore.so）', file=sys.stderr)
         return stop
     def loop():
+        if not _LOCAL_WORKER_LOCK.acquire(blocking=False): return
         # OS lock is released on process exit. It stores no replay/player facts.
         try:
             with (data/'draw-analysis.lock').open('a+b') as lock:
@@ -127,8 +164,20 @@ def start_worker(root):
                 try:
                     pending = iter(())
                     refresh_at = 0.0
+                    gate = MemoryGate()
                     while not stop.is_set():
                         try:
+                            was_paused = gate.paused
+                            if not gate.ready():
+                                # Release queued rows and do not consume a candidate or mark failure.
+                                pending = iter(())
+                                refresh_at = 0.0
+                                if not was_paused:
+                                    print('draw-analysis 暂停：可用内存不足250MB或指标不可读；恢复到300MB后继续。', file=sys.stderr)
+                                stop.wait(MEMORY_CHECK_SECONDS)
+                                continue
+                            if was_paused:
+                                print('draw-analysis 恢复：可用内存已达到300MB。', file=sys.stderr)
                             now = time.monotonic()
                             if now >= refresh_at:
                                 # Reuse a candidate snapshot instead of scanning/sorting the
@@ -140,11 +189,16 @@ def start_worker(root):
                                 stop.wait(max(0, refresh_at-time.monotonic()))
                                 continue
                             state = process_one(data/'bot.sqlite3', replays, game_root, candidate=item)
+                            if state == 'memory_paused':
+                                gate.paused = True
+                                pending = iter(())
+                                refresh_at = 0.0
                         except (OSError, ValueError, sqlite3.Error): state = 'error'
-                        stop.wait(5 if state in ('analyzed', 'failed') else 2)
+                        stop.wait(MEMORY_CHECK_SECONDS if state == 'memory_paused' else 5 if state in ('analyzed', 'failed') else 2)
                 finally:
                     lock.seek(0); _unlock(lock)
         except OSError: return
+        finally: _LOCAL_WORKER_LOCK.release()
     thread = threading.Thread(target=loop, name='draw-analysis', daemon=True)
     thread.start()
     return stop
