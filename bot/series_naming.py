@@ -5,12 +5,12 @@
 1. 只看主卡组 partition='main'、copies>0 的卡，同一字段按张数（copies）累计，不按种类。
 2. 字段优先取 card_series 的官方系列映射（data/card-series-reference.json）；
    卡号完全不在映射表里时，才按卡名包含的系列关键词兜底归类。
-3. 最高字段张数 >= primary_threshold（默认 8）才作为卡组名。
-4. 其余字段张数 >= secondary_threshold（默认 4）时按顺序追加；max_fields 默认 4（含主字段）。
-5. 顺序：张数降序；张数相同按字段名长度降序（更长＝更具体的系列优先），再按字典序。
-   主字段永远在最前；被更长字段名包含的短字段会合并掉（三幻魔 vs 幻魔、闪刀 vs 闪刀姬）。
-6. 例外规则（混沌/黑魔导）不受阈值限制，按命名组成员（卡号清单/官方系列/关键词）标注；
-   默认放在字段名之前（prefix），“混沌三幻魔”“黑魔导烙印”。
+3. 普通主字段达到 primary_threshold（默认 5）；普通次字段达到 secondary_threshold（默认 4），
+   最多 max_fields（默认 4）个字段。
+4. 显式维护的组合必要卡全部出现时，组合必含：不受张数门槛、字段数量上限或父子合并限制；
+   只有可选卡/包含组合的卡出现、必要卡不全时，不触发必含。
+5. 最终字段按张数升序拼接，张数相同按字段名长度升序、字典序；额外权重仍为 0.5。
+6. 完整例外组合也参与统一张数排序；未完整但已命中的例外仍沿用配置的前/后缀位置。
 7. 旧人工/参考名称必须按同一字段规则重算；无法命名时保持未知。
 8. 写库统一走 build_classification.assign(..., source='auto_series', score=...)，并更新
    stat_classification_state.revision。版本串包含阈值与配置摘要，配置变化后会自动重算。
@@ -29,7 +29,7 @@ import sqlite3
 from collections import Counter, defaultdict
 from pathlib import Path
 
-VERSION_PREFIX = 'series-fields-v2'
+VERSION_PREFIX = 'series-fields-v3'
 CONFIG_NAME = 'series-naming.json'
 
 # 机制类/泛用分类标签：不作为卡组名字段（可配置覆盖）。
@@ -570,7 +570,7 @@ def _clusters(names, registry=None):
     return list(groups.values())
 
 
-def select_fields(counts, config, registry=None):
+def select_fields(counts, config, registry=None, mandatory=None):
     """嵌套系列合并 + 排序：同一父/子系列只保留一个代表字段。
 
     张数多的代表这个卡组的主系列；名字相含的子系列张数达到父系列的
@@ -579,10 +579,13 @@ def select_fields(counts, config, registry=None):
     """
     filtered = {name: copies for name, copies in counts.items()
                 if name not in config['ignore_fields'] and name not in config['exception_order']}
+    # 显式组合必要卡齐全时必须保留，不能在父/子字段合并中被吞掉。
+    mandatory = set(mandatory or ()) & set(filtered)
+    ordinary = {name: copies for name, copies in filtered.items() if name not in mandatory}
     ratio = float(config.get('cluster_specific_ratio', 0.6))
     members = (registry or {}).get('members') or {}
-    representatives = []
-    for cluster in _clusters(list(filtered), registry):
+    representatives = list(mandatory)
+    for cluster in _clusters(list(ordinary), registry):
         top = max(filtered[name] for name in cluster)
         leaders = [name for name in cluster if filtered[name] == top]
         # 张数相同时取成员更少（更具体）的组：只带 4 张阿不思时叫阿不思，
@@ -604,9 +607,10 @@ def select_fields(counts, config, registry=None):
     return result
 
 
-def compose_name(selected, exceptions, config, qualified=None):
-    """按阈值挑主/次字段，再拼例外；三件套全齐的字段可绕过阈值。"""
+def compose_name(selected, exceptions, config, qualified=None, mandatory=None):
+    """普通字段按门槛/数量选取；必要卡齐全的显式组合始终保留。"""
     qualified = set(qualified or ())
+    mandatory = set(mandatory or ())
     primary = None
     secondaries = []
     if selected and (selected[0][1] >= config['primary_threshold'] or selected[0][0] in qualified):
@@ -617,7 +621,15 @@ def compose_name(selected, exceptions, config, qualified=None):
                 break
             if copies >= config['secondary_threshold'] or name in qualified:
                 secondaries.append((name, copies))
+    if primary is None:
+        primary = next((item for item in selected if item[0] in mandatory), None)
     fields = ([primary] if primary else []) + secondaries
+    present = {name for name, _copies in fields}
+    for item in selected:
+        if item[0] in mandatory and item[0] not in present:
+            fields.append(item)
+            present.add(item[0])
+    secondaries = [item for item in fields if item != primary]
     if primary is None and config['require_primary']:
         return None, dict(reason='below_primary_threshold', fields=fields,
                           primary=None, secondaries=[])
@@ -625,7 +637,7 @@ def compose_name(selected, exceptions, config, qualified=None):
     ordered = sorted(fields, key=lambda item: (item[1], len(item[0]), item[0]))
     field_names = [name for name, _ in ordered]
     exception_names = [name for name in config['exception_order']
-                       if copies_of(exceptions, name) > 0]
+                       if copies_of(exceptions, name) > 0 and name not in present]
     if not field_names and not exception_names:
         return None, dict(reason='no_field', fields=fields, primary=None, secondaries=[])
     if config['exception_position'] == 'prefix':
@@ -679,16 +691,27 @@ def propose(cards, catalog, config, names=None, main_complete=True, registry=Non
     registry = registry or build_registry(catalog, config, names)
     counted = count_fields(cards, catalog, config, names, registry, extra_cards=extra_cards)
     exceptions = {name: copies_of(counted['fields'], name) for name in config['exception_order']}
-    selected = select_fields(counted['fields'], config, registry)
+    naming_exceptions = exceptions
+    qualified = set(counted.get('qualified') or ())
+    explicit = {item['name'] for item in config['groups'] + config['exceptions'] if item['enabled']}
+    mandatory = (qualified & explicit) - set(config['ignore_fields'])
+    selected = select_fields(counted['fields'], config, registry, mandatory)
+    # 完整例外组合也按张数参与统一排序，不再被固定前/后缀打乱。
+    selected.extend((field, counted['fields'][field]) for field in mandatory
+                    if field in config['exception_order'] and counted['fields'].get(field, 0) > 0)
+    selected.sort(key=lambda item: (-item[1], -len(item[0]), item[0]))
     small_names = registry.get('small_names') or {}
     optional_counts = counted.get('optional') or {}
-    qualified = set(counted.get('qualified') or ())
     if small_names:
         selected = [(small_names.get(field, field) if not optional_counts.get(field) else field, copies)
                     for field, copies in selected]
+        # 完整例外若使用小轴名，已在 selected 中；不再追加原名。
+        naming_exceptions = {field: copies for field, copies in exceptions.items() if field not in mandatory}
         qualified = {small_names.get(field, field) if not optional_counts.get(field) else field
                      for field in qualified}
-    name, basis = compose_name(selected, exceptions, config, qualified)
+        mandatory = {small_names.get(field, field) if not optional_counts.get(field) else field
+                     for field in mandatory}
+    name, basis = compose_name(selected, naming_exceptions, config, qualified, mandatory)
     total = counted['total']
     coverage = (basis.get('primary')[1] / total) if basis.get('primary') and total else 0.0
     return dict(name=name, basis=basis,
