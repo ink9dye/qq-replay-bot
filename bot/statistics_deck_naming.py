@@ -16,12 +16,6 @@ CST = timezone(timedelta(hours=8))
 
 def _latest_views(db, now, replay_root=None, only=None):
     """每位玩家最新一条视角；前100按排名页同口径（来源有效、未排除、继承首局）。"""
-    if replay_root is not None and only and set(only).issubset(_roster(db)):
-        from .top100 import eligible_views
-        from .statistics_population import latest_views
-        state = eligible_views(db, replay_root, now, annotate_series=False)
-        return {name.strip(): dict(row) for name, row in latest_views(state).items()
-                if name.strip() in only}
     players = sorted(only) if only else []
     player_clause = ' AND v.player IN (%s)' % ','.join('?' for _ in players) if players else ''
     params = [float(now)] + players

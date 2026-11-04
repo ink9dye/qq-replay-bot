@@ -13,8 +13,7 @@ _cache = {}
 _lock = threading.RLock()
 _pending = set()
 _failed = {}
-_image_futures = {}
-_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='card-image')
+_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='card-image')
 REMOTE = 'https://cdn.233.momobako.com/ygopro/pics/%d.jpg'
 REMOTE_FALLBACK = 'https://cdntx.moecube.com/ygopro-super-pre/data/pics/%d.jpg'
 RETRY_SECONDS = 600
@@ -92,24 +91,21 @@ def _schedule(data_dir, code, pics):
     now = time.time()
     with _lock:
         if code in _pending:
-            return _image_futures.get(code)
+            return
         if now - _failed.get(code, 0) < RETRY_SECONDS:
             return
         _pending.add(code)
     def work():
         try:
             pics.mkdir(parents=True, exist_ok=True)
-            existing = _existing_picture(pics, code)
-            if existing is not None:
-                return existing[0]
             for candidate in _image_codes(code):
                 for template in (REMOTE, REMOTE_FALLBACK):
                     try:
-                        with urllib.request.urlopen(template % candidate, timeout=10) as response:
-                            blob = response.read(2 * 1024 * 1024 + 1)
+                        with urllib.request.urlopen(template % candidate, timeout=60) as response:
+                            blob = response.read(8 * 1024 * 1024 + 1)
                     except OSError:
                         continue
-                    if not blob or len(blob) > 2 * 1024 * 1024:
+                    if not blob or len(blob) > 8 * 1024 * 1024:
                         continue
                     path = (pics / (str(candidate) + '.jpg')).resolve()
                     if not path.is_relative_to(pics):
@@ -119,7 +115,7 @@ def _schedule(data_dir, code, pics):
                     os.replace(temporary, path)
                     with _lock:
                         _failed.pop(code, None)
-                    return path
+                    return
             raise ValueError('no image for card')
         except (OSError, ValueError):
             with _lock:
@@ -127,11 +123,7 @@ def _schedule(data_dir, code, pics):
         finally:
             with _lock:
                 _pending.discard(code)
-                _image_futures.pop(code, None)
-    with _lock:
-        future = _pool.submit(work)
-        _image_futures[code] = future
-        return future
+    _pool.submit(work)
 
 
 def _card_number(code):
