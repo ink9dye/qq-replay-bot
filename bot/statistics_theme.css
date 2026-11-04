@@ -93,3 +93,13 @@ a.download{display:inline-flex;align-items:center;min-height:36px;padding:2px 4p
 .status.busy::before,.note.busy::before,[role=status].busy::before{content:"";display:inline-block;width:.62em;height:.62em;margin-right:.45em;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;animation:busy-spin .9s linear infinite;vertical-align:-.05em}
 @keyframes busy-spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.status.busy::before,.note.busy::before,[role=status].busy::before{animation:none}}
+
+/* Visible card/deck candidates; bounded independently from statistics results. */
+.statistics-candidate-wrap{display:block;position:relative;min-width:0;flex:1}
+.statistics-candidate-wrap>input{width:100%}
+.statistics-candidates{position:absolute;top:100%;left:0;right:0;z-index:30;max-height:260px;overflow:auto;margin:4px 0 0;padding:4px;list-style:none;background:var(--p10-surface,#fff);color:var(--p10-text,#173529);border:1px solid var(--p10-line,#cbd6c9);border-radius:8px;box-shadow:0 8px 24px #17352925;text-align:left}
+.statistics-candidates[hidden]{display:none!important}
+.statistics-candidates>li{display:flex;align-items:center;gap:10px;padding:9px 10px;cursor:pointer;overflow-wrap:anywhere}
+.statistics-candidates>li small{color:var(--p10-muted,#65776b)}
+.statistics-candidates>li[aria-selected=true],.statistics-candidates>li[role=option]:hover{background:var(--p10-accent-soft,#edf3e8)}
+.statistics-candidates>.candidate-note{cursor:default;color:var(--p10-muted,#65776b)}

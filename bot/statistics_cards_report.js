@@ -12,6 +12,10 @@ function createPicker(ids) {
   const list = $(ids.list);
   const chips = $(ids.chips);
   const hint = $(ids.hint);
+  const wrap = el('span', undefined, 'statistics-candidate-wrap');
+  input.before(wrap);
+  wrap.append(input, list);
+  list.classList.add('statistics-candidates');
 
   picker.hint = () => {
     hint.textContent = ids.hintText.replace('{n}', picker.cards.size);
@@ -50,6 +54,14 @@ function createPicker(ids) {
     input.setAttribute('aria-expanded', 'false');
     input.removeAttribute('aria-activedescendant');
   };
+  picker.message = (text) => {
+    picker.close();
+    const item = el('li', text, 'candidate-note');
+    item.setAttribute('role', 'status');
+    list.append(item);
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+  };
   picker.renderSuggest = () => {
     list.replaceChildren();
     picker.suggest.forEach((card, index) => {
@@ -75,24 +87,25 @@ function createPicker(ids) {
       picker.close();
     }
   };
-  picker.search = async (term) => {
-    const version = ++picker.version;
+  picker.search = async (term, version = ++picker.version) => {
     const text = String(term || '').trim();
     if (!text) {
       picker.close();
       return;
     }
+    picker.message('正在查找候选…');
     let payload = { cards: [] };
     try {
       payload = await SS.api('card-search?q=' + encodeURIComponent(text));
     } catch (_) {
-      if (version === picker.version) picker.close();
+      if (version === picker.version) picker.message('候选暂不可用，重新输入或点击输入框重试。');
       return;
     }
     if (version !== picker.version) return;   // 旧候选绝不回填
     picker.suggest = (payload.cards || []).filter((card) => card && card.code);
     picker.active = picker.suggest.length ? 0 : -1;
-    picker.renderSuggest();
+    if (picker.suggest.length) picker.renderSuggest();
+    else picker.message('没有匹配的卡片，请换用卡名或卡号。');
   };
   picker.reset = () => {
     picker.cards.clear();
@@ -102,23 +115,29 @@ function createPicker(ids) {
     picker.render();
   };
 
-  input.addEventListener('input', () => {
+  input.addEventListener('input', (event) => {
     clearTimeout(picker.timer);
+    const version = ++picker.version;
     const value = input.value.trim();
     if (!value) {
-      picker.version++;
       picker.close();
       return;
     }
-    picker.timer = setTimeout(() => picker.search(value), 150);
+    picker.close();
+    if (!event.isComposing) picker.timer = setTimeout(() => picker.search(value, version), 150);
   });
-  input.addEventListener('focus', () => { if (picker.suggest.length) picker.renderSuggest(); });
+  input.addEventListener('compositionend', () => input.dispatchEvent(new Event('input')));
+  input.addEventListener('focus', () => {
+    if (picker.suggest.length) picker.renderSuggest();
+    else if (input.value.trim()) {clearTimeout(picker.timer); picker.search(input.value);}
+  });
   input.addEventListener('blur', () => {
     setTimeout(() => {
-      if (document.activeElement !== input) picker.close();
+      if (document.activeElement !== input) {clearTimeout(picker.timer); picker.version++; picker.close();}
     }, 150);
   });
   input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
     if (event.key === 'ArrowDown' && picker.suggest.length) {
       event.preventDefault();
       picker.active = (picker.active + 1) % picker.suggest.length;
@@ -135,6 +154,7 @@ function createPicker(ids) {
         input.value = '';
       }
     } else if (event.key === 'Escape') {
+      clearTimeout(picker.timer); picker.version++;
       picker.close();
     } else if (event.key === 'Backspace' && !input.value && picker.cards.size) {
       picker.remove([...picker.cards.keys()].pop());
@@ -337,15 +357,24 @@ function fillDatalist(id, names) {
 }
 
 async function loadGroups() {
+  if (state.groupsReady === 'loading') return;
+  state.groupsReady = 'loading';
+  for (const id of ['deck','opdeck']) {$(id).dataset.candidateLoading = '1';delete $(id).dataset.candidateError;}
   try {
     const groups = await SS.api('groups');
     fillDatalist('deck-list', (groups.deck_groups || []).map((x) => x.name).filter(Boolean));
     fillDatalist('opdeck-list', (groups.deck_groups || []).map((x) => x.name).filter(Boolean));
     state.groupsReady = true;
   } catch (_) {
-    state.groupsReady = true;   // 卡组候选失败不阻塞查询；手输仍可用
+    state.groupsReady = false;   // 可手输；重新聚焦时再试，不永久放弃候选
+    for (const id of ['deck','opdeck']) $(id).dataset.candidateError = '卡组候选暂不可用；可手动输入，重新点击输入框重试。';
+  } finally {
+    for (const id of ['deck','opdeck']) $(id).dataset.candidateLoading = '0';
   }
 }
+for (const id of ['deck','opdeck']) $(id).addEventListener('focus', () => {
+  if (!state.groupsReady) loadGroups();
+});
 
 /* ---------- 结果渲染 ---------- */
 

@@ -54,7 +54,7 @@ td .sub{display:block;color:#7b8d80;font-size:12px;margin-top:2px}.wrap{overflow
 <p id="empty" class="note" hidden>当前条件下没有额外卡数据。</p>
 </section>
 </main>
-<script src="/statistics/assets/statistics_samples.js"></script>
+<script src="/statistics/assets/statistics_autocomplete.js?v=20261104a"></script><script src="/statistics/assets/statistics_samples.js"></script>
 <script>
 const SS=window.StatisticsSamples,$=id=>document.getElementById(id),el=SS.el;
 const phases=[...document.querySelectorAll('input[name="phase"]')];
@@ -90,7 +90,16 @@ async function run(){
   finally{$('run').disabled=false}
 }
 function fillDeckList(listId, names){const list=$(listId);list.replaceChildren();for(const name of names){if(!name)continue;const option=el('option');option.value=name;list.append(option)}}
-SS.api('roster').then(r=>{const names=[...new Set((r.people||[]).filter(p=>p.observed&&p.deck_type).map(p=>p.deck_type))].sort((a,b)=>a.localeCompare(b,'zh-CN'));fillDeckList('deck-list',names);fillDeckList('opdeck-list',names)}).catch(()=>{});
+let deckChoicesLoading=false;
+async function loadDeckChoices(){
+ if(deckChoicesLoading)return;deckChoicesLoading=true;
+ for(const id of ['deck','opdeck']){$(id).dataset.candidateLoading='1';delete $(id).dataset.candidateError}
+ try{const r=await SS.api('roster');const names=[...new Set((r.people||[]).filter(p=>p.observed&&p.deck_type).map(p=>p.deck_type))].sort((a,b)=>a.localeCompare(b,'zh-CN'));fillDeckList('deck-list',names);fillDeckList('opdeck-list',names)}
+ catch(e){for(const id of ['deck','opdeck'])$(id).dataset.candidateError='卡组候选暂不可用；可手动输入，重新点击输入框重试。'}
+ finally{deckChoicesLoading=false;for(const id of ['deck','opdeck'])$(id).dataset.candidateLoading='0'}
+}
+for(const id of ['deck','opdeck'])$(id).addEventListener('focus',()=>{if($(id).dataset.candidateError)loadDeckChoices()});
+loadDeckChoices();
 $('run').onclick=run;
 run();
 </script>

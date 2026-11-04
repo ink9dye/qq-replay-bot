@@ -105,7 +105,7 @@ class StatisticsPortal:
                 return self._reply(503,'小世界卡库暂不可用，请稍后重试。')
             finally:
                 self._small_world_catalog_lock.release()
-        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js','statistics_busy.js'):
+        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_autocomplete.js','statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js','statistics_busy.js'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
             return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
         if parts==['statistics','devices']:

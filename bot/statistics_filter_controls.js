@@ -8,24 +8,25 @@ window.FilterControls={
 FilterControls.cardPicker=function(id,searchId,allowedParts){
  const select=document.getElementById(id),search=document.getElementById(searchId);
  select.multiple=true;select.hidden=true;select.style.setProperty('display','none','important');
- const choices=document.createElement('div'),chips=document.createElement('div'),tools=document.createElement('div'),hint=document.createElement('small');
- choices.className='card-choices';chips.className='card-chips';chips.setAttribute('aria-label','已选卡片');
- choices.style.cssText='max-height:180px;overflow:auto;display:flex;flex-wrap:wrap;gap:4px';chips.style.cssText='display:flex;flex-wrap:wrap;gap:4px;margin:8px 0';
- let visible=[];
+ const chips=document.createElement('div'),tools=document.createElement('div'),hint=document.createElement('small');
+ chips.className='card-chips';chips.setAttribute('aria-label','已选卡片');
+ chips.style.cssText='display:flex;flex-wrap:wrap;gap:4px;margin:8px 0';
+ let candidates;
  const update=()=>{
   const selected=Array.from(select.selectedOptions);
   chips.replaceChildren();
   for(const option of selected){const chip=document.createElement('span'),remove=document.createElement('button');chip.append(document.createTextNode(option.textContent+' '));remove.type='button';remove.textContent='×';remove.setAttribute('aria-label','移除'+option.textContent);remove.onclick=()=>{option.selected=false;update()};chip.append(remove);chips.append(chip)}
   hint.textContent=selected.length?'已选'+selected.length+'张卡；点击×移除':'不限制卡片';
-  const parts=allowedParts?allowedParts():null,term=search.value.trim().toLowerCase();
-  visible=Array.from(select.options).filter(o=>{
-   if(parts&&!parts.includes(o.dataset.part||'main'))return false;
-   return !term||o.textContent.toLowerCase().includes(term)});
-  choices.replaceChildren();
-  for(const option of visible.slice(0,30)){const button=document.createElement('button');button.type='button';button.textContent=option.textContent;button.setAttribute('aria-pressed',String(option.selected));button.onclick=()=>{option.selected=!option.selected;update()};choices.append(button)}
-  if(visible.length>30){const more=document.createElement('small');more.textContent='显示前30项，请输入卡名或卡号缩小范围';choices.append(more)}
-  else if(!visible.length){const none=document.createElement('small');none.textContent='当前条件下没有可选的卡';choices.append(none)}
+  if(candidates)candidates.render();
  };
  {const button=document.createElement('button');button.type='button';button.textContent='清空';button.className='secondary';button.onclick=()=>{for(const o of select.options)o.selected=false;update()};tools.append(button)}
- select.after(choices,chips,tools,hint);search.oninput=update;select.addEventListener('change',update);update();return update;
+ select.after(chips,tools,hint);
+ candidates=window.StatisticsAutocomplete.attach(search,{
+  label:'卡片候选',
+  items:()=>{const parts=allowedParts?allowedParts():null;return Array.from(select.options)
+   .filter(o=>!o.selected&&(!parts||parts.includes(o.dataset.part||'main')))
+   .map(o=>({value:o.value,label:o.textContent.replace(/\s+#\d+$/,''),detail:o.value,option:o}))},
+  choose:item=>{item.option.selected=true;search.value='';update()}
+ });
+ select.addEventListener('change',update);update();return update;
 };
