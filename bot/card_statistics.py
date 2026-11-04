@@ -19,6 +19,19 @@ class Filters:
     scope:str='default'
     start_at:float|None=None
     end_at:float|None=None
+    deck_contains:bool=False
+
+
+def deck_matches(name, terms, contains=False):
+    """Exact choices remain supported; web text filters may match name fragments."""
+    if not terms:
+        return True
+    if name in terms:
+        return True
+    return bool(contains and isinstance(name, str) and any(
+        isinstance(term, str) and term.strip()
+        and term not in ('__unknown__', '__no_selection__')
+        and term.strip().casefold() in name.casefold() for term in terms))
 
 
 def fraction(numerator,denominator,unknown=0):
@@ -100,9 +113,9 @@ def query(db,replay_root,code,partition,now,filters=None):
     filter_exclusions={key:0 for key in ('deck_type','series','opponent_type','opponent_series','first_player','start_at','end_at')}
     for row in candidates:
         opponent=next((o for o in opponents.get(row['digest'],[]) if o['player']!=row['player']),{})
-        tests=(('deck_type',f.deck_types and row['deck_type'] not in f.deck_types),
+        tests=(('deck_type',not deck_matches(row['deck_type'],f.deck_types,f.deck_contains)),
             ('series',f.series and not set(f.series).intersection(row['series'])),
-            ('opponent_type',f.opponent_types and opponent.get('deck_type') not in f.opponent_types),
+            ('opponent_type',not deck_matches(opponent.get('deck_type'),f.opponent_types,f.deck_contains)),
             ('opponent_series',f.opponent_series and not set(f.opponent_series).intersection(opponent.get('series',[]))),
             ('first_player',f.first_player is not None and row['first_player']!=int(f.first_player)),
             ('start_at',f.start_at is not None and row['recorded_at']<f.start_at),

@@ -85,6 +85,7 @@
           (active < 0 ? visible.length - 1 : (active - 1 + visible.length) % visible.length);
         highlight();
       } else if (event.key === 'Enter' && !list.hidden && visible.length) {
+        if (options.freeText && active < 0) { close(); return; }
         event.preventDefault(); event.stopImmediatePropagation(); choose(active < 0 ? 0 : active);
       }
     }, true);
@@ -95,7 +96,9 @@
       if (attached.has(input)) continue;
       const source = document.getElementById(input.getAttribute('list') || input.dataset.candidateSource);
       if (!source) continue;
-      const control = attach(input, {items: () => [...source.options].filter(o => o.value).map(o => ({
+      const freeText = /deck/i.test(source.id);
+      if (freeText) input.title = '可输入卡组名的一部分，匹配所有名称包含它的卡组；也可选择候选';
+      const control = attach(input, {freeText, items: () => [...source.options].filter(o => o.value).map(o => ({
         value:o.value, label:o.label || o.textContent || o.value
       }))});
       input.removeAttribute('list');

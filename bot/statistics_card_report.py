@@ -15,7 +15,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .card_search import card_name
-from .card_statistics import Filters, win_rate
+from .card_statistics import Filters, win_rate, deck_matches
 from .card_identity import facts as identity_facts, identity, reference as identity_reference
 from .card_series import annotate, reference as series_reference
 from .statistics_card_names import index
@@ -193,9 +193,9 @@ def _selected_rows(db, replay_root, now, filters):
     exclusions = {key: 0 for key in ('deck_type', 'series', 'opponent_type', 'opponent_series', 'first_player', 'start_at', 'end_at')}
     for row in basis['views']:
         opponent = next((o for o in opponents.get(row['digest'], []) if o['player'] != row['player']), {})
-        tests = (('deck_type', f.deck_types and row['deck_type'] not in f.deck_types),
+        tests = (('deck_type', not deck_matches(row['deck_type'],f.deck_types,f.deck_contains)),
                  ('series', f.series and not set(f.series).intersection(row['series'])),
-                 ('opponent_type', f.opponent_types and opponent.get('deck_type') not in f.opponent_types),
+                 ('opponent_type', not deck_matches(opponent.get('deck_type'),f.opponent_types,f.deck_contains)),
                  ('opponent_series', f.opponent_series and not set(f.opponent_series).intersection(opponent.get('series', []))),
                  ('first_player', f.first_player is not None and row['first_player'] != int(f.first_player)),
                  ('start_at', f.start_at is not None and row['recorded_at'] < f.start_at),

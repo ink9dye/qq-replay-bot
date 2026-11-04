@@ -332,7 +332,7 @@ class StatisticsPortal:
                     raise ValueError()
             except (ValueError,TypeError):
                 return self._reply(400,json.dumps({'error':'额外卡筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
-            filters=Filters(decks,opponents,(),(),None if seat=='all' else seat=='first',internal)
+            filters=Filters(decks,opponents,(),(),None if seat=='all' else seat=='first',internal,deck_contains=args.get('deck_match',['contains'])[0]!='exact')
             try:
                 return self._cached_query_reply(('cards-extra',parsed.query),lambda db:scoped_query(ranges,lambda:extra_report(
                     db,self.replay_root,float(self.clock()),filters=filters,phases=phases,phase_none=phase_none,sort=sort)))
@@ -353,7 +353,7 @@ class StatisticsPortal:
                 combo=args.get('combo',[])
             except (ValueError,TypeError):
                 return self._reply(400,json.dumps({'error':'组合筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
-            filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1')
+            filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1',deck_contains=args.get('deck_match',['contains'])[0]!='exact')
             try:
                 return self._cached_query_reply(('card-combo',parsed.query),lambda db:scoped_query(ranges,lambda:combo_report(
                     db,self.replay_root,float(self.clock()),combo,filters=filters,
@@ -374,7 +374,7 @@ class StatisticsPortal:
                 if seat not in ('all','first','second'):raise ValueError()
             except (ValueError,TypeError):
                 return self._reply(400,json.dumps({'error':'筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
-            filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1')
+            filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1',deck_contains=args.get('deck_match',['contains'])[0]!='exact')
             try:
                 return self._cached_query_reply(('card-report',parsed.query),lambda db:scoped_query(ranges,lambda:card_report(
                     db,self.replay_root,float(self.clock()),codes=codes,filters=filters,

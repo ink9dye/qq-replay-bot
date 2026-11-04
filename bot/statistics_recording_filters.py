@@ -1,7 +1,7 @@
 """Read-only recording filters and batch draw-win rankings share eligible facts."""
 from .top100 import eligible_views
 from .card_identity import reference
-from .card_statistics import win_rate
+from .card_statistics import win_rate, deck_matches
 from datetime import datetime
 
 
@@ -261,6 +261,7 @@ def _query(db,root,now,args,limit=2000,ranges=None):
     opponent_not_match=_scalar_arg(args,'opponent_not_match',('any','all'),'all')
     deck_values=_list_arg(args,'deck',label='我方卡组')
     opponent_values=_list_arg(args,'opponent',label='对手卡组')
+    contains=args.get('deck_match',['contains'])[0]!='exact'
     series=_list_arg(args,'series',label='我方系列')
     opponent_series=_list_arg(args,'opponent_series',label='对手系列')
     start=_time_arg(args,'start');end=_time_arg(args,'end')
@@ -316,8 +317,8 @@ def _query(db,root,now,args,limit=2000,ranges=None):
         if opponent_series:
             other=basis['_opponent_views'].get((row['digest'],row['opponent']))
             if other is None or not (set(other.get('series')or ())& set(opponent_series)):continue
-        if deck_values and (row['deck_type']or '__unknown__')not in deck_values:continue
-        if opponent_values and (row['opponent_deck_type']or '__unknown__')not in opponent_values:continue
+        if not deck_matches(row['deck_type']or '__unknown__',deck_values,contains):continue
+        if not deck_matches(row['opponent_deck_type']or '__unknown__',opponent_values,contains):continue
         if values('first')and str(row['first_player'])not in values('first'):continue
         if values('outcome')and row['outcome']not in values('outcome'):continue
         # P16：卡片条件失败时区分"证据不足"与"确实不满足"（每行只记第一个原因）。

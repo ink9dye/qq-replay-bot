@@ -463,8 +463,8 @@ function render(data) {
   const head = el('thead');
   const headRow = el('tr');
   const columns = [
-    ['卡名', 'name'], ['卡号', null], ['玩家数', 'people'], ['小局', 'games'],
-    ['胜 / 负 / 平', null], ['胜率', 'rate'], ['95% 区间', 'low'], ['样本占比', null],
+    ['卡名', 'name'], ['胜率', 'rate'], ['卡号', null], ['玩家数', 'people'], ['小局', 'games'],
+    ['胜 / 负 / 平', null], ['95% 区间', 'low'], ['样本占比', null],
   ];
   for (const [label, sortKey] of columns) {
     const th = el('th', label);
@@ -513,10 +513,9 @@ function render(data) {
     } else {
       rateCell.classList.add('uncertain');
     }
-    tr.append(nameCell, rowCell(row.is_combo ? '组合' : '#' + row.code, 'code-cell'),
+    tr.append(nameCell, rateCell, rowCell(row.is_combo ? '组合' : '#' + row.code, 'code-cell'),
       rowCell(String(row.people), 'num'), rowCell(String(row.games), 'num'),
       rowCell(row.wins + ' / ' + row.losses + ' / ' + row.draws, 'num'),
-      rateCell,
       intervalCell(row, baseRate),
       rowCell(row.sample_percentage === null ? '—' : row.sample_percentage.toFixed(2) + '%', 'num'));
     body.append(tr);
