@@ -39,6 +39,11 @@ class ImageConcurrencyTests(unittest.TestCase):
             self.assertEqual(first.result(timeout=1),second.result(timeout=1))
             self.assertEqual(calls,[33])
 
+    def test_local_payload_does_not_probe_a_remote_url_first(self):
+        with patch.object(search, 'card_image_url', side_effect=AssertionError('no HEAD probe')), \
+                patch.object(search, '_card_image_blob', return_value=b'local picture'):
+            self.assertTrue(search.card_image_payload(991122, self.tmp.name).startswith('base64://'))
+
     def test_image_cache_has_a_byte_budget(self):
         search._IMAGE_BYTES.update({1:'a'*4,2:'b'*4})
         with patch.object(search,'IMAGE_CACHE_MAX_BYTES',10),patch.object(search,'_card_image_blob',return_value=b'abcd'):

@@ -138,8 +138,10 @@ def card_image_payload(code, data_dir):
         try:
             return pending.result(timeout=IMAGE_WAIT_SECONDS)
         except TimeoutError:
-            return card_image_url(code)
-    reply = card_image_url(code)
+            return f'https://cdn.233.momobako.com/ygopro/pics/{code}.jpg'
+    # The shared blob loader already tries both sources. Do not probe a URL
+    # before reading a local image or while another card waits on the HEAD lock.
+    reply = f'https://cdn.233.momobako.com/ygopro/pics/{code}.jpg'
     try:
         blob = _card_image_blob(code, data_dir)
         if blob:
