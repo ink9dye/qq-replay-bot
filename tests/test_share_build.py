@@ -24,6 +24,19 @@ class ShareBuildTests(unittest.TestCase):
         script=self.get(app,link,'/assets/statistics_build.js')[2].decode()
         self.assertNotIn('/statistics/',script)
         self.assertEqual(self.get(app,link,'/api/exclusions')[0],404)
+    def test_shared_thumbnail_uses_disk_cache_and_honors_link_expiry(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        folder=self.store.path.parent/'card-thumbs';folder.mkdir(exist_ok=True)
+        (folder/'123.jpg').write_bytes(b'jpeg')
+        app,link=self.app_link()
+        self.assertEqual(self.get(app,link,'/card-thumb/123')[:3],(200,'image/jpeg',b'jpeg'))
+        with patch('bot.statistics_local_cards._schedule_thumb') as queue:
+            self.assertEqual(self.get(app,link,'/card-thumb/124')[0],302)
+            queue.assert_called_once()
+        app.clock=lambda:link['expires_at']+1
+        self.assertEqual(self.get(app,link,'/card-thumb/123')[0],410)
+
     def test_scope_cannot_expand_player_digest_or_inferred_side(self):
         app,link=self.app_link()
         result=json.loads(self.get(app,link,'/api/build-detail?player=乙&scope=player')[2])
@@ -56,7 +69,12 @@ class ShareBuildTests(unittest.TestCase):
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         try:
             base='http://127.0.0.1:'+str(server.server_port)+'/s/'+link['token']
-            with urlopen(base)as r:self.assertNotIn(b'<nav',r.read())
+            with urlopen(base)as r:
+                self.assertNotIn(b'<nav',r.read());self.assertEqual(r.headers['Cache-Control'],'no-store')
+            folder=self.store.path.parent/'card-thumbs';folder.mkdir(exist_ok=True)
+            (folder/'123.jpg').write_bytes(b'jpeg')
+            with urlopen(base+'/card-thumb/123')as r:
+                self.assertEqual(r.read(),b'jpeg');self.assertEqual(r.headers['Cache-Control'],'private, max-age=86400')
             with urlopen(base+'/replay/'+self.rows[0]['digest'])as r:
                 self.assertIn('attachment',r.headers['Content-Disposition']);self.assertIn("UTF-8''",r.headers['Content-Disposition'])
                 self.assertEqual(r.read(),(self.replays/self.rows[0]['rel_path']).read_bytes())

@@ -98,76 +98,76 @@ function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
 function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
-function cardThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src='https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2';img.onerror=()=>img.remove();return img}
+function cardThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src='/statistics/card-thumb/'+code;img.onerror=()=>img.remove();return img}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
 function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code)||'';img.onerror=()=>img.remove();return img}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
 function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
 function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
 function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
 function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
 function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
 function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
 function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
 function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
 function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
 function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
-function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
-function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
-function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
-function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
-function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
-function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
 function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
 function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
 function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
 function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
 function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
-function cardImageUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg!thumb2'):''}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
+function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
+function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
+function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}
+function annulusPath(cx,cy,r0,r1,a0,a1){const large=(a1-a0)>Math.PI?1:0;const p=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];const p1=p(r1,a0),p2=p(r1,a1),p3=p(r0,a1),p4=p(r0,a0);return 'M'+p1[0].toFixed(1)+' '+p1[1].toFixed(1)+' A'+r1.toFixed(1)+' '+r1.toFixed(1)+' 0 '+large+' 1 '+p2[0].toFixed(1)+' '+p2[1].toFixed(1)+' L'+p3[0].toFixed(1)+' '+p3[1].toFixed(1)+' A'+r0.toFixed(1)+' '+r0.toFixed(1)+' 0 '+large+' 0 '+p4[0].toFixed(1)+' '+p4[1].toFixed(1)+' Z'}
+function pieLum(hex){const h=String(hex||'#AAB5C4').replace('#','');const r=parseInt(h.slice(0,2),16)||0,g=parseInt(h.slice(2,4),16)||0,b=parseInt(h.slice(4,6),16)||0;return (0.299*r+0.587*g+0.114*b)/255}
+function ringLabelColor(color){return pieLum(color)>0.62?'#173529':'#fff'}
+function cardImageUrl(code){return code?('/statistics/card-thumb/'+code):''}
 function cardArtUrl(code){return code?('https://cdn.233.momobako.com/ygopro/pics/'+code+'.jpg'):''}
 function pieKey(primary,extras){return primary+'|'+[].concat(extras||[]).slice().sort().join(',')}
 function legendThumb(code){if(!code)return null;const img=document.createElement('img');img.alt='';img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.src=cardImageUrl(code);img.onerror=()=>img.remove();return img}

@@ -211,7 +211,8 @@ def picture(data_dir, code):
 
 THUMB_REMOTE = 'https://cdn.233.momobako.com/ygopro/pics/%d.jpg!thumb2'
 THUMB_MAX = (120, 165)
-_thumb_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='card-thumb')
+THUMB_PENDING_MAX = 64
+_thumb_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='card-thumb')
 _thumb_pending = set()
 _thumb_failed = {}
 
@@ -252,7 +253,7 @@ def _derive_thumb(thumbs, source, code):
 def _schedule_thumb(data_dir, code, thumbs, pics=None):
     now = time.time()
     with _lock:
-        if code in _thumb_pending:
+        if code in _thumb_pending or len(_thumb_pending) >= THUMB_PENDING_MAX:
             return
         if now - _thumb_failed.get(code, 0) < RETRY_SECONDS:
             return
@@ -353,3 +354,15 @@ def wait_for_thumbs(data_dir, codes, timeout=3):
         if not active:
             return
         time.sleep(0.1)
+
+
+def web_thumb(data_dir, code):
+    """网页仅查磁盘；缺图排队补小图，不在HTTP线程缩图或等待网络。"""
+    number = _card_number(code)
+    if number is None or not 0 < number <= 4294967295:
+        return None
+    thumbs = thumb_dir(data_dir)
+    found = _thumb_file(thumbs, number)
+    if found is None:
+        _schedule_thumb(data_dir, number, thumbs)
+    return found

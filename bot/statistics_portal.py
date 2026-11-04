@@ -226,6 +226,17 @@ class StatisticsPortal:
             value=parse_qs(parsed.query).get('code',[''])[0]
             if not value.isdigit() or len(value)>10 or not 0<int(value)<=4294967295:return self._reply(400,'卡号无效。')
             return self._reply(200,json.dumps(card_details(self.database.parent,int(value)),ensure_ascii=False),'application/json; charset=utf-8')
+        if len(parts)==3 and parts[:2]==['statistics','card-thumb']:
+            from .statistics_local_cards import web_thumb, THUMB_REMOTE
+            value=parts[2]
+            if not value.isdigit() or len(value)>10 or not 0<int(value)<=4294967295:
+                return self._reply(400,'卡号无效。')
+            image=web_thumb(self.database.parent,int(value))
+            if image is None:
+                return self._reply(302,'',extra={'Location':THUMB_REMOTE % int(value)})
+            mime={'.webp':'image/webp','.jpg':'image/jpeg','.png':'image/png'}[image.suffix]
+            status,kind,_,extra=self._reply(200,'',mime,{'Cache-Control':'private, max-age=86400'})
+            return status,kind,image.read_bytes(),extra
         if len(parts)==3 and parts[:2]==['statistics','card-image']:
             from .statistics_local_cards import picture
             if not parts[2].isdigit() or len(parts[2])>10:return self._reply(400,'卡号无效。')

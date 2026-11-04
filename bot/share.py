@@ -372,7 +372,10 @@ def make_handler(app: ShareApp):
             elif status == 200 and content_type == "application/zip" and parts[0] == 's':
                 link = app.store.get_link(parts[1])
                 self.send_header("Content-Disposition", attachment_header(link["player"] + " 观战录像.zip", "replays.zip"))
-            self.send_header("Cache-Control", "no-store")
+            cached_thumb = (status == 200 and content_type.startswith('image/')
+                and ((len(parts)==5 and parts[0]=='stats' and parts[2:4]==['statistics','card-thumb'])
+                     or (len(parts)==4 and parts[0]=='s' and parts[2]=='card-thumb')))
+            self.send_header("Cache-Control", 'private, max-age=86400' if cached_thumb else 'no-store')
             self.send_header('Referrer-Policy','no-referrer')
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()

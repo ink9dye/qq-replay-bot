@@ -19,6 +19,11 @@ BLOCKED = ("/statistics/access",)
 TEXT_TYPES = ("text/html", "text/javascript", "application/javascript", "text/css", "application/json")
 
 
+class _NoImageRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, file, code, message, headers, newurl):
+        return None
+
+
 def _fetch(upstream, headers, body=None, method="GET"):
     """请求 ygo-web；失败抛 OSError/HTTPError 由调用方回退或报错。"""
     request = urllib.request.Request(UPSTREAM + quote(upstream, safe='/?&=%:'), data=body, method=method)
@@ -26,7 +31,11 @@ def _fetch(upstream, headers, body=None, method="GET"):
         request.add_header(key, value)
     request.add_header("Accept-Encoding", "identity")
     try:
-        response = urllib.request.urlopen(request, timeout=60)
+        if urlsplit(upstream).path.startswith('/statistics/card-thumb/'):
+            # Let the browser fetch a cache miss from CDN; never forward the owner cookie.
+            response = urllib.request.build_opener(_NoImageRedirect()).open(request, timeout=10)
+        else:
+            response = urllib.request.urlopen(request, timeout=60)
     except urllib.error.HTTPError as exc:
         return exc.code, dict(exc.headers.items()), exc.read()
     return response.status, dict(response.headers.items()), response.read()
@@ -97,6 +106,12 @@ def route(app, path, parts):
                 "<p>请确认统计网页仍在运行，稍后重新发送“统计”。</p>".encode())
     if any(kind in content_type for kind in TEXT_TYPES):
         body = _rewrite(body, token)
+    if urlsplit(upstream).path.startswith('/statistics/card-thumb/'):
+        location = next((value for key,value in headers.items() if key.lower()=='location'),None)
+        if status==302 and location and location.startswith('https://cdn.233.momobako.com/ygopro/pics/'):
+            return status,content_type,b'',{'Location':location}
+        if status==200 and content_type.startswith('image/'):
+            return status,content_type,body,{'Cache-Control':'private, max-age=86400'}
     location = headers.get("Location") if isinstance(headers, dict) else None
     if location and location.startswith("/statistics"):
         return status, content_type, b"", {"Location": f"/stats/{token}" + location}

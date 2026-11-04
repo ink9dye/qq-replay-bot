@@ -36,3 +36,17 @@ class NamingRetirementTests(unittest.TestCase):
             statistics_match_identity.inherit_first_game_types(db,rows)
         self.assertEqual(rows[1]['deck_type'],'字段名')
         self.assertEqual(rows[1]['classification_source'],'same_match_first_game')
+
+    def test_two_players_in_one_digest_never_share_the_others_name(self):
+        db=sqlite3.connect(':memory:');self.addCleanup(db.close);db.row_factory=sqlite3.Row
+        db.executescript('CREATE TABLE stat_games(digest,recorded_at,expires_at); CREATE TABLE stat_views(player,build,digest); CREATE TABLE stat_builds(fingerprint,deck_type,classification_status,classification_source);')
+        db.execute("INSERT INTO stat_games VALUES('same',100,2000)")
+        for player in ('p','opponent'):
+            db.execute('INSERT INTO stat_views VALUES(?,?,?)',(player,player,'same'))
+            db.execute('INSERT INTO stat_builds VALUES(?,NULL,?,?)',(player,'unknown','unclassified'))
+        def assign_names(db,rows):
+            for row in rows:row['deck_type']=row['player']+'-field'
+        with patch.object(statistics_match_identity,'inherit_first_game_types',side_effect=assign_names):
+            views=statistics_deck_naming._latest_views(db,1000)
+        self.assertEqual(views['p']['deck_type'],'p-field')
+        self.assertEqual(views['opponent']['deck_type'],'opponent-field')

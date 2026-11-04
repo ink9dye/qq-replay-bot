@@ -10,7 +10,7 @@ from .statistics_recording_names import safe_filename
 
 def route(app,path,parts):
     tail=parts[2:]
-    if tail and tail[0] not in ('assets','api','replay','recording-zip','build-ydk','card-image'):return None
+    if tail and tail[0] not in ('assets','api','replay','recording-zip','build-ydk','card-image','card-thumb'):return None
     from .share import TOKEN_RE,safe_replay_file,attachment_header,format_time
     from .replay_window import replay_in_window
     token=parts[1];link=app.store.get_link(token) if TOKEN_RE.fullmatch(token) else None
@@ -39,7 +39,7 @@ def route(app,path,parts):
         else:source=Path(__file__).with_name(name).read_text(encoding='utf8')
         if name=='statistics_build.js':
             source=source.replace("player=args.get('player')||''",'player='+json.dumps(link['player'],ensure_ascii=False))
-            source=source.replace('/statistics/sample/',base+'/replay/').replace('/statistics/build?',base+'?').replace('/statistics/recording-zip?',base+'/recording-zip?').replace('/statistics/build-ydk?',base+'/build-ydk?').replace('/statistics/card-image/',base+'/card-image/')
+            source=source.replace('/statistics/sample/',base+'/replay/').replace('/statistics/build?',base+'?').replace('/statistics/recording-zip?',base+'/recording-zip?').replace('/statistics/build-ydk?',base+'/build-ydk?').replace('/statistics/card-image/',base+'/card-image/').replace('/statistics/card-thumb/',base+'/card-thumb/')
             source=source.replace('已复制本机私有链接','已复制分享链接').replace('该玩家全部有效小局','本链接全部有效小局')
         if name=='statistics_pt.js':source=source.replace("new URLSearchParams(location.search).get('player')",json.dumps(link['player'],ensure_ascii=False))
         return reply(source,'text/css; charset=utf-8'if name.endswith('.css')else'application/javascript; charset=utf-8')
@@ -48,6 +48,13 @@ def route(app,path,parts):
         from .statistics_pt import InteractiveHistory
         if not hasattr(app,'share_pt_history'):app.share_pt_history=InteractiveHistory()
         return reply(app.share_pt_history.query(link['player']))
+    if len(tail)==2 and tail[0]=='card-thumb':
+        from .statistics_local_cards import web_thumb, THUMB_REMOTE
+        code=tail[1]
+        if not code.isdigit() or len(code)>10 or not 0<int(code)<=4294967295:return app._text(400,'卡号无效。')
+        found=web_thumb(app.store.path.parent,int(code))
+        if found is None:return 302,'text/plain',b'',{'Location':THUMB_REMOTE % int(code)}
+        return reply(found.read_bytes(),{'.webp':'image/webp','.jpg':'image/jpeg','.png':'image/png'}[found.suffix])
     if tail==['api','card-info'] or len(tail)==2 and tail[0]=='card-image':
         code=args.get('code',[''])[0] if tail[0]=='api' else tail[1]
         if not code.isdigit() or not 0<int(code)<=4294967295:return app._text(400,'卡号无效。')
