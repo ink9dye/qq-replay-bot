@@ -1,5 +1,6 @@
 """Small disk-backed upload provenance; an upload job never proves game number one."""
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -41,6 +42,12 @@ def record(data_dir, digest, job, players, recorded, capture=None):
                        'WHERE received<? ORDER BY received LIMIT 200)', (time.time()-15*86400,))
     finally:
         db.close()
+        # A root-run historical repair must not leave the live ygo writer locked
+        # out of a newly created ledger.
+        facts = Path(data_dir) / 'bot.sqlite3'
+        if hasattr(os, 'geteuid') and os.geteuid() == 0 and facts.is_file():
+            owner = facts.stat()
+            os.chown(path, owner.st_uid, owner.st_gid)
 
 
 def metadata(facts_db, digests):
