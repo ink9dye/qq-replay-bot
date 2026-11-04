@@ -92,8 +92,17 @@ def query(db,replay_root,code,partition,now,filters=None):
     if f.first_player is not None and type(f.first_player) is not bool:raise ValueError('invalid_order_filter')
     basis=eligible_views(db,replay_root,now,f.internal_only,f.scope,series_catalog)
     candidates=basis['views']
-    others={(r['digest'],r['player']):dict(r) for r in db.execute('SELECT v.digest,v.player,v.build,b.deck_type,b.classification_source,b.series_status,b.main_complete,b.extra_complete FROM stat_views v JOIN stat_builds b ON b.fingerprint=v.build')}
-    annotate(db,list(others.values()),series_catalog)
+    others = {}
+    digests = sorted({row['digest'] for row in candidates})
+    for start in range(0, len(digests), 400):
+        chunk = digests[start:start + 400]
+        marks = ','.join('?' for _ in chunk)
+        for r in db.execute('SELECT v.digest,v.player,v.build,b.deck_type,b.classification_source,b.series_status,b.main_complete,b.extra_complete '
+                            'FROM stat_views v JOIN stat_builds b ON b.fingerprint=v.build '
+                            'WHERE v.digest IN (' + marks + ')', chunk):
+            others[(r['digest'], r['player'])] = dict(r)
+    if f.opponent_series:
+        annotate(db, list(others.values()), series_catalog)
     opponents={}
     for row in others.values():opponents.setdefault(row['digest'],[]).append(row)
     facts=identity_facts(db,codes,partition)
