@@ -124,3 +124,56 @@ def render(result, picture, title=None, stats=None, card_data=None):
     output = io.BytesIO()
     image.save(output, format='JPEG', quality=88, optimize=True, progressive=True)
     return output.getvalue()
+
+
+def render_cached(result, picture, cache_dir, stats=None, card_data=None):
+    """跨QQ用户复用同一构筑图片；只落盘完整图片，最多32份/64MiB。"""
+    import hashlib, json, os, tempfile
+    folder=Path(cache_dir)
+    payload={key:result.get(key) for key in ('person','cards','inferred_side')}
+    paths={}
+    stamps=[]
+    for card in list(result.get('cards') or [])+list((result.get('inferred_side') or {}).get('cards') or []):
+        code=int(card.get('code') or 0)
+        if code in paths:continue
+        try:
+            path=picture(code)
+            file=Path(path) if path else None
+            stat=file.stat() if file else None
+        except (OSError,ValueError,TypeError):
+            file,stat=None,None
+        paths[code]=file
+        stamps.append((code,str(file),stat.st_mtime_ns,stat.st_size) if stat else (code,None))
+    key=hashlib.sha256(json.dumps([1,payload,card_data,sorted(stamps)],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+    target=folder/(key+'.jpg')
+    try:
+        if 0<target.stat().st_size<=4*1024*1024:
+            blob=target.read_bytes()
+            if blob.startswith(b'\xff\xd8'):
+                if stats is not None:stats['missing']=0
+                return blob
+    except OSError:pass
+    current={}
+    blob=render(result,paths.get,stats=current,card_data=card_data)
+    if stats is not None:stats.update(current)
+    if current.get('missing') or len(blob)>4*1024*1024:return blob
+    temporary=None
+    try:
+        folder.mkdir(parents=True,exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=folder,suffix='.tmp',delete=False) as stream:
+            temporary=Path(stream.name);stream.write(blob)
+        os.replace(temporary,target);temporary=None
+        entries=[]
+        for file in folder.glob('*.jpg'):
+            if len(file.stem)==64 and all(c in '0123456789abcdef' for c in file.stem):
+                info=file.stat();entries.append((info.st_mtime_ns,file,info.st_size))
+        total=sum(item[2] for item in entries)
+        entries.sort()
+        while entries and (len(entries)>32 or total>64*1024*1024):
+            _,file,size=entries.pop(0);file.unlink();total-=size
+    except OSError:pass
+    finally:
+        if temporary is not None:
+            try:temporary.unlink()
+            except OSError:pass
+    return blob

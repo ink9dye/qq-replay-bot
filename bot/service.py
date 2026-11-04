@@ -787,7 +787,7 @@ class BotService:
 
         image_stats = {}
         try:
-            blob = deck_image.render(result, load, stats=image_stats,
+            blob = deck_image.render_cached(result, load, self.data_dir / "cache" / "qq-build-images", stats=image_stats,
                                      card_data=load_card_data(self.data_dir, image_codes))
         except Exception:
             return f"构筑图生成失败；YDK 可从这里下载：{ydk_url}"
