@@ -16,7 +16,6 @@ from .card_search import card_name
 COOKIE='qqstats_owner'
 SESSION_SECONDS=5*3600
 QUERY_WAIT_SECONDS=8.0
-QUERY_CACHE_MAX_BYTES = 8 * 1024 * 1024
 CACHED_API_PATHS=frozenset('/statistics/api/'+name for name in (
     'recordings','deck-naming/groups','card-table','cards-extra','card-combo',
     'card-report','roster','build'))
@@ -39,6 +38,7 @@ class StatisticsPortal:
         self._query_cache={}
         self._query_cache_lock=threading.Lock()
         self._query_compute_lock=threading.RLock()
+        self._small_world_catalog_lock=threading.Lock()
         from .player_history import PlayerHistory
         self.player_history=PlayerHistory()
         from .statistics_pt import InteractiveHistory
@@ -59,7 +59,8 @@ class StatisticsPortal:
         api_path=urlsplit(path).path
         # Cached queries own their gate: cache hits must never queue behind a cold query.
         if api_path.startswith('/statistics/api/') and api_path not in CACHED_API_PATHS and api_path not in (
-                '/statistics/api/devices','/statistics/api/card-search','/statistics/api/card-info'):
+                '/statistics/api/devices','/statistics/api/card-search','/statistics/api/card-info',
+                '/statistics/api/small-world-cards'):
             if not self._query_compute_lock.acquire(timeout=QUERY_WAIT_SECONDS):
                 return self._query_busy_reply()
             try:
@@ -85,6 +86,25 @@ class StatisticsPortal:
             target=requested if requested in ('/statistics/deck-naming','/statistics/devices') else '/statistics'
             return self._reply(303,'',extra={'Location':target,'Set-Cookie':f'{COOKIE}={value}; Path=/statistics; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}'})
         if not self._authenticated(headers.get('Cookie')):return self._reply(403,'请使用本机“打开统计页面”入口。')
+        if parts==['statistics','small-world']:
+            return self._reply(200,Path(__file__).with_name('statistics_small_world.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
+        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_small_world.js','small_world_engine.js','statistics_small_world.css'):
+            mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
+            return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
+        if parts==['statistics','api','small-world-cards']:
+            from .small_world import read_cards
+            from .statistics_local_cards import library_root
+            if not self._small_world_catalog_lock.acquire(blocking=False):
+                return self._reply(429,'卡库正在读取，请稍后重试。',extra={'Retry-After':'2'})
+            try:
+                root=library_root(self.database.parent) or self.database.parent.parent/'ygopro'
+                cards=read_cards(root)
+                payload={'cards':[[c.code,c.name,c.kind,*c.properties] for c in cards.values()]}
+                return self._reply(200,json.dumps(payload,ensure_ascii=False,separators=(',',':')),'application/json; charset=utf-8')
+            except (OSError,sqlite3.Error,ValueError):
+                return self._reply(503,'小世界卡库暂不可用，请稍后重试。')
+            finally:
+                self._small_world_catalog_lock.release()
         if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js','statistics_busy.js'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
             return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
@@ -571,11 +591,10 @@ class StatisticsPortal:
             if hit and hit[0]==stamp and now-hit[1]<=ttl and not force:
                 return hit[2]
         result=self._query_reply(callback)
-        if result[0]==200 and len(result[2]) <= QUERY_CACHE_MAX_BYTES:
+        if result[0]==200:
             with self._query_cache_lock:
                 self._query_cache[key]=(stamp,time.monotonic(),result)
-                while (len(self._query_cache)>32 or
-                       sum(len(entry[2][2]) for entry in self._query_cache.values()) > QUERY_CACHE_MAX_BYTES):
+                if len(self._query_cache)>32:
                     oldest=min(self._query_cache,key=lambda k:self._query_cache[k][1])
                     self._query_cache.pop(oldest,None)
         return result
