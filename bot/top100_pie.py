@@ -7,6 +7,10 @@
 from __future__ import annotations
 
 import io
+import hashlib
+import json
+import os
+import threading
 import math
 import sqlite3
 from contextlib import closing
@@ -87,18 +91,9 @@ def _card_file(code):
     paths.append(cache / (str(code) + '.jpg'))
     path = next((item for item in paths if item.is_file()), None)
     if path is None:
-        try:
-            import urllib.request
-            cache.mkdir(parents=True, exist_ok=True)
-            target = cache / (str(code) + '.jpg')
-            request = urllib.request.Request(
-                'https://cdn.233.momobako.com/ygopro/pics/%s.jpg' % code,
-                headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(request, timeout=6) as response:
-                target.write_bytes(response.read())
-            path = target
-        except Exception:
-            return None
+        from .statistics_local_cards import picture
+        found = picture(Path(__file__).resolve().parents[1] / 'data', code)
+        return found[0] if found else None
     return path
 
 
@@ -211,8 +206,7 @@ def _draw_top_legend(draw, inner, width, font):
         x += text_width + 50
 
 
-def render(database, replay_root, now):
-    payload = collect(database, replay_root, now)
+def _render_payload(payload):
     pie = payload['pie']
     if not pie.get('total'):
         raise ValueError('暂无卡组档案')
@@ -329,3 +323,43 @@ def render(database, replay_root, now):
     output = io.BytesIO()
     image.save(output, format='PNG', optimize=True)
     return output.getvalue(), payload
+
+
+_RENDER_LOCK = threading.Lock()
+
+
+def render(database, replay_root, now):
+    """每次核对当前分布；只将同一数据/卡图版本的最终PNG落盘复用。"""
+    with _RENDER_LOCK:
+        payload = collect(database, replay_root, now)
+        codes = {row.get(key) for section in ('inner','middle','outer')
+                 for row in (payload.get('pie') or {}).get(section, [])
+                 for key in ('image','band_image') if row.get(key)}
+        stamps = []
+        for code in sorted(codes):
+            file = _card_file(code)
+            try:
+                stat = file.stat() if file else None
+                stamps.append((code, str(file), stat.st_mtime_ns, stat.st_size) if stat else (code,None))
+            except OSError:
+                stamps.append((code,None))
+        key = hashlib.sha256(json.dumps([1,payload,stamps],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+        folder = Path(database).parent / 'cache' / 'top100-pie'
+        cache = folder/'latest.cache'
+        try:
+            if 65 < cache.stat().st_size <= 8*1024*1024+65:
+                record = cache.read_bytes()
+                blob = record[65:]
+                if record[:65] == key.encode()+b'\n' and blob.startswith(b'\x89PNG\r\n\x1a\n'):
+                    return blob,payload
+        except OSError:
+            pass
+        blob,payload = _render_payload(payload)
+        if len(blob) <= 8*1024*1024:
+            try:
+                folder.mkdir(parents=True,exist_ok=True)
+                cache.with_suffix('.tmp').write_bytes(key.encode()+b'\n'+blob)
+                os.replace(cache.with_suffix('.tmp'),cache)
+            except OSError:
+                pass
+        return blob,payload

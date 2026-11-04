@@ -83,10 +83,14 @@ def deck_images(db, names):
     if not wanted:
         return {}
     best = {}
+    labels = sorted(wanted)
+    clause = 'b.deck_type IN (' + ','.join('?' for _ in labels) + ')'
+    if '未识别' in wanted:
+        clause += " OR b.deck_type IS NULL OR b.deck_type=''"
     rows = db.execute(
         "SELECT COALESCE(b.deck_type,'') AS deck_type, c.code, SUM(c.copies) AS copies "
         "FROM stat_builds b JOIN stat_build_cards c ON c.build=b.fingerprint "
-        "WHERE c.partition='main' GROUP BY deck_type, c.code")
+        "WHERE c.partition='main' AND (" + clause + ") GROUP BY deck_type, c.code", labels)
     for deck_type, code, copies in rows:
         key = '未识别' if not deck_type else str(deck_type)
         if key not in wanted:
