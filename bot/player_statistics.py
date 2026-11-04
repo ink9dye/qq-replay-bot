@@ -1,7 +1,7 @@
 """先选每位当前玩家最新有效小局构筑，再作类型筛选及按人投入分布。"""
 import json
 from .top100 import eligible_views
-from .statistics_match_identity import capture_metadata
+from .statistics_match_identity import capture_metadata, identity_metadata
 
 
 def distributions(people,key):
@@ -32,7 +32,7 @@ def query(db,replay_root,code,now,deck_types=(),series=()):
     placeholders=','.join('?' for _ in codes)
     copies={(r['build'],r['partition']):r['copies'] for r in db.execute(
         f'SELECT build,partition,SUM(copies) copies FROM stat_build_cards WHERE code IN ({placeholders}) GROUP BY build,partition',codes)}
-    metadata=capture_metadata(db,{r['digest'] for r in basis['views']})
+    metadata=identity_metadata(db,{r['digest'] for r in basis['views']})
     def counts(row):
         values={p:copies.get((row['build'],p),0) if row[p+'_complete'] else None for p in ('main','side','extra')}
         values['total']=values['main']+values['side'] if values['main'] is not None and values['side'] is not None else None

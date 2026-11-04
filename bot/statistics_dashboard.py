@@ -1,7 +1,7 @@
 """只读的当前榜单与每人最新有效构筑；不生成长期事实副本。"""
 from pathlib import Path
 from .top100 import eligible_views
-from .player_statistics import capture_metadata
+from .statistics_match_identity import identity_metadata
 
 RANK_MAX_AGE_SECONDS = 3600
 
@@ -42,7 +42,7 @@ def population(db, replay_root, now, player=None, allowed_digests=None, resolve_
     if allowed_digests is not None:basis['views']=[r for r in basis['views'] if r['digest'] in allowed_digests]
     from .statistics_population import latest_views
     latest=latest_views(basis)
-    metadata=capture_metadata(db,{r['digest'] for r in latest.values()})
+    metadata=identity_metadata(db,{r['digest'] for r in latest.values()})
     people=[]
     for member in basis['roster']['members']:
         row=latest.get(member['player']);person=dict(player=member['player'],rank=member['rank'],points=member['points'],observed=False)

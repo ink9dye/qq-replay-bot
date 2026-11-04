@@ -82,13 +82,40 @@ def capture_metadata(db, digests):
     return _read_capture_metadata(db, wanted)
 
 
+def identity_metadata(db, digests, captures=None):
+    """Tuple flag means reliable match identity, never complete draw capture.
+
+    Keep capture_metadata unchanged for consumers that need capture completeness.
+    Audited server notifications independently establish game numbers and matches.
+    """
+    wanted = {digest for digest in digests if digest}
+    result = dict(captures) if captures is not None else capture_metadata(db, wanted)
+    from .statistics_identity_confirmations import metadata
+    try:
+        confirmed = metadata(db, wanted)
+    except (sqlite3.Error, OSError, ValueError, TypeError):
+        confirmed = {}
+    for digest, proof in confirmed.items():
+        current = result.get(digest)
+        # Preserve native full-start identity. Positive conflicting numbers
+        # remain uncertain instead of silently replacing explicit evidence.
+        if current and (current[2] or (current[1] > 0 and current[1] != proof[1])):
+            continue
+        result[digest] = proof
+    return result
+
+
 def inherit_first_game_types(db,rows):
-    metadata=capture_metadata(db,{r['digest']for r in rows})
+    digests = {r['digest'] for r in rows}
+    captures=capture_metadata(db,digests)
+    metadata=identity_metadata(db,digests,captures)
     for row in rows:
         meta=metadata.get(row['digest'])
         row['observed_session_id']=meta[0] if meta else None
         row['observed_game_no']=meta[1] if meta and meta[1] > 0 else None
-        row['observed_captured_from_start']=bool(meta[2]) if meta else None
+        capture=captures.get(row['digest'])
+        row['observed_captured_from_start']=bool(capture[2]) if capture else None
+        row['observed_identity_confirmed']=bool(meta and meta[2])
         row['first_game_status']='confirmed' if meta and meta[1:]==(1,True) else 'unconfirmed'
         row['observed_deck_type']=row.get('deck_type')
     pairs={}
@@ -125,7 +152,7 @@ def inherit_first_game_types(db,rows):
 
 
 def classification_builds(db):
-    rows=list(db.execute('SELECT digest,build FROM stat_views'));metadata=capture_metadata(db,{r['digest']for r in rows})
+    rows=list(db.execute('SELECT digest,build FROM stat_views'));metadata=identity_metadata(db,{r['digest']for r in rows})
     # Legacy sources without reliable game numbers cannot be labelled "post-side".
     return {row['build']for row in rows if not metadata.get(row['digest'])
             or not metadata[row['digest']][2] or metadata[row['digest']][1]==1}

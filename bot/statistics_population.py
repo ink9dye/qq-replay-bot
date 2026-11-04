@@ -19,7 +19,7 @@ def latest_views(basis):
         group = max(matches.values(),
                     key=lambda rows: max((r['recorded_at'], r.get('received_at', 0), r['digest']) for r in rows))
         main = [row for row in group if row.get('observed_game_no') == 1
-                and row.get('observed_captured_from_start') is True]
+                and row.get('observed_identity_confirmed', row.get('observed_captured_from_start')) is True]
         latest[player] = max(main or group,
                              key=lambda r: (r['recorded_at'], r.get('received_at', 0), r['digest']))
     return latest

@@ -2,14 +2,14 @@
 import hashlib
 import re
 from datetime import datetime, timedelta, timezone
-from .statistics_match_identity import capture_metadata
+from .statistics_match_identity import identity_metadata
 
 CST=timezone(timedelta(hours=8))
 
 
 def catalog(db,player):
     rows=[dict(r)for r in db.execute('SELECT v.digest,g.received_at FROM stat_views v JOIN stat_games g ON g.digest=v.digest WHERE v.player=?',(player,))]
-    digests={r['digest']for r in rows};meta=capture_metadata(db,digests)
+    digests={r['digest']for r in rows};meta=identity_metadata(db,digests)
     pairs={}
     for r in db.execute('SELECT digest,player FROM stat_views'):
         if r['digest']in digests:pairs.setdefault(r['digest'],[]).append(r['player'])
@@ -49,7 +49,7 @@ def catalog_many(db, players):
             f'ON g.digest=v.digest WHERE v.player IN ({marks})', players):
         rows_by_player.setdefault(r['player'], []).append(dict(r))
         digests.add(r['digest'])
-    meta = capture_metadata(db, digests)
+    meta = identity_metadata(db, digests)
     pairs = {}
     for r in db.execute('SELECT digest,player FROM stat_views'):
         if r['digest'] in digests:

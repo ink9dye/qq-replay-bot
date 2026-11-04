@@ -3,7 +3,7 @@ from collections import Counter
 import math
 import hashlib
 from .statistics_dashboard import population
-from .player_statistics import capture_metadata
+from .statistics_match_identity import identity_metadata
 from .card_statistics import win_rate
 
 
@@ -73,7 +73,7 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
     if selected is None:
         return None
     person = next(p for p in people if p['player'] == player)
-    metadata = capture_metadata(db, {r['digest'] for r in rows})
+    metadata = identity_metadata(db, {r['digest'] for r in rows})
     row_digests = tuple({r['digest'] for r in rows})
     # Shared resolver also handles upload provenance and quarantines old prefixes.
     builds = {r['build'] for r in rows}

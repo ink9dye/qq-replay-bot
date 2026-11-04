@@ -190,11 +190,31 @@ const HAND_TRAP_PRESET = [
   { code: 52038441, name: '朔夜时雨' },
   { code: 67750322, name: '骷髅大王' },
   { code: 101307021, name: '灾祸的根绝者' },
+  { code: 38814750, name: 'PSY骨架装备·γ' },
+  { code: 74203495, name: 'PSY骨架装备·δ' },
+  { code: 49036338, name: 'PSY骨架驱动者' },
+  { code: 26084285, name: '守墓的监视者' },
+  { code: 97462632, name: '栗球兽卫' },
+];
+const HAND_TRAP_COMBO_PRESET = [
+  [{ code: 38814750, name: 'PSY骨架装备·γ' }, { code: 49036338, name: 'PSY骨架驱动者' }],
+  [{ code: 49036338, name: 'PSY骨架驱动者' }, { code: 74203495, name: 'PSY骨架装备·δ' }],
 ];
 const presetButton = $('handtrap-preset');
 if (presetButton) {
   presetButton.addEventListener('click', () => {
     for (const card of HAND_TRAP_PRESET) targets.add(card);
+    let added = 0;
+    let skipped = 0;
+    for (const pair of HAND_TRAP_COMBO_PRESET) {
+      const result = addComboCards(pair);
+      if (result === null) skipped += 1;
+      else if (result) added += 1;
+    }
+    renderComboDefs();
+    $('combo-status').textContent = skipped
+      ? `单卡已加入；组合上限为4个，本次加入${added}个，另有${skipped}个未加入。`
+      : `手坑单卡及PSY组合已加入，点“查询”查看。`;
   });
 }
 const NIBIRU_COMBO_PRESET = [
@@ -286,7 +306,8 @@ $('combo-run').onclick = () => {
 
 function addComboCards(cards) {
   const codes = cards.map(card => card.code);
-  if (comboDefs.some(combo => combo.codes.join(',') === codes.join(','))) return false;
+  const key = values => [...values].sort((a, b) => a - b).join(',');
+  if (comboDefs.some(combo => key(combo.codes) === key(codes))) return false;
   if (comboDefs.length >= 4) return null;
   comboDefs.push({ codes: [...codes], cards: cards.map(card => ({ ...card })) });
   return true;
