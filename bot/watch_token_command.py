@@ -114,7 +114,9 @@ def _issue(service, user, slot: int, conversation) -> str:
             f"接口令牌：{row['token']}\n"
             f"客户端名称：{row['worker']}\n"
             f"有效期至：{_format_expiry(row['expires_at'])}\n"
-            "客户端名称必须原样填；到期或泄露后重新发送“令牌分发”换新。")
+            "只复制“接口令牌：”后以 wt_ 开头的完整一串，不要复制标签、Bearer 或列表中的省略号。\n"
+            "客户端名称必须原样填；保存后先停止再启动观战。\n"
+            "同一设备重发会使旧令牌失效；到期或泄露后重新发送“令牌分发”换新。")
 
 
 def _list(service, user, conversation) -> str:
@@ -128,7 +130,7 @@ def _list(service, user, conversation) -> str:
         return "令牌库暂时不可用，请稍后再试。"
     if not rows:
         return "当前没有有效的观战令牌。"
-    lines = [f"观战令牌（有效 {len(rows)} 个）："]
+    lines = [f"观战令牌（有效 {len(rows)} 个）：", "以下是辨认用提示，含省略号，不能填入 APP；完整令牌只在签发回复中显示。"]
     for row in rows:
         owner = row.get("owner") or "-"
         lines.append(f"{row['worker']}  QQ {owner}  {row['token_hint']}  "

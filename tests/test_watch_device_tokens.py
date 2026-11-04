@@ -308,6 +308,8 @@ class WatchTokenCommandTests(unittest.TestCase):
         self.assertIn("接口令牌：wt_", reply)
         self.assertIn("客户端名称：android-1001", reply)
         self.assertIn("有效期至：", reply)
+        self.assertIn("先停止再启动观战", reply)
+        self.assertIn("旧令牌失效", reply)
         token = self._token(reply)
         self.assertIsNotNone(self.reader.verify(token))
 
@@ -347,6 +349,7 @@ class WatchTokenCommandTests(unittest.TestCase):
         self.assertIn("android-1001", listing)
         self.assertIn("wt_", listing)
         self.assertNotIn(token, listing)
+        self.assertIn("不能填入 APP", listing)
 
         revoked = self._issue(user="999", args=["吊销", "android-1001"])
         self.assertIn("1", revoked)
