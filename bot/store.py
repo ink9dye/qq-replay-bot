@@ -221,10 +221,7 @@ class Store:
             return assign(self._db,build,deck_type,series,version)
 
     def refresh_classifications(self, reference_path, overrides_path=None):
-        from .build_classification import rules,apply_rules
-        parsed,threshold,margin,version=rules(reference_path,overrides_path)
-        with self._lock,self._db:
-            return apply_rules(self._db,parsed,threshold,margin,version)
+        raise RuntimeError('legacy_similarity_naming_removed; use refresh_series_names')
 
     def refresh_series_names(self, config, now, replay_root=None, scope='latest'):
         """按组合规则增量命名；scop='latest' 用每人最新一场的 game1 构筑。"""

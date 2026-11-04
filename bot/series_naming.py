@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""按主卡组字段（系列命名组）张数自动命名构筑；人工命名永不被覆盖。
+"""按字段（系列命名组）张数统一命名构筑；不再叠加旧人工或相似度名称。
 
 规则（阈值、命名组、例外全部可配置，配置文件 data/series-naming.json，缺省用内置默认）：
 1. 只看主卡组 partition='main'、copies>0 的卡，同一字段按张数（copies）累计，不按种类。
@@ -11,7 +11,7 @@
    主字段永远在最前；被更长字段名包含的短字段会合并掉（三幻魔 vs 幻魔、闪刀 vs 闪刀姬）。
 6. 例外规则（混沌/黑魔导）不受阈值限制，按命名组成员（卡号清单/官方系列/关键词）标注；
    默认放在字段名之前（prefix），“混沌三幻魔”“黑魔导烙印”。
-7. 只处理 classification_source != 'manual' 的构筑；默认也不覆盖已由 reference 规则明确识别的构筑。
+7. 旧人工/参考名称必须按同一字段规则重算；无法命名时保持未知。
 8. 写库统一走 build_classification.assign(..., source='auto_series', score=...)，并更新
    stat_classification_state.revision。版本串包含阈值与配置摘要，配置变化后会自动重算。
 9. dry-run 只计算和打印，不写库。
@@ -179,6 +179,8 @@ def normalize_config(raw=None):
         if key not in config:
             raise ConfigError('未知配置项：%s' % key)
         config[key] = value
+    if config['respect_manual'] or not config['overwrite_reference']:
+        raise ConfigError('旧人工/参考名称优先已停用；只能使用统一字段命名')
     _number(config['primary_threshold'], 'primary_threshold', 1, 60)
     _number(config['secondary_threshold'], 'secondary_threshold', 1, 60)
     _number(config['max_fields'], 'max_fields', 1, 6)
@@ -751,9 +753,9 @@ def active_builds(db, now, scope='active'):
     return [row[0] for row in rows]
 
 
-def pending_builds(db, now, version, scope='active', respect_manual=True):
+def pending_builds(db, now, version, scope='active', respect_manual=False):
     """还没按当前配置算过的构筑；后台自动刷新用。respect_manual=False 时人工构筑也要重算。"""
-    manual = "" if not respect_manual else " AND b.classification_source!='manual'"
+    manual = ""
     if scope == 'top100':
         rows = db.execute(
             'SELECT DISTINCT v.build FROM stat_views v '
@@ -774,7 +776,7 @@ def pending_builds(db, now, version, scope='active', respect_manual=True):
     return [row[0] for row in rows]
 
 
-def latest_builds(db, now, version=None, respect_manual=True):
+def latest_builds(db, now, version=None, respect_manual=False):
     """每位玩家最新一局的有效构筑；后台自动命名只处理这一批。"""
     sql = ('WITH ranked AS ('
            ' SELECT v.player,v.build,ROW_NUMBER() OVER (PARTITION BY v.player '
@@ -783,8 +785,6 @@ def latest_builds(db, now, version=None, respect_manual=True):
            ' SELECT r.build FROM ranked r JOIN stat_builds b ON b.fingerprint=r.build'
            ' WHERE r.rn=1')
     params = [float(now)]
-    if respect_manual:
-        sql += " AND b.classification_source!='manual'"
     if version is not None:
         sql += ' AND (b.classification_version IS NULL OR b.classification_version!=?)'
         params.append(version)
@@ -815,14 +815,14 @@ def _filter_pending(db, builds, version, respect_manual):
         marks = ','.join('?' for _ in chunk)
         for row in db.execute('SELECT fingerprint,classification_source,classification_version '
                               'FROM stat_builds WHERE fingerprint IN (%s)' % marks, chunk):
-            if not respect_manual and row['classification_source'] == 'manual':
+            if row['classification_source'] in ('manual', 'reference'):
                 pending.append(row['fingerprint'])
             elif row['classification_version'] != version:
                 pending.append(row['fingerprint'])
     return pending
 
 
-def pending_latest_main(db, replay_root, now, version, respect_manual=True):
+def pending_latest_main(db, replay_root, now, version, respect_manual=False):
     builds = (latest_main_builds(db, replay_root, now) if replay_root is not None
               else latest_builds(db, now))
     return _filter_pending(db, builds, version, respect_manual)
@@ -910,22 +910,13 @@ def plan(db, now, config, catalog=None, names=None, builds=None, scope='top100',
         item = dict(build=build, current=info['deck_type'], source=info['classification_source'],
                     status=info['classification_status'], version=info['classification_version'],
                     main_complete=info['main_complete'])
-        if config['respect_manual'] and info['classification_source'] == 'manual':
-            item.update(action='skip', reason='manual', name=None)
-            planned.append(item)
-            continue
-        if (not config['overwrite_reference'] and info['classification_source'] == 'reference'
-                and info['classification_status'] == 'recognized'):
-            item.update(action='skip', reason='reference_recognized', name=None)
-            planned.append(item)
-            continue
         if config['require_main_complete'] and not info['main_complete']:
-            item.update(action='skip', reason='main_incomplete', name=None)
+            item.update(action='clear' if info['classification_source'] in ('manual', 'reference') and info['deck_type'] else 'skip', reason='main_incomplete', name=None)
             planned.append(item)
             continue
         total = sum(int(card['copies']) for card in cards_for_build)
         if total < config['min_main_copies']:
-            item.update(action='skip', reason='too_few_main_copies', name=None, main_copies=total)
+            item.update(action='clear' if info['classification_source'] in ('manual', 'reference') and info['deck_type'] else 'skip', reason='too_few_main_copies', name=None, main_copies=total)
             planned.append(item)
             continue
         proposal = propose(cards_for_build, catalog, config, names,
@@ -957,7 +948,7 @@ def plan(db, now, config, catalog=None, names=None, builds=None, scope='top100',
 
 
 def apply_plan(db, planned, config, commit=True):
-    """把计划写成 auto_series；返回变化数。人工命名在 assign 前已排除。"""
+    """把计划写成 auto_series；返回变化数。旧人工/参考名称也必须由同一规则重新评估。"""
     from .build_classification import assign
     version = version_for(config)
     changed = 0
@@ -1116,8 +1107,6 @@ def main(argv=None):
                         help='预览用：不按录像文件是否存在过滤视角（快照/离线库）')
     parser.add_argument('--reset-manual', action='store_true',
                         help='作废旧人工命名和人工名库（默认只打印数量，加 --apply 才执行）')
-    parser.add_argument('--respect-manual', action='store_true',
-                        help='本次保留人工命名（默认按配置覆盖人工，保证统一）')
     args = parser.parse_args(argv)
     root = args.root.resolve()
     data, db_path = _default_paths(root)
@@ -1133,8 +1122,6 @@ def main(argv=None):
         raw['max_fields'] = args.max_fields
     if args.exception_position:
         raw['exception_position'] = args.exception_position
-    if args.respect_manual:
-        raw['respect_manual'] = True
     config = normalize_config(raw)
     import time
     from .store import Store

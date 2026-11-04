@@ -56,7 +56,7 @@ function render(){const only=$('only').value;const body=$('rows');body.replaceCh
  for(const row of rows){if(only==='unknown'&&(!row.observed||row.deck_type))continue;if(only==='observed'&&!row.observed)continue;shown++;
   const tr=el('tr','','row');tr.append(el('td',row.rank==null?'排名暂缺':String(row.rank),'rank'));
   const who=el('td');who.append(el('div',row.player,'name'));who.append(el('div',row.points!=null?row.points.toFixed(1)+' 分':'—','points'));tr.append(who);
-  const deck=el('td');deck.append(row.observed?el('span',row.deck_type||'未命名','deck'+(row.deck_type?'':' unknown')):el('span','未采集','deck unknown'));if(row.observed&&row.deck_type&&row.label_source==='same_match_first_game')deck.append(el('small','（继承首局）','muted'));if(row.observed&&row.deck_type&&row.label_source==='manual_similarity')deck.append(el('small','（相似度 '+(row.label_score??'—')+'）','muted'));tr.append(deck);
+  const deck=el('td');deck.append(row.observed?el('span',row.deck_type||'未命名','deck'+(row.deck_type?'':' unknown')):el('span','未采集','deck unknown'));if(row.observed&&row.deck_type&&row.label_source==='same_match_first_game')deck.append(el('small','（继承首局）','muted'));tr.append(deck);
   tr.append(el('td',time(row.recorded_at),'muted'));
   const action=el('td');const b=el('button','查看构筑','go');b.disabled=!row.observed;if(!row.observed)b.title='还没有有效对局';b.onclick=e=>{e.stopPropagation();openDetail(row)};action.append(b);tr.append(action);
   tr.onclick=()=>{if(row.observed)openDetail(row)};body.append(tr)}
@@ -67,7 +67,7 @@ function renderFields(items){const box=$('fieldBreakdown'),host=$('fieldRows');h
  for(const field of items.slice(0,12)){const chip=el('button',field.field+'×'+field.copies,'badge');chip.title='字段明细：\n'+(field.cards||[]).map(c=>c.name+'×'+c.copies).join('、');host.append(chip)}}
 async function openDetail(row){current=row;$('title').textContent=`#${row.rank==null?'排名暂缺':row.rank} ${row.player}`;$('meta').textContent='正在读取构筑…';$('cards').replaceChildren();$('fieldBreakdown').hidden=true;$('dialog').showModal();
  try{const d=await api('/statistics/api/deck-naming?player='+encodeURIComponent(row.player));current=Object.assign({},row,d);
-  $('title').textContent=`#${d.rank==null?'排名暂缺':d.rank} ${d.player}`;$('meta').textContent=`构筑 ${d.build?d.build.slice(0,12):'—'} · 采集 ${d.recorded_text||'—'} · 当前 ${d.deck_type||'未命名'}${d.label_source==='same_match_first_game'?'（继承同场首局）':''}${d.label_source==='manual_similarity'?'（相似度 '+(d.label_score??'—')+'）':''}`;
+  $('title').textContent=`#${d.rank==null?'排名暂缺':d.rank} ${d.player}`;$('meta').textContent=`构筑 ${d.build?d.build.slice(0,12):'—'} · 采集 ${d.recorded_text||'—'} · 当前 ${d.deck_type||'未命名'}${d.label_source==='same_match_first_game'?'（继承同场首局）':''}`;
   const cols=[section('主卡组',d.cards.main||[]),section('额外',d.cards.extra||[])];if((d.cards.side||[]).length)cols.push(section('Side',d.cards.side));const inferred=(d.inferred_side||{}).cards||[];if(inferred.length)cols.push(section((d.inferred_side||{}).fallback?'Side（推测，来自最近可推测对局）':'Side（推测，非直接记录）',inferred));$('cards').replaceChildren(...cols);
   renderFields(d.field_breakdown||[]);
   }catch(e){$('meta').textContent='读取失败：'+e.message}}

@@ -264,7 +264,7 @@ class NamingTests(unittest.TestCase):
         with self.assertRaises(series_naming.ConfigError):
             series_naming.build_registry(catalog({1: ['甲']}), config)
 
-    def test_plan_respects_manual_switch(self):
+    def test_plan_replaces_old_manual_and_rejects_manual_priority(self):
         db = sqlite3.connect(':memory:')
         db.row_factory = sqlite3.Row
         db.executescript('''
@@ -282,11 +282,15 @@ CREATE TABLE stat_build_cards(build TEXT,partition TEXT,code INTEGER,copies INTE
                                  builds=['b1'])['rows'][0]
         self.assertEqual(row['action'], 'create')
         self.assertEqual(row['name'], '系列甲')
-        config = series_naming.normalize_config(dict(override, respect_manual=True))
-        row = series_naming.plan(db, 1000.0, config, catalog(tags), {},
-                                 builds=['b1'])['rows'][0]
-        self.assertEqual(row['action'], 'skip')
-        self.assertEqual(row['reason'], 'manual')
+        with self.assertRaises(series_naming.ConfigError):
+            series_naming.normalize_config(dict(override, respect_manual=True))
+        config = series_naming.normalize_config(dict(override, require_main_complete=True))
+        db.execute("UPDATE stat_builds SET main_complete=0")
+        row = series_naming.plan(db, 1000.0, config, catalog(tags), {}, builds=['b1'])['rows'][0]
+        self.assertEqual(row['action'], 'clear')
+        self.assertEqual(row['reason'], 'main_incomplete')
+        with self.assertRaises(series_naming.ConfigError):
+            series_naming.normalize_config(dict(override, overwrite_reference=False))
         db.close()
 
     def test_config_rejects_unknown_keys(self):

@@ -123,7 +123,7 @@ def inherit_first_game_types(db,rows):
     needed_builds = {anchor.get('build') for anchor in first_labeled.values()}
     for row in rows:
         meta = metadata.get(row['digest'])
-        if meta and meta[1] > 1 and row.get('classification_source') != 'manual':
+        if meta and meta[1] > 1:
             if key(row) in first_labeled:
                 needed_builds.add(row.get('build'))
     cores = _core_signatures(db, needed_builds)
@@ -131,8 +131,6 @@ def inherit_first_game_types(db,rows):
         meta=metadata.get(row['digest'])
         if not meta or meta[1]<=1:continue
         row['observed_deck_type']=row['deck_type']
-        # 人工命名优先：换边后小局自己已经被手动命名过，就不能被首局标签覆盖。
-        if row.get('classification_source')=='manual':continue
         initial=first.get(key(row),[])
         anchor=initial[0]if len(initial)==1 else None
         # Side 换边不改变主卡+额外；核心不同或缺失说明不能安全继承。

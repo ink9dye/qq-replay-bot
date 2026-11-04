@@ -10,23 +10,11 @@ class ReviewTests(unittest.TestCase):
         C.CardStatisticsTests.setUp(self)
         self.store.replace_top100(T.roster(['甲','乙']),C.NOW)
 
-    def test_queue_is_latest_per_person_and_manual_type_links_unexpired_views(self):
-        full=query(self.store._db,self.replays,C.NOW,True)
-        item=next(i for i in full['items'] if any(p['player']=='甲' for p in i['people']))
-        before=tuple(self.store._db.execute('SELECT COUNT(*),SUM(expires_at) FROM stat_games').fetchone())
-        self.store._db.execute('BEGIN IMMEDIATE')
-        result=apply(self.store._db,self.replays,C.NOW,item['build'],item['signature'],'人工复核类型');self.store._db.commit()
-        self.assertGreater(result['affected_unexpired_views'],1)
-        rows=self.store._db.execute('SELECT deck_type,classification_source FROM stat_builds WHERE fingerprint=?',(item['build'],)).fetchone()
-        self.assertEqual(tuple(rows),('人工复核类型','manual'))
-        self.assertEqual(tuple(self.store._db.execute('SELECT COUNT(*),SUM(expires_at) FROM stat_games').fetchone()),before)
-        self.assertEqual(sum(len(i['people']) for i in query(self.store._db,self.replays,C.NOW,True)['items']),2)
-
-    def test_changed_classification_rejected_without_overwriting_other_editor(self):
-        item=query(self.store._db,self.replays,C.NOW,True)['items'][0]
-        self.store.classify_build(item['build'],'另一编辑者',['保护标签'],'manual')
-        with self.assertRaises(Conflict):apply(self.store._db,self.replays,C.NOW,item['build'],item['signature'],'过期表单')
-        self.assertEqual(self.store._db.execute('SELECT deck_type FROM stat_builds WHERE fingerprint=?',(item['build'],)).fetchone()[0],'另一编辑者')
+    def test_retired_manual_review_cannot_write_metadata(self):
+        before=[tuple(r) for r in self.store._db.execute('SELECT * FROM stat_builds ORDER BY fingerprint')]
+        with self.assertRaisesRegex(ValueError, 'manual_naming_removed'):
+            apply(self.store._db,self.replays,C.NOW,'build','signature','人工复核类型')
+        self.assertEqual([tuple(r) for r in self.store._db.execute('SELECT * FROM stat_builds ORDER BY fingerprint')],before)
 
     def test_dropout_expiry_and_private_origin_boundary(self):
         item=query(self.store._db,self.replays,C.NOW,True)['items'][0]

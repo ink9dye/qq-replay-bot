@@ -717,15 +717,14 @@ class BotService:
                     "WHERE v.player=? AND g.expires_at>? "
                     "ORDER BY g.recorded_at DESC LIMIT 1",
                     (player, float(self.clock()))).fetchone()
-                manual = db.execute("SELECT COALESCE(MAX(updated_at),0) FROM stat_manual_decks").fetchone()[0]
                 revision = db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
                 sessions = tuple(db.execute('SELECT f.digest,s.session_id,s.game_no FROM stat_files f '
                     'JOIN replay_sessions s ON s.replay_id=f.replay_id JOIN replays r ON r.id=f.replay_id '
                     'WHERE r.focus_player=? ORDER BY f.digest,s.session_id,s.game_no', (player,)))
                 exclusions = tuple(db.execute("SELECT digest,player FROM stat_exclusions WHERE player='' OR player=? ORDER BY digest,player", (player,)))
                 validity = (revision, sessions, exclusions)
-            return ((str(user_id), player, row[0], row[1], row[2], manual, validity)
-                    if row else (str(user_id), player, None, manual, validity))
+            return ((str(user_id), player, row[0], row[1], row[2], validity)
+                    if row else (str(user_id), player, None, validity))
         except sqlite3.Error:
             return (str(user_id), player, None)
 
@@ -1111,16 +1110,6 @@ class BotService:
             except (OSError, ValueError, TypeError, KeyError):
                 self.write_log(f'录像{identifier}的原子记录暂未同步，保留未知待核对')
         self._fact_signatures = {key:value for key,value in self._fact_signatures.items() if key in existing}
-        reference=self.root/'reference_decks.json'
-        override=self.data_dir/'classification-rules.json'
-        identity=self.data_dir/'card-equivalence.json'
-        marker=tuple((p.stat().st_mtime_ns,p.stat().st_size) if p.exists() else None for p in (reference,override,identity))
-        if reference.is_file() and (updated or marker!=self._classification_rules_signature):
-            try:
-                self.store.refresh_classifications(reference,override)
-                self._classification_rules_signature=marker
-            except (OSError,ValueError,TypeError,KeyError):
-                self.write_log('构筑分类规则暂不可用，保留已有分类和未知状态')
         series_reference=self.data_dir/'card-series-reference.json'
         series_config=self.data_dir/'series-naming.json'
         series_marker=tuple((p.stat().st_mtime_ns,p.stat().st_size) if p.exists() else None

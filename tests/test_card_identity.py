@@ -9,18 +9,12 @@ NOW=1800000000
 
 
 class CardIdentityTests(unittest.TestCase):
-    def test_classification_normalizes_art_and_rechecks_when_reference_changes_without_renewal(self):
-        reference=self.root/'references.json'
-        reference.write_text(json.dumps(dict(decks=[dict(label='测试构筑',main=[1,1,2],extra=[9],series=['验证系列'])])),encoding='utf-8')
+    def test_retired_reference_rules_cannot_write_labels_or_renew_facts(self):
         expires=self.store._db.execute('SELECT expires_at FROM stat_games').fetchone()[0]
-        self.store.refresh_classifications(reference)
-        before=self.store.current_top100_views(self.replays,NOW)['views'][0]
-        self.assertEqual(before['deck_type'],'测试构筑')
-        (self.root/'card-equivalence.json').write_text(json.dumps(dict(version=1,reference_version='exact-only',groups=[])),encoding='utf-8')
-        self.store.refresh_classifications(reference)
-        after=self.store.current_top100_views(self.replays,NOW)['views'][0]
-        self.assertIsNone(after['deck_type'])
-        self.assertEqual(self.store._db.execute('SELECT expires_at FROM stat_games').fetchone()[0],expires)
+        with self.assertRaisesRegex(RuntimeError, 'legacy_similarity_naming_removed'):
+            self.store.refresh_classifications(self.root/'references.json')
+        self.assertEqual(self.store._db.execute('SELECT expires_at FROM stat_games').fetchone()[0], expires)
+        self.assertIsNone(self.store._db.execute('SELECT deck_type FROM stat_builds LIMIT 1').fetchone()[0])
 
     def test_normal_monster_flavor_text_can_differ_but_token_restrictions_cannot(self):
         row=dict(name='同名卡',description='叙述甲',type=0x11,atk=1000,**{'def':1000},level=4,race=1,attribute=1,setcode=0)

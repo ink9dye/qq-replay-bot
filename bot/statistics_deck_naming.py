@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
-"""卡组命名后台：前100 / 前200 / 全部已采集 + 搜索，查看某人最新构筑、写入 manual 分类。
-
-只做三件事：读名单与最新构筑、读某个 build 的卡表、把一个 build 的卡组名写成 manual。
-不碰对局事实、不改保留期；系列标签在只改名时原样保留。
-前200名次用官方单人接口按需核验（有界等待、失败按未知处理），未知名次不冒充前200。
-"""
+"""按统一字段命名查看名单、最新构筑与命名依据；旧人工写入口已停用。"""
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
@@ -45,9 +40,9 @@ def _latest_views(db, now, replay_root=None, only=None):
         'FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
         'JOIN stat_builds b ON b.fingerprint=v.build WHERE g.expires_at>?' + player_clause, params)]
     inherit_first_game_types(db, all_rows)
-    effective = {row['digest']: row for row in all_rows}
+    effective = {(row['player'], row['digest']): row for row in all_rows}
     for view in views.values():
-        row = effective.get(view['digest'])
+        row = effective.get((view['player'], view['digest']))
         if row and not view['deck_type'] and row['deck_type']:
             view['deck_type'] = row['deck_type']
             view['classification_status'] = row.get('classification_status') or view['classification_status']
@@ -331,24 +326,6 @@ def detail(db, data_dir, now, player, replay_root=None):
                 field_breakdown=field_breakdown)
 
 
-def apply_name(db, build, deck, player=None):
-    """把一个 build 的卡组名写成 manual；返回旧名、是否变化、系列与修订号。"""
-    if not isinstance(build, str) or len(build) != 64 or any(c not in '0123456789abcdef' for c in build):
-        raise ValueError('invalid_build')
-    if not isinstance(deck, str) or not deck.strip() or len(deck.strip()) > 120:
-        raise ValueError('invalid_deck')
-    label = deck.strip()
-    row = db.execute('SELECT deck_type,classification_version FROM stat_builds WHERE fingerprint=?',
-                     (build,)).fetchone()
-    if row is None:
-        raise LookupError('build_missing')
-    series = [r[0] for r in db.execute(
-        'SELECT series FROM stat_build_series WHERE build=? ORDER BY series', (build,))]
-    version = row['classification_version'] or 'manual'
-    from .build_classification import assign
-    changed = assign(db, build, label, series, version, source='manual')
-    revision = db.execute('SELECT revision FROM stat_classification_state').fetchone()[0]
-    from .statistics_deck_labels import remember
-    remember(db, build, label)
-    return dict(changed=bool(changed), old=row['deck_type'], deck=label,
-                build=build, series=series, revision=revision)
+def apply_name(*args, **kwargs):
+    """旧入口只保留明确拒绝，不能再写入人工命名。"""
+    raise ValueError('manual_naming_removed')
