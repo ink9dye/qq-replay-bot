@@ -164,15 +164,15 @@ def main():
                     if time.time() - float(status.get('updated_at') or 0) > 180:
                         continue
                     from .side_inference import run as side_run
-                    if server.portal._query_compute_lock.acquire(blocking=False):
-                        try:side_run(args.root, limit=20)
-                        finally:server.portal._query_compute_lock.release()
+                    # A complete batch can take minutes; the service CPU quota
+                    # bounds its load without blocking interactive query locks.
+                    side_run(args.root, limit=20)
                 except Exception:
                     pass
 
         threading.Thread(target=_side_loop, daemon=True).start()
         from .draw_analysis_worker import start_worker
-        analysis_stop=start_worker(args.root,compute_lock=server.portal._query_compute_lock)
+        analysis_stop=start_worker(args.root)
         try:server.serve_forever()
         finally:
             analysis_stop.set()
