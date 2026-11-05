@@ -146,13 +146,10 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
     deck_query = (deck_query or '').strip()
     if len(query) > 128 or len(deck_query) > 128:
         raise ValueError('搜索词过长。')
-    import os
     db_path = db.execute('PRAGMA database_list').fetchone()[2] or ''
     try:
-        # WAL 模式下主库 mtime 可能滞后，-wal 也要算进来。
-        stamp = tuple(os.stat(path).st_mtime_ns if os.path.exists(path) else 0
-                      for path in (db_path, db_path + '-wal',
-                                   str(__import__('pathlib').Path(db_path).parent / 'watch-upload-sessions.sqlite3')))
+        from .statistics_roster_version import snapshot_version
+        stamp = snapshot_version(db_path)
     except OSError:
         stamp = (0, 0)
     try:
@@ -226,7 +223,7 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
     rows.sort(key=lambda r: (r['rank'] is None, r['rank'] or 0, r['player']))
     total = len(rows)
     rows = rows[:MAX_ROWS]
-    result = dict(version=2, scope='search' if searched else scope, query=query, deck_query=deck_query, total=total,
+    result = dict(version=2, generated_at=float(now), scope='search' if searched else scope, query=query, deck_query=deck_query, total=total,
                   shown=len(rows), truncated=total > len(rows),
                   observed=sum(1 for r in rows if r['observed']),
                   recognized=sum(1 for r in rows if r['deck_type']),

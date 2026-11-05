@@ -41,11 +41,14 @@ def population(db, replay_root, now, player=None, allowed_digests=None, resolve_
     basis=eligible_views(db,replay_root,now,player=player,check_files=False)
     if allowed_digests is not None:basis['views']=[r for r in basis['views'] if r['digest'] in allowed_digests]
     from .statistics_population import latest_views
-    latest=latest_views(basis)
+    # Naming uses trimmed display/lookup keys, while SQL and evidence keep the
+    # original player spelling. Apply the same boundary normalization here.
+    latest={name.strip():row for name,row in latest_views(basis).items()}
     metadata=identity_metadata(db,{r['digest'] for r in latest.values()})
     people=[]
     for member in basis['roster']['members']:
-        row=latest.get(member['player']);person=dict(player=member['player'],rank=member['rank'],points=member['points'],observed=False)
+        name=member['player'].strip()
+        row=latest.get(name);person=dict(player=name,rank=member['rank'],points=member['points'],observed=False)
         if row:
             meta=metadata.get(row['digest'])
             person.update(observed=True,deck_type=row['deck_type'],classification_status=row['classification_status'],
@@ -53,6 +56,7 @@ def population(db, replay_root, now, player=None, allowed_digests=None, resolve_
                 series=row['series'],series_status=row['series_status'],recorded_at=row['recorded_at'],expires_at=row['expires_at'],
                 observation_kind='confirmed_first_game' if meta and meta[1:]==(1,True) else 'post_side' if meta and meta[1]>1 else 'initial_status_unknown')
         people.append(person)
+    if player is not None:player=player.strip()
     if player is not None and player not in {p['player'] for p in people} and player in latest:
         row=latest[player];meta=metadata.get(row['digest'])
         people.append(dict(player=player,rank=None,points=None,observed=True,deck_type=row['deck_type'],
@@ -71,7 +75,7 @@ def search_players(db,replay_root,now,text):
     result=[]
     for name in sorted(names)[:30]:
         _,latest,people=population(db,replay_root,now,name,resolve_rank=False)
-        person=next((p for p in people if p['player']==name),dict(player=name,rank=None,points=None,observed=False))
+        person=next((p for p in people if p['player']==name.strip()),dict(player=name.strip(),rank=None,points=None,observed=False))
         result.append(person)
     resolve_ranks(db,result,now)
     return dict(people=result,limited=len(names)>30)
@@ -104,6 +108,7 @@ def deck_images(db, names):
 def query(db, replay_root, now, player=None):
     basis,latest,people=population(db,replay_root,now)
     if player is not None:
+        player=player.strip()
         row=latest.get(player)
         if row is None:return None
         cards=[dict(r) for r in db.execute('SELECT partition,code,copies FROM stat_build_cards WHERE build=? ORDER BY partition,code',(row['build'],))]

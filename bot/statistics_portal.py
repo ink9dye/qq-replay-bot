@@ -584,13 +584,19 @@ class StatisticsPortal:
 
     def _query_cache_hit(self,key,ttl,stamp_seconds):
         try:
-            stamp=int(self.database.stat().st_mtime_ns//(stamp_seconds*1_000_000_000))
+            stamp=self._query_cache_stamp(key,stamp_seconds)
         except OSError:return None
         with self._query_cache_lock:
             hit=self._query_cache.get(key)
             if hit and hit[0]==stamp and time.monotonic()-hit[1]<=ttl:
                 return hit[2]
         return None
+
+    def _query_cache_stamp(self,key,stamp_seconds):
+        if key == ('roster',):
+            from .statistics_roster_version import snapshot_version
+            return snapshot_version(self.database)
+        return int(self.database.stat().st_mtime_ns//(stamp_seconds*1_000_000_000))
 
     def _cached_query_reply_locked(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
         """相同条件 + 相同数据库文件版本时复用完整响应；DB 一写就失效。
@@ -604,10 +610,9 @@ class StatisticsPortal:
             except OSError:hit=None
             if hit is not None:return hit
         try:
-            stat=self.database.stat()
             # 观战进程会持续写库，按文件 mtime 精确比对会让缓存永远失效；
             # 用 30 秒粒度做数据版本，最多容忍半分钟旧数据。
-            stamp=int(stat.st_mtime_ns//(stamp_seconds*1_000_000_000))
+            stamp=self._query_cache_stamp(key,stamp_seconds)
         except OSError:
             return self._query_reply(callback)
         now=time.monotonic()
