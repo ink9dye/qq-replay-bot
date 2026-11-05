@@ -19,7 +19,7 @@ QUERY_WAIT_SECONDS=8.0
 QUERY_CACHE_MAX_BYTES = 8 * 1024 * 1024
 CACHED_API_PATHS=frozenset('/statistics/api/'+name for name in (
     'recordings','deck-naming/groups','card-table','cards-extra','card-combo',
-    'card-report','roster','build'))
+    'card-report','roster','build','matrix'))
 
 
 def owner_secret(path):
@@ -443,7 +443,7 @@ class StatisticsPortal:
                 if order not in ('all','first','second'):raise ValueError()
                 ranges=parse_ranges(args)
             except (ValueError,TypeError):return self._reply(400,'矩阵筛选条件无效。')
-            return self._query_reply(lambda db:scoped_query(ranges,lambda:matrix(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1')))
+            return self._cached_query_reply(('matrix',parsed.query),lambda db:scoped_query(ranges,lambda:matrix(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1')),ttl=30.0)
         if parts==['statistics','api','matrix-cell']:
             from .statistics_matrix_cell import query as matrix_cell
             from .statistics_rank_scope import parse_ranges,scoped_query
@@ -565,7 +565,7 @@ class StatisticsPortal:
         return self._roster_reply(force=getattr(self,'_refresh',None) is None, background=True)
 
     def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False,background=False):
-        if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings'):
+        if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings','matrix','cards-extra'):
             from urllib.parse import parse_qs,urlencode
             if len(key)>1:key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
             from .statistics_roster_version import snapshot_version

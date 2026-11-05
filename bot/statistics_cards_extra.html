@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
+<meta charset="utf-8"><script src="/statistics/assets/statistics_refresh.js?v=20261106"></script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>额外卡统计 · 前100观察</title>
 <style>
@@ -100,6 +100,7 @@ async function loadDeckChoices(){
 }
 for(const id of ['deck','opdeck'])$(id).addEventListener('focus',()=>{if($(id).dataset.candidateError)loadDeckChoices()});
 loadDeckChoices();
+window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='cards-extra')run()});
 $('run').onclick=run;
 run();
 </script>

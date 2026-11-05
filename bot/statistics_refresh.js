@@ -2,8 +2,8 @@
 (function () {
   'use strict';
   const native = window.fetch.bind(window), limitMs = 600000;
-  let generation = 0;
-  const fingerprint = () => [...document.querySelectorAll('input,select')].map(n => ['checkbox','radio'].includes(n.type) ? n.checked : n.value).join('\u0001');
+  let generation = 0, formGeneration = 0;
+  for (const event of ['input','change','reset']) document.addEventListener(event, () => { formGeneration++; }, true);
   function notice(text) {
     let n = document.getElementById('statistics-refresh-note');
     if (!n) {
@@ -22,10 +22,10 @@
   window.fetch = async function(input, options) {
     const raw = typeof input === 'string' ? input : input.url;
     const url = new URL(raw, location.href), kind = url.pathname.split('/').pop();
-    if (url.origin !== location.origin || !['roster','recordings','card-report'].includes(kind)) return native(input, options);
+    if (url.origin !== location.origin || !['roster','recordings','card-report','matrix','cards-extra'].includes(kind)) return native(input, options);
     const signal = (options && options.signal) || (input && input.signal);
-    const current = ++generation, form = fingerprint(), deadline = Date.now() + limitMs;
-    const valid = () => current === generation && form === fingerprint() && !(signal && signal.aborted);
+    const current = ++generation, form = formGeneration, deadline = Date.now() + limitMs;
+    const valid = () => current === generation && form === formGeneration && !(signal && signal.aborted);
     for (let attempt = 0;; attempt++) {
       if (!valid()) throw new DOMException('条件已变，请重新查询','AbortError');
       const response = await native(input, options);
