@@ -220,6 +220,15 @@ if (presetButton) {
       : `手坑单卡及四组组合已加入，点“查询”查看。`;
   });
 }
+const excludePresetButton = $('exclude-handtrap-preset');
+if (excludePresetButton) {
+  excludePresetButton.addEventListener('click', () => {
+    for (const card of HAND_TRAP_PRESET) excludes.add(card);
+  });
+}
+const excludeClearButton = $('exclude-clear');
+if (excludeClearButton) excludeClearButton.addEventListener('click', () => excludes.reset());
+
 const BOARD_BREAKER_PRESET = [
   { code: 101307067, name: '决斗者之力' },
   { code: 24203749, name: '天下独步之大义贼' },
