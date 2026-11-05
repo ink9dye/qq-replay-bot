@@ -9,8 +9,8 @@ from pathlib import Path
 
 MAX_KEYS = 16
 MAX_BYTES = 8 * 1024 * 1024
-MAX_AGE = 180
-COOLDOWN = 5
+MAX_AGE = 1800
+COOLDOWN = 30
 
 
 class QueryRefresh:
@@ -19,6 +19,7 @@ class QueryRefresh:
         self.log=Path(database).parent/'logs'/'statistics-query-timings.jsonl'
         self.lock=threading.Lock();self.items=OrderedDict();self.pending={};self.errors=OrderedDict()
         self.jobs=queue.Queue(maxsize=8)
+        self.durations=OrderedDict()
         threading.Thread(target=self._worker,name='statistics-refresh',daemon=True).start()
 
     def _path(self,key):
@@ -42,14 +43,14 @@ class QueryRefresh:
             self.items.popitem(last=False)
 
     @staticmethod
-    def _present(item,state):
+    def _present(item,state,refreshing=None):
         status,kind,body,headers=item['result']
         payload=json.loads(body)
-        payload['_query_refresh']=dict(state=state,saved_at=item['saved'],refreshing=state=='refreshing')
+        payload['_query_refresh']=dict(state=state,saved_at=item['saved'],refreshing=(state=='refreshing' if refreshing is None else refreshing))
         extra=dict(headers,**{'X-Statistics-State':state,'X-Statistics-Saved-At':str(item['saved'])})
         return status,kind,json.dumps(payload,ensure_ascii=False).encode('utf8'),extra
 
-    def get(self,key,compute,version,ttl,wait=1.0):
+    def get(self,key,compute,version,ttl,wait=1.0,background=False):
         try:stamp=version()
         except OSError:stamp=None
         now=time.time()
@@ -60,27 +61,39 @@ class QueryRefresh:
                 if item:self._remember(key,item)
             age=now-item['saved'] if item else MAX_AGE+1
             if item and 0<=age<=ttl and stamp is not None and item['stamp']==stamp:
+                self.items.move_to_end(key)
                 return self._present(item,'fresh')
             event=self.pending.get(key)
-            if event is None and (item is None or age>=COOLDOWN):
+            error=self.errors.get(key)
+            # A WAL heartbeat must not trigger a full recompute every few seconds.
+            # A result outside its exact version is always explicitly stale.
+            duration=self.durations.get(key,0)
+            minimum=max(300 if key[0]=='roster' else 30,min(300,duration*2))
+            if background:minimum=max(minimum,ttl,duration*3)
+            retry_blocked=error and now-error[0]<COOLDOWN
+            spare=not background or (not self.pending and self.jobs.empty())
+            if event is None and (item is None or age>=minimum) and not retry_blocked and spare:
                 event=threading.Event()
                 try:
                     self.jobs.put_nowait((key,compute,version,event));self.pending[key]=event
                 except queue.Full:event=None
             if item and 0<=age<=MAX_AGE:
-                return self._present(item,'refreshing')
-            error=self.errors.get(key)
-            if error and now-error[0]<COOLDOWN:return error[1]
-        if event:
+                self.items.move_to_end(key)
+                return self._present(item,'refreshing' if event else 'stale')
+            if retry_blocked:return error[1]
+        if event and not background:
             event.wait(wait)
+            try:stamp=version()
+            except OSError:stamp=None
             with self.lock:
                 item=self.items.get(key)
                 if item and 0<=time.time()-item['saved']<=MAX_AGE:
-                    return self._present(item,'fresh' if key not in self.pending and item['stamp']==stamp else 'refreshing')
+                    state='fresh' if key not in self.pending and stamp is not None and item['stamp']==stamp else 'stale'
+                    return self._present(item,state,refreshing=key in self.pending)
                 error=self.errors.get(key)
                 if error:return error[1]
         return 503,'application/json; charset=utf-8',json.dumps(dict(
-            error='正在准备统计结果，请稍候。',code='query_busy',retry_after=3),ensure_ascii=False).encode(),{'Retry-After':'3'}
+            error='正在准备统计结果，请稍候。',code='query_busy',retry_after=5),ensure_ascii=False).encode(),{'Retry-After':'5'}
 
     def _persist(self,key,item):
         try:
@@ -94,7 +107,7 @@ class QueryRefresh:
             total=0
             for i,p in enumerate(paths):
                 total+=p.stat().st_size
-                if i>=MAX_KEYS or total>MAX_BYTES:p.unlink(missing_ok=True)
+                if i>=MAX_KEYS or total>MAX_BYTES or time.time()-p.stat().st_mtime>MAX_AGE:p.unlink(missing_ok=True)
         except OSError:pass
 
     def _worker(self):
@@ -117,6 +130,9 @@ class QueryRefresh:
             finally:
                 with self.lock:
                     self.pending.pop(key,None)
+                    self.durations[key]=time.monotonic()-started
+                    self.durations.move_to_end(key)
+                    while len(self.durations)>MAX_KEYS:self.durations.popitem(last=False)
                     if status==200:self.errors.pop(key,None)
                     while len(self.errors)>MAX_KEYS:self.errors.popitem(last=False)
                 event.set()

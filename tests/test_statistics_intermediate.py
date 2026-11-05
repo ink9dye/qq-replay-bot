@@ -162,9 +162,9 @@ class ReportIntegrationTests(unittest.TestCase):
         fixture=fixture_module.CardStatisticsTests();fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         original=cache.raw_tables;calls=[]
-        def trace(db,loader):
+        def trace(db,loader,**kwargs):
             def load():calls.append(True);return loader()
-            return original(db,load)
+            return original(db,load,**kwargs)
         with patch.object(cache,'raw_tables',trace):
             first=query(fixture.store._db,fixture.replays,fixture_module.NOW,codes=[1,2],metric='opening',threshold='0',combos=['1,2'])
             second=query(fixture.store._db,fixture.replays,fixture_module.NOW,codes=[1,2],metric='opening',threshold='0',combos=['1,2'])

@@ -54,21 +54,26 @@ def query(db, replay_root, now, filters=None, phases=(), phase_none=False, limit
         for code in build_codes.get(row['build'], ()):
             carried.setdefault(code, set()).add(key)
 
-    # 只扫额外分区；命中的视角用 carried 精确过滤（与按 selected 连接结果一致），
+    # 只读取当前候选小局的额外分区；命中的视角用 carried 精确过滤（与按 selected 连接结果一致），
     # 不再逐行回表探测临时表——原做法在 8 局在录时占额外卡查询 17 秒里的大部分。
     appeared = {}
     used = {}
-    for fact in db.execute(
-            'SELECT code,digest,player,MAX(appeared) appeared,MAX(used) used '
-            'FROM stat_card_facts WHERE partition=\'extra\' GROUP BY code,digest,player'):
-        key = (fact['digest'], fact['player'])
-        group = canonical(int(fact['code']))
-        if group not in carried or key not in carried[group]:
-            continue
-        if fact['appeared'] == 1:
-            appeared.setdefault(group, set()).add(key)
-        if fact['used'] == 1:
-            used.setdefault(group, set()).add(key)
+    digests = sorted({row['digest'] for row in selected})
+    for start in range(0, len(digests), 200):
+        chunk = digests[start:start + 200]
+        marks = ','.join('?' for _ in chunk)
+        for fact in db.execute(
+                'SELECT code,digest,player,MAX(appeared) appeared,MAX(used) used '
+                "FROM stat_card_facts WHERE partition='extra' AND digest IN (" + marks + ') '
+                'GROUP BY code,digest,player', chunk):
+            key = (fact['digest'], fact['player'])
+            group = canonical(int(fact['code']))
+            if group not in carried or key not in carried[group]:
+                continue
+            if fact['appeared'] == 1:
+                appeared.setdefault(group, set()).add(key)
+            if fact['used'] == 1:
+                used.setdefault(group, set()).add(key)
 
     rows = []
     names = card_index(replay_root.parent)

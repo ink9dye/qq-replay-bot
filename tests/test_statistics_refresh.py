@@ -29,7 +29,7 @@ class RefreshTests(unittest.TestCase):
 
     def test_old_result_is_fast_marked_and_never_crosses_conditions(self):
         self.cache.get(('recordings','player=A'),lambda:reply({'player':'A'}),lambda:1,30)
-        with self.cache.lock:self.cache.items[('recordings','player=A')]['saved']-=6
+        with self.cache.lock:self.cache.items[('recordings','player=A')]['saved']-=36
         release=threading.Event();self.addCleanup(release.set)
         def compute():release.wait(2);return reply({'player':'A','new':True})
         started=time.monotonic()
@@ -45,7 +45,7 @@ class RefreshTests(unittest.TestCase):
         other=QueryRefresh(self.database);self.addCleanup(other.jobs.join)
         result=other.get(('card-report',''),lambda:reply({'rows':[2]}),lambda:1,10,wait=0)
         self.assertEqual(json.loads(result[2])['rows'],[1])
-        self.assertEqual(result[3]['X-Statistics-State'],'refreshing')
+        self.assertEqual(result[3]['X-Statistics-State'],'stale')
 
     def test_old_snapshot_expires_and_queue_is_bounded(self):
         release=threading.Event();self.addCleanup(release.set)
@@ -55,7 +55,7 @@ class RefreshTests(unittest.TestCase):
         self.assertLessEqual(self.cache.jobs.qsize(),8)
         release.set();self.cache.jobs.join()
         with self.cache.lock:
-            self.cache.items[('recordings','0')]['saved']-=181
+            self.cache.items[('recordings','0')]['saved']-=1801
         with patch.object(self.cache,'_read',return_value=None):
             self.assertEqual(self.cache.get(('recordings','0'),compute,lambda:2,10,wait=0)[0],503)
 
@@ -87,3 +87,47 @@ class RefreshTests(unittest.TestCase):
             result=filters.snapshot(None,'.',0,annotate_series=False,with_facts=False)
             load.assert_not_called()
             self.assertEqual(result[-1](99),9);load.assert_called_once()
+
+
+class RefreshPressureTests(unittest.TestCase):
+    setUp = RefreshTests.setUp
+    def test_continuous_version_changes_keep_explicit_stale_without_rebuilding(self):
+        calls=[]
+        def compute():calls.append(1);return reply({'value':1})
+        self.cache.get(('card-report','q'),compute,lambda:1,10)
+        self.cache.jobs.join()
+        for version in range(2,20):
+            response=self.cache.get(('card-report','q'),compute,lambda:version,10,wait=0)
+            self.assertEqual(response[3]['X-Statistics-State'],'stale')
+        self.assertEqual(len(calls),1)
+
+    def test_keepwarm_yields_to_requested_work_and_slow_roster(self):
+        self.cache.get(('roster',),lambda:reply({'ok':1}),lambda:1,300)
+        self.cache.jobs.join()
+        with self.cache.lock:
+            self.cache.items[('roster',)]['saved']-=301
+            self.cache.durations[('roster',)]=200
+        calls=[]
+        self.cache.get(('roster',),lambda:calls.append(1) or reply({}),lambda:2,300,wait=0,background=True)
+        self.assertFalse(calls)
+        entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
+        def slow():entered.set();release.wait(2);return reply({})
+        self.cache.get(('card-report','busy'),slow,lambda:1,10,wait=0)
+        self.assertTrue(entered.wait(1))
+        self.cache.get(('roster',),lambda:calls.append(1) or reply({}),lambda:2,300,wait=0,background=True)
+        self.assertNotIn(('roster',),self.cache.pending)
+        release.set()
+
+    def test_failed_key_has_backoff_without_requeue_storm(self):
+        calls=[]
+        def failure():calls.append(1);raise ValueError('bad')
+        self.cache.get(('card-report','invalid'),failure,lambda:1,10)
+        self.cache.jobs.join()
+        for _ in range(10):self.assertEqual(self.cache.get(('card-report','invalid'),failure,lambda:2,10)[0],400)
+        self.assertEqual(calls,[1])
+
+    def test_write_during_compute_never_claims_fresh(self):
+        version=[1]
+        def compute():version[0]=2;return reply({'ok':1})
+        response=self.cache.get(('card-report','q'),compute,lambda:version[0],10)
+        self.assertEqual(response[3]['X-Statistics-State'],'stale')

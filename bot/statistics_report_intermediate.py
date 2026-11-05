@@ -16,7 +16,7 @@ MAX_AGE = 300
 MIN_FREE = 2 * 1024 * 1024 * 1024
 
 
-def _identity(db):
+def _identity(db, projection=None):
     database = db.execute('PRAGMA database_list').fetchone()[2]
     if not database:
         return None
@@ -29,7 +29,7 @@ def _identity(db):
     if len(versions) != len({row[0] for row in keys}):
         return None  # old or not yet versioned facts are never persisted
     builds = [r[0] for r in db.execute('SELECT build FROM _report_builds ORDER BY build')]
-    raw = json.dumps([1,keys,versions,builds],separators=(',',':')).encode()
+    raw = json.dumps([2,keys,versions,builds,projection],separators=(',',':')).encode()
     return Path(database).parent/'query-cache/card-report.sqlite3', hashlib.sha256(raw).hexdigest()
 
 
@@ -72,10 +72,10 @@ def _put(path, key, value, now):
                 cache.execute('DELETE FROM entries WHERE key=?',(entry,))
 
 
-def raw_tables(db, loader):
+def raw_tables(db, loader, projection=None):
     identity=None
     try:
-        identity=_identity(db)
+        identity=_identity(db, projection)
         if identity:
             value=_get(*identity,time.time())
             if value is not None:return value

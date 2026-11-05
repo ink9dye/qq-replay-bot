@@ -555,22 +555,22 @@ class StatisticsPortal:
             except Exception:
                 pass
 
-    def _roster_reply(self, force=False):
+    def _roster_reply(self, force=False, background=False):
         """榜首查询的唯一入口：route 与后台保活共用，保证缓存键一致。"""
         from .statistics_dashboard import query
-        return self._cached_query_reply(('roster',), lambda db:query(db,self.replay_root,float(self.clock()),None), ttl=300.0, stamp_seconds=86400, force=force)
+        return self._cached_query_reply(('roster',), lambda db:query(db,self.replay_root,float(self.clock()),None), ttl=300.0, stamp_seconds=86400, force=force, background=background)
 
     def keep_roster_warm(self):
-        """后台保活：缓存命中不会续期，必须强制重算才能填上 300 秒过期空档。"""
-        return self._roster_reply(force=getattr(self,'_refresh',None) is None)
+        """后台保活让位于已请求的任务；按结果年龄与上次耗时退避。"""
+        return self._roster_reply(force=getattr(self,'_refresh',None) is None, background=True)
 
-    def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
+    def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False,background=False):
         if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings'):
             from urllib.parse import parse_qs,urlencode
             if len(key)>1:key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
             from .statistics_roster_version import snapshot_version
             return self._refresh.get(key,lambda:self._cached_query_reply_sync(
-                key,callback,ttl,stamp_seconds,force),lambda:snapshot_version(self.database),ttl)
+                key,callback,ttl,stamp_seconds,force),lambda:snapshot_version(self.database),ttl,background=background)
         return self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
 
     def _cached_query_reply_sync(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):

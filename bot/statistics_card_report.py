@@ -307,17 +307,28 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
 
     idents = {code: identify(code) for code in targets}
     parts = {code: _partition_for(code, names, wanted_partition) for code in targets}
+    # Narrow requests need only their canonical/alternate cards, including combos.
+    # Full-table requests keep every code. The projection is part of the raw key.
+    needed_codes = None if not (codes or combos) else sorted({
+        member for code in (*codes, *(c for combo in combos for c in combo))
+        for member in identify(code)['codes']})
+    fact_fields = ('code','digest','player','partition','drawn','used','used_after_draw',
+                   'appeared','draw_count','initial_count','use_count','appearance_count')
+    def fact_dict(row):
+        return row if isinstance(row, dict) else dict(zip(fact_fields, row))
     def read_raw_tables():
+        projection = (' AND code IN (' + ','.join('?' for _ in needed_codes) + ')') if needed_codes else ''
+        args = needed_codes or ()
         return dict(copies=[tuple(row) for row in db.execute(
             'SELECT build,partition,code,SUM(copies) copies FROM stat_build_cards '
-            'WHERE build IN (SELECT build FROM _report_builds) GROUP BY build,partition,code')],
-            facts=[dict(row) for row in db.execute(
-            'SELECT f.code,f.digest,f.player,f.partition,f.drawn,f.used,f.used_after_draw,f.appeared,'
-            'f.draw_count,f.initial_count,f.use_count,f.appearance_count '
-            'FROM stat_card_facts f WHERE (f.digest,f.player) IN '
-            '(SELECT digest,player FROM _report_selected)')])
+            'WHERE build IN (SELECT build FROM _report_builds)' + projection +
+            ' GROUP BY build,partition,code', args)],
+            facts=[tuple(row) for row in db.execute(
+            'SELECT ' + ','.join('f.' + field for field in fact_fields) +
+            ' FROM stat_card_facts f WHERE (f.digest,f.player) IN '
+            '(SELECT digest,player FROM _report_selected)' + projection, args)])
     from .statistics_report_intermediate import raw_tables
-    raw = raw_tables(db, read_raw_tables)
+    raw = raw_tables(db, read_raw_tables, projection=needed_codes)
     copies_lookup = {}
     for build, part, code, count in raw.pop('copies'):
         copies_lookup.setdefault((code, part), {})[build] = count
@@ -327,7 +338,8 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     # 本次 selected 的 facts 一次查回，按 (code,partition) 聚合；不再逐卡调用 card_identity.facts。
     facts_by_code = {}
     for fact in raw['facts']:
-        facts_by_code.setdefault((fact['code'], fact['partition']), []).append(fact)
+        key = (fact['code'], fact['partition']) if isinstance(fact, dict) else (fact[0], fact[3])
+        facts_by_code.setdefault(key, []).append(fact)
     del raw
     view_by_key = {(row['digest'], row['player']): row for row in selected}
     fact_cache = {}
@@ -337,10 +349,11 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
         part = parts[code]
         card_rows = []
         for canonical in ident['codes']:
-            normal = facts_by_code.get((canonical, part), ())
+            normal = [fact_dict(r) for r in facts_by_code.get((canonical, part), ())]
             card_rows.extend(normal)
             own = {(r['digest'], r['player']) for r in normal}
-            for r in facts_by_code.get((canonical, 'other'), ()):
+            for raw_fact in facts_by_code.get((canonical, 'other'), ()):
+                r = fact_dict(raw_fact)
                 view = view_by_key.get((r['digest'], r['player']))
                 if view is None or view['build'] not in copies_lookup.get((canonical, part), {}):
                     continue
@@ -408,7 +421,8 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
             group_builds.append(build_copies)
             values = {}
             for member in members:
-                for fact in facts_by_code.get((member, 'main'), ()):
+                for raw_fact in facts_by_code.get((member, 'main'), ()):
+                    fact = fact_dict(raw_fact)
                     if fact.get('initial_count') is None:
                         continue
                     key = (fact['digest'], fact['player'])
