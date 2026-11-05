@@ -612,7 +612,7 @@ class StatisticsPortal:
         return None
 
     def _query_cache_stamp(self,key,stamp_seconds):
-        if key == ('roster',):
+        if key and key[0] in ('roster','matrix'):
             from .statistics_roster_version import snapshot_version
             return snapshot_version(self.database)
         return int(self.database.stat().st_mtime_ns//(stamp_seconds*1_000_000_000))
