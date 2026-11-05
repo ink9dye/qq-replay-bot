@@ -57,6 +57,7 @@ class TaskOwners:
                             'state TEXT NOT NULL,expires REAL NOT NULL,updated REAL NOT NULL);'
                             'CREATE INDEX IF NOT EXISTS owners_updated ON owners(updated);'
                             'CREATE INDEX IF NOT EXISTS owners_expires ON owners(state,expires);')
+            db.execute('CREATE INDEX IF NOT EXISTS owners_state_job ON owners(state,job)')
         os.chmod(self.path, 0o600)
 
     @contextmanager

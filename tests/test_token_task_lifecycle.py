@@ -201,5 +201,17 @@ class LifecycleTests(unittest.TestCase):
         _,error=child.communicate(timeout=4)
         self.assertEqual(child.returncode,0,error.decode(errors='replace'));self.assertTrue(done.exists())
 
+    def test_expired_generation_releases_without_reconnect_other_slot_keeps_capacity(self):
+        old=self.qq.issue('phone','owner',hours=1)
+        old_auth=dict(self.store.verify(old['token']),generation='device:'+str(self.store.verify(old['token'])['id']))
+        other=self.qq.issue('phone-2','owner',hours=2)
+        other_auth=dict(self.store.verify(other['token']),generation='device:'+str(self.store.verify(other['token'])['id']))
+        self.claim(old_auth);self.claim(other_auth)
+        self.store.clock=lambda:time.time()+3601
+        self.life.reconcile()
+        snapshot=self.api.jobs.snapshot()
+        self.assertEqual(snapshot['workers']['phone']['active'],0)
+        self.assertEqual(snapshot['workers']['phone-2']['active'],1)
+
 
 if __name__=='__main__':unittest.main()

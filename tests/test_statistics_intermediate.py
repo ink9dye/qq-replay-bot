@@ -80,6 +80,29 @@ class IntermediateTests(unittest.TestCase):
         (self.root/'card-equivalence.json').write_text('{}')
         self.assertNotEqual(identity,cache.response_identity(self.root/'bot.sqlite3',key))
 
+    def test_file_hard_limit_accounts_for_nondefault_page_size(self):
+        self.disk.parent.mkdir()
+        db=sqlite3.connect(str(self.disk));db.execute('PRAGMA page_size=8192')
+        db.execute('CREATE TABLE entries(key TEXT PRIMARY KEY,created REAL NOT NULL,payload BLOB NOT NULL)')
+        db.commit();db.close()
+        original_connect=sqlite3.connect;observed_limits=[]
+        class ObservedConnection(sqlite3.Connection):
+            def close(connection):
+                observed_limits.append(connection.execute('PRAGMA max_page_count').fetchone()[0]*
+                                       connection.execute('PRAGMA page_size').fetchone()[0])
+                super().close()
+        def connect(*args,**kwargs):
+            if not kwargs.get('uri') and str(args[0])==str(self.disk):kwargs['factory']=ObservedConnection
+            return original_connect(*args,**kwargs)
+        with patch.object(cache.sqlite3,'connect',side_effect=connect):cache.raw_tables(self.db,self.loader)
+        self.assertTrue(observed_limits)
+        self.assertTrue(all(size<=96*1024*1024 for size in observed_limits))
+        db=sqlite3.connect(str(self.disk))
+        page_size=db.execute('PRAGMA page_size').fetchone()[0]
+        # max_page_count is per-connection; also verify continued cache reuse.
+        self.assertEqual(page_size,8192);self.assertLessEqual(self.disk.stat().st_size,96*1024*1024)
+        db.close();cache.raw_tables(self.db,self.loader);self.assertEqual(self.called,1)
+
 
 class ReportIntegrationTests(unittest.TestCase):
     def test_report_cold_hot_identical_and_raw_sql_reused(self):

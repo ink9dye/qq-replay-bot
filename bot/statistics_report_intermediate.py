@@ -57,7 +57,8 @@ def _put(path, key, value, now):
     path.parent.mkdir(parents=True,exist_ok=True)
     with closing(sqlite3.connect(str(path),timeout=.1)) as cache, cache:
         os.chmod(path,0o600)
-        cache.execute('PRAGMA max_page_count=24576')  # <=96MiB file; no VACUUM
+        page_size=cache.execute('PRAGMA page_size').fetchone()[0]
+        cache.execute('PRAGMA max_page_count=%d' % (96*1024*1024//page_size))
         cache.execute('PRAGMA journal_size_limit=4194304')
         cache.execute('CREATE TABLE IF NOT EXISTS entries(key TEXT PRIMARY KEY,created REAL NOT NULL,payload BLOB NOT NULL)')
         cache.execute('CREATE INDEX IF NOT EXISTS entries_created ON entries(created)')
