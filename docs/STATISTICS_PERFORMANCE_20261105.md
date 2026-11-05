@@ -1,5 +1,7 @@
 # 统计等待与CPU保护（2026-11-05）
 
+2026-11-06 update: final runtime 01bbb6c. See [night release and measured limits](WEB_PERFORMANCE_NIGHT_20261106.md). The following sections describe the earlier 2026-11-05 release.
+
 最终状态：生产代码6013751，后续文档提交已上传GitHub；更新慢修正已加载。下文初版“后台任务共用计算锁”的措施已由末节撤销：只有网页统计查询相互串行，Side与录像分析不持有网页查询锁，整个web仍受CPU单核预算限制。本轮收尾仅更新文档与证据索引，没有再次重启服务或重复测试。
 
 ## 实施
