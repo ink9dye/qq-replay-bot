@@ -595,7 +595,7 @@ async function fetchReport(url, signal, onRetry) {
     if (!message && (response.headers.get('Content-Type') || '').startsWith('text/plain')) {
       message = text.trim().slice(0, 200);
     }
-    if ([429, 502, 503, 504].includes(response.status) && attempt < 3) {
+    if ((!payload || payload.code !== 'query_busy') && [429, 502, 503, 504].includes(response.status) && attempt < 3) {
       const retryAfter = response.headers.get('Retry-After');
       const seconds = retryAfter && !Number.isNaN(Number(retryAfter)) ? Number(retryAfter)
         : retryAfter && Number.isFinite(Date.parse(retryAfter)) ? (Date.parse(retryAfter) - Date.now()) / 1000
@@ -610,6 +610,8 @@ async function fetchReport(url, signal, onRetry) {
   }
 }
 
+window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='card-report')run({push:false})});
+
 async function run(options) {
   const push = !options || options.push !== false;
   const version = ++state.request;
@@ -620,7 +622,6 @@ async function run(options) {
   excludes.close();
   setBusy(true);
   $('status').textContent = '查询中…';
-  $('result').replaceChildren();
   try {
     const params = collect();
     const data = await fetchReport('/statistics/api/card-report?' + params.toString(), signal,
@@ -635,8 +636,8 @@ async function run(options) {
   } catch (error) {
     if (error && error.name === 'AbortError') return;
     if (version !== state.request) return;
-    state.result = null;
-    fail(error);
+    if(state.result) $('status').textContent='查询未完成，保留上次查询结果：'+error.message;
+    else fail(error);
   } finally {
     if (version === state.request) setBusy(false);
   }

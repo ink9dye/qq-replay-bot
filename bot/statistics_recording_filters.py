@@ -37,7 +37,13 @@ def snapshot(db,root,now,include_opponents=False,annotate_series=True,with_facts
     if annotate_series:
         from .card_series import reference as series_reference,annotate as annotate_series
         annotate_series(db,list(ids.values()),series_reference(db))
-    mapping,_,_=reference(db); canonical=lambda c:mapping.get(c,(c,))[0]
+    # Default recording filters never use card facts: defer the equivalence lookup
+    # until a card is actually inspected, retaining exactly the same mapping.
+    mapping=None
+    def canonical(code):
+        nonlocal mapping
+        if mapping is None:mapping,_,_=reference(db)
+        return mapping.get(code,(code,))[0]
     carried={};all_carried={};draws={};used={}
     digests={r['digest'] for r in ids.values()}
     if with_facts:

@@ -120,7 +120,7 @@ def create_server(root,port=8788):
     root=Path(root).resolve();cfg=json.loads((root/'config.json').read_text(encoding='utf-8-sig'))
     data=Path(cfg.get('data_dir') or root/'data');replays=Path(cfg.get('replay_dir') or data/'replays')
     if not (data/'bot.sqlite3').is_file():raise ValueError('statistics_database_missing')
-    portal=StatisticsPortal(data/'bot.sqlite3',replays,time.time,owner_secret(data/'statistics-owner.key'))
+    portal=StatisticsPortal(data/'bot.sqlite3',replays,time.time,owner_secret(data/'statistics-owner.key'),background=True)
     from .device_dashboard import DeviceDashboard
     remote=cfg.get('remote') or (cfg.get('watch') or {}).get('remote') or {}
     portal.device_dashboard=DeviceDashboard(data/'bot.sqlite3',replays,str(remote.get('token') or ''))
@@ -140,7 +140,7 @@ def main():
         server=create_server(args.root,args.port)
         def _warm():
             time.sleep(5)
-            server.portal.warmup()
+            server.portal._roster_reply()
         threading.Thread(target=_warm,daemon=True).start()
         def _roster_keepwarm():
             # roster 缓存 ttl 300 秒，命中不续期；每 240 秒强制重算一次，留 60 秒余量。
@@ -164,13 +164,15 @@ def main():
                     if time.time() - float(status.get('updated_at') or 0) > 180:
                         continue
                     from .side_inference import run as side_run
-                    side_run(args.root, limit=20)
+                    if server.portal._query_compute_lock.acquire(blocking=False):
+                        try:side_run(args.root, limit=20)
+                        finally:server.portal._query_compute_lock.release()
                 except Exception:
                     pass
 
         threading.Thread(target=_side_loop, daemon=True).start()
         from .draw_analysis_worker import start_worker
-        analysis_stop=start_worker(args.root)
+        analysis_stop=start_worker(args.root,compute_lock=server.portal._query_compute_lock)
         try:server.serve_forever()
         finally:
             analysis_stop.set()

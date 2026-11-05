@@ -34,11 +34,15 @@ def owner_secret(path):
 
 
 class StatisticsPortal:
-    def __init__(self, database, replay_root, clock, secret):
+    def __init__(self, database, replay_root, clock, secret, background=False):
         self.database=Path(database);self.replay_root=Path(replay_root);self.clock=clock;self.secret=secret
         self._query_cache={}
         self._query_cache_lock=threading.Lock()
         self._query_compute_lock=threading.RLock()
+        self._refresh=None
+        if background:
+            from .statistics_refresh import QueryRefresh
+            self._refresh=QueryRefresh(database)
         self._small_world_catalog_lock=threading.Lock()
         from .player_history import PlayerHistory
         self.player_history=PlayerHistory()
@@ -106,7 +110,7 @@ class StatisticsPortal:
                 return self._reply(503,'小世界卡库暂不可用，请稍后重试。')
             finally:
                 self._small_world_catalog_lock.release()
-        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_autocomplete.js','statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js','statistics_busy.js'):
+        if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_autocomplete.js','statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js','statistics_busy.js','statistics_refresh.js'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
             return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
         if parts==['statistics','devices']:
@@ -558,9 +562,18 @@ class StatisticsPortal:
 
     def keep_roster_warm(self):
         """后台保活：缓存命中不会续期，必须强制重算才能填上 300 秒过期空档。"""
-        return self._roster_reply(force=True)
+        return self._roster_reply(force=getattr(self,'_refresh',None) is None)
 
     def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
+        if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings'):
+            from urllib.parse import parse_qs,urlencode
+            if len(key)>1:key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
+            from .statistics_roster_version import snapshot_version
+            return self._refresh.get(key,lambda:self._cached_query_reply_sync(
+                key,callback,ttl,stamp_seconds,force),lambda:snapshot_version(self.database),ttl)
+        return self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
+
+    def _cached_query_reply_sync(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
         card_summary=bool(key and key[0]=='card-report')
         # Summary validity includes WAL, evidence and naming versions. The old
         # process-local cache only checked a coarse database mtime bucket.

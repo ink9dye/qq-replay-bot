@@ -140,7 +140,7 @@ def engine_ready(root=None):
     return (base / 'runtime' / ('ocgcore.dll' if os.name == 'nt' else 'ocgcore.so')).is_file()
 
 
-def start_worker(root):
+def start_worker(root,compute_lock=None):
     root = Path(root)
     cfg = json.loads((root/'config.json').read_text(encoding='utf-8-sig'))
     data = Path(cfg.get('data_dir') or root/'data')
@@ -188,7 +188,12 @@ def start_worker(root):
                             if item is None:
                                 stop.wait(max(0, refresh_at-time.monotonic()))
                                 continue
-                            state = process_one(data/'bot.sqlite3', replays, game_root, candidate=item)
+                            if compute_lock is not None and not compute_lock.acquire(blocking=False):
+                                from itertools import chain
+                                pending=chain((item,),pending);stop.wait(2);continue
+                            try:state = process_one(data/'bot.sqlite3', replays, game_root, candidate=item)
+                            finally:
+                                if compute_lock is not None:compute_lock.release()
                             if state == 'memory_paused':
                                 gate.paused = True
                                 pending = iter(())
