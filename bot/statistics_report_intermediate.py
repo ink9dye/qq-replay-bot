@@ -89,19 +89,23 @@ def raw_tables(db, loader):
 
 
 def response_identity(database, key):
-    """Exact DB/WAL/ref stamps; ten-second rank-profile/time bucket."""
+    """Exact data versions; freshness is measured from the completed cache write."""
     if not key or key[0]!='card-report':return None
     database=Path(database)
     paths=[database,Path(str(database)+'-wal')]+[database.parent/name for name in (
-        'series-naming.json','card-series-reference.json','card-equivalence.json',
+        'config.json','series-naming.json','card-series-reference.json','card-equivalence.json',
         'first-game-confirmations.sqlite3','watch-upload-sessions.sqlite3')]
+    paths += [Path(str(path)+'-wal') for path in paths
+              if path.suffix=='.sqlite3' and path!=database]
     state=[]
     for path in paths:
         try:s=path.stat();state.append((path.name,s.st_mtime_ns,s.st_size))
         except FileNotFoundError:state.append((path.name,None,None))
     from urllib.parse import parse_qs
     normalized=parse_qs(key[1],keep_blank_values=True)
-    encoded=json.dumps([2,str(database.resolve()),state,int(time.time()//10),normalized],sort_keys=True).encode()
+    # A query may take more than ten seconds. A wall-clock bucket here would
+    # prevent its successful result from ever being written. _get enforces TTL.
+    encoded=json.dumps([3,str(database.resolve()),state,normalized],sort_keys=True).encode()
     return database.parent/'query-cache/card-report.sqlite3','response:'+hashlib.sha256(encoded).hexdigest()
 
 

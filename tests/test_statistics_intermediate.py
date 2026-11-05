@@ -80,6 +80,57 @@ class IntermediateTests(unittest.TestCase):
         (self.root/'card-equivalence.json').write_text('{}')
         self.assertNotEqual(identity,cache.response_identity(self.root/'bot.sqlite3',key))
 
+    def test_slow_summary_writes_after_crossing_ten_second_boundary(self):
+        from bot.statistics_portal import StatisticsPortal
+        portal=StatisticsPortal(self.root/'bot.sqlite3',self.root/'replays',time.time,'x'*43)
+        key=('card-report','code=38814750&combo=38814750%2C49036338')
+        result={'combo':True}
+        clock=[1001.0];calls=[]
+        def compute(db):calls.append(True);clock[0]+=21;return result
+        with patch.object(cache.time,'time',side_effect=lambda:clock[0]):
+            first=portal._cached_query_reply(key,compute)
+            self.assertEqual(json.loads(first[2]),result)
+            other=StatisticsPortal(self.root/'bot.sqlite3',self.root/'replays',time.time,'x'*43)
+            self.assertEqual(other._cached_query_reply(key,compute),first)
+            self.assertEqual(len(calls),1)
+            clock[0]+=11
+            other._cached_query_reply(key,compute)
+            self.assertEqual(len(calls),2)
+
+    def test_new_replay_result_and_naming_changes_invalidate_summary_without_memory_fallback(self):
+        from bot.statistics_portal import StatisticsPortal
+        portal=StatisticsPortal(self.root/'bot.sqlite3',self.root/'replays',time.time,'x'*43)
+        key=('card-report','code=10045474&combo=10045474%2C27204311')
+        calls=[]
+        def compute(db):
+            calls.append(True)
+            return {'revision':len(calls)}
+        first=portal._cached_query_reply(key,compute)
+        self.assertEqual(portal._cached_query_reply(key,compute),first)
+        self.assertEqual(len(calls),1)
+        self.db.execute("INSERT INTO stat_games VALUES('new')");self.db.commit()
+        portal._cached_query_reply(key,compute);self.assertEqual(len(calls),2)
+        self.db.execute("INSERT INTO stat_fact_revisions VALUES('a',1)");self.db.commit()
+        portal._cached_query_reply(key,compute);self.assertEqual(len(calls),3)
+        for filename in ('series-naming.json','watch-upload-sessions.sqlite3',
+                         'watch-upload-sessions.sqlite3-wal','config.json'):
+            (self.root/filename).write_text('changed')
+            portal._cached_query_reply(key,compute)
+        self.assertEqual(len(calls),7)
+        different=portal._cached_query_reply(('card-report',key[1]+'&seat=first'),compute)
+        self.assertEqual(len(calls),8)
+
+    def test_data_change_during_summary_computation_does_not_cache_result(self):
+        from bot.statistics_portal import StatisticsPortal
+        portal=StatisticsPortal(self.root/'bot.sqlite3',self.root/'replays',time.time,'x'*43)
+        key=('card-report','combo=1%2C2');calls=[]
+        def compute(db):
+            calls.append(True)
+            self.db.execute('INSERT INTO stat_games VALUES(?)',('new'+str(len(calls)),));self.db.commit()
+            return {}
+        portal._cached_query_reply(key,compute);portal._cached_query_reply(key,compute)
+        self.assertEqual(len(calls),2)
+
     def test_file_hard_limit_accounts_for_nondefault_page_size(self):
         self.disk.parent.mkdir()
         db=sqlite3.connect(str(self.disk));db.execute('PRAGMA page_size=8192')

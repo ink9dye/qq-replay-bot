@@ -555,7 +555,10 @@ class StatisticsPortal:
         return self._roster_reply(force=True)
 
     def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
-        hit=None if force else self._query_cache_hit(key,ttl,stamp_seconds)
+        card_summary=bool(key and key[0]=='card-report')
+        # Summary validity includes WAL, evidence and naming versions. The old
+        # process-local cache only checked a coarse database mtime bucket.
+        hit=None if force or card_summary else self._query_cache_hit(key,ttl,stamp_seconds)
         if hit is not None:return hit
         if not force and key and key[0]=='card-report':
             from .statistics_report_intermediate import response_get,response_identity
@@ -564,7 +567,10 @@ class StatisticsPortal:
             if hit is not None:return hit
         if not self._query_compute_lock.acquire(timeout=QUERY_WAIT_SECONDS):
             # The owner may have finished just as our wait expired.
-            hit=None if force else self._query_cache_hit(key,ttl,stamp_seconds)
+            hit=None if force or card_summary else self._query_cache_hit(key,ttl,stamp_seconds)
+            if card_summary and not force:
+                try:hit=response_get(response_identity(self.database,key),ttl)
+                except OSError:hit=None
             return hit if hit is not None else self._query_busy_reply()
         try:
             return self._cached_query_reply_locked(key,callback,ttl,stamp_seconds,force)
@@ -591,6 +597,12 @@ class StatisticsPortal:
 
         force=True 跳过命中直接重算并覆盖缓存（供后台保活续期，命中本身不会续期）。
         """
+        card_summary=bool(key and key[0]=='card-report')
+        if card_summary and not force:
+            from .statistics_report_intermediate import response_get,response_identity
+            try:hit=response_get(response_identity(self.database,key),ttl)
+            except OSError:hit=None
+            if hit is not None:return hit
         try:
             stat=self.database.stat()
             # 观战进程会持续写库，按文件 mtime 精确比对会让缓存永远失效；
@@ -601,7 +613,7 @@ class StatisticsPortal:
         now=time.monotonic()
         with self._query_cache_lock:
             hit=self._query_cache.get(key)
-            if hit and hit[0]==stamp and now-hit[1]<=ttl and not force:
+            if hit and hit[0]==stamp and now-hit[1]<=ttl and not force and not card_summary:
                 return hit[2]
         from .statistics_report_intermediate import response_identity,response_put
         try:disk_identity=response_identity(self.database,key)
@@ -611,7 +623,7 @@ class StatisticsPortal:
             if disk_identity is not None and disk_identity==response_identity(self.database,key):
                 response_put(disk_identity,result)
         except OSError:pass
-        if result[0]==200 and len(result[2]) <= QUERY_CACHE_MAX_BYTES:
+        if not card_summary and result[0]==200 and len(result[2]) <= QUERY_CACHE_MAX_BYTES:
             with self._query_cache_lock:
                 self._query_cache[key]=(stamp,time.monotonic(),result)
                 while (len(self._query_cache)>32 or
