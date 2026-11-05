@@ -316,19 +316,20 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
                    'appeared','draw_count','initial_count','use_count','appearance_count')
     def fact_dict(row):
         return row if isinstance(row, dict) else dict(zip(fact_fields, row))
-    def read_raw_tables():
+    def read_raw_tables(selected_table="_report_selected", builds_table="_report_builds"):
         projection = (' AND code IN (' + ','.join('?' for _ in needed_codes) + ')') if needed_codes else ''
         args = needed_codes or ()
         return dict(copies=[tuple(row) for row in db.execute(
             'SELECT build,partition,code,SUM(copies) copies FROM stat_build_cards '
-            'WHERE build IN (SELECT build FROM _report_builds)' + projection +
+            'WHERE build IN (SELECT build FROM ' + builds_table + ')' + projection +
             ' GROUP BY build,partition,code', args)],
             facts=[tuple(row) for row in db.execute(
             'SELECT ' + ','.join('f.' + field for field in fact_fields) +
             ' FROM stat_card_facts f WHERE (f.digest,f.player) IN '
-            '(SELECT digest,player FROM _report_selected)' + projection, args)])
+            '(SELECT digest,player FROM ' + selected_table + ')' + projection, args)])
     from .statistics_report_intermediate import raw_tables
-    raw = raw_tables(db, read_raw_tables, projection=needed_codes)
+    raw = raw_tables(db, read_raw_tables, projection=needed_codes,
+                     chunk_loader=read_raw_tables if needed_codes is None else None)
     copies_lookup = {}
     for build, part, code, count in raw.pop('copies'):
         copies_lookup.setdefault((code, part), {})[build] = count

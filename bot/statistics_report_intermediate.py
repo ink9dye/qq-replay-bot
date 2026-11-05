@@ -10,25 +10,27 @@ from pathlib import Path
 
 MAX_ENTRY = 4 * 1024 * 1024
 MAX_BYTES = 64 * 1024 * 1024
-MAX_ENTRIES = 24
+MAX_ENTRIES = 96
 MAX_RECORDS = 16000
 MAX_AGE = 300
 MIN_FREE = 2 * 1024 * 1024 * 1024
 
 
-def _identity(db, projection=None):
+def _identity(db, projection=None, selected_table="_report_selected", builds_table="_report_builds"):
+    def query(sql):
+        return db.execute(sql.replace("_report_selected", selected_table).replace("_report_builds", builds_table))
     database = db.execute('PRAGMA database_list').fetchone()[2]
     if not database:
         return None
     # Selected rows are already qualified using current ranks, exclusions, time,
     # identity, and naming. The cache contains raw facts only, never that decision.
-    keys = [tuple(r) for r in db.execute('SELECT digest,player FROM _report_selected ORDER BY digest,player')]
-    versions = [tuple(r) for r in db.execute(
+    keys = [tuple(r) for r in query('SELECT digest,player FROM _report_selected ORDER BY digest,player')]
+    versions = [tuple(r) for r in query(
         'SELECT g.digest,COALESCE(r.revision,0) FROM stat_games g LEFT JOIN stat_fact_revisions r ON r.digest=g.digest '
         'WHERE g.digest IN (SELECT digest FROM _report_selected) ORDER BY g.digest')]
     if len(versions) != len({row[0] for row in keys}):
         return None  # old or not yet versioned facts are never persisted
-    builds = [r[0] for r in db.execute('SELECT build FROM _report_builds ORDER BY build')]
+    builds = [r[0] for r in query('SELECT build FROM _report_builds ORDER BY build')]
     raw = json.dumps([2,keys,versions,builds,projection],separators=(',',':')).encode()
     return Path(database).parent/'query-cache/card-report.sqlite3', hashlib.sha256(raw).hexdigest()
 
@@ -72,7 +74,47 @@ def _put(path, key, value, now):
                 cache.execute('DELETE FROM entries WHERE key=?',(entry,))
 
 
-def raw_tables(db, loader, projection=None):
+def _chunked_tables(db, loader):
+    # Stable digest buckets survive new uploads without invalidating every shard.
+    # Cache stores raw facts only; current eligibility was already recalculated.
+    keys=list(db.execute('SELECT digest,player FROM _report_selected'))
+    buckets={}
+    for digest,player in keys:
+        bucket=hashlib.sha256(str(digest).encode()).digest()[0] % 32
+        buckets.setdefault(bucket,[]).append((digest,player))
+    db.execute('DROP TABLE IF EXISTS temp._report_chunk_selected')
+    db.execute('DROP TABLE IF EXISTS temp._report_chunk_builds')
+    db.execute('CREATE TEMP TABLE _report_chunk_selected(digest TEXT,player TEXT,PRIMARY KEY(digest,player))')
+    db.execute('CREATE TEMP TABLE _report_chunk_builds(build TEXT PRIMARY KEY)')
+    facts=[];copies={}
+    for bucket,rows in sorted(buckets.items()):
+        db.execute('DELETE FROM _report_chunk_selected');db.execute('DELETE FROM _report_chunk_builds')
+        db.executemany('INSERT INTO _report_chunk_selected VALUES(?,?)',rows)
+        db.execute('INSERT OR IGNORE INTO _report_chunk_builds SELECT v.build FROM stat_views v '
+                   'JOIN _report_chunk_selected s ON s.digest=v.digest AND s.player=v.player '
+                   'WHERE v.build IN (SELECT build FROM _report_builds)')
+        try:identity=_identity(db, ['wide-bucket',bucket], '_report_chunk_selected', '_report_chunk_builds')
+        except (sqlite3.Error,OSError,ValueError,TypeError):identity=None
+        value=None
+        if identity:
+            try:value=_get(*identity,time.time())
+            except (sqlite3.Error,OSError,ValueError,TypeError):pass
+        if value is None:
+            value=loader('_report_chunk_selected','_report_chunk_builds')
+            if identity:
+                try:_put(*identity,value,time.time())
+                except (sqlite3.Error,OSError,ValueError,TypeError):pass
+        facts.extend(value['facts'])
+        for row in value['copies']:copies[tuple(row[:3])]=row
+    return dict(copies=list(copies.values()),facts=facts)
+
+
+def raw_tables(db, loader, projection=None, chunk_loader=None):
+    if chunk_loader is not None:
+        count=db.execute('SELECT COUNT(*) FROM _report_selected').fetchone()[0]
+        if count>300:
+            return _chunked_tables(db,chunk_loader)
+
     identity=None
     try:
         identity=_identity(db, projection)

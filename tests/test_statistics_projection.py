@@ -42,3 +42,36 @@ class ProjectionTests(unittest.TestCase):
         for kwargs in ({},dict(phase_none=True),dict(filters=report.Filters(first_player=True))):
             with self.subTest(kwargs=kwargs):
                 self.assertEqual(module.query(fixture.store._db,fixture.replays,fixture_module.NOW,**kwargs),extra.query(fixture.store._db,fixture.replays,fixture_module.NOW,**kwargs))
+
+
+    def test_wide_shards_reuse_unchanged_digests_and_deduplicate_build_copies(self):
+        import sqlite3,tempfile
+        from pathlib import Path
+        from contextlib import closing
+        with tempfile.TemporaryDirectory() as tmp, closing(sqlite3.connect(str(Path(tmp)/'bot.sqlite3'))) as db:
+            db.executescript('CREATE TABLE stat_games(digest PRIMARY KEY);'
+                'CREATE TABLE stat_fact_revisions(digest PRIMARY KEY,revision);'
+                'CREATE TABLE stat_views(digest,player,build);'
+                'CREATE TEMP TABLE _report_selected(digest,player);'
+                'CREATE TEMP TABLE _report_builds(build);'
+                "INSERT INTO _report_builds VALUES('shared');")
+            for n in range(305):
+                digest=str(n).zfill(64)
+                db.execute('INSERT INTO stat_games VALUES(?)',(digest,))
+                db.execute('INSERT INTO stat_views VALUES(?,?,?)',(digest,'p','shared'))
+                db.execute('INSERT INTO _report_selected VALUES(?,?)',(digest,'p'))
+            calls=[]
+            def loader(selected,builds):
+                calls.append(1)
+                return dict(copies=[['shared','main',1,2]],facts=[dict(code=1,digest=r[0],player=r[1]) for r in db.execute('SELECT digest,player FROM '+selected)])
+            first=cache.raw_tables(db,lambda:None,chunk_loader=loader)
+            self.assertEqual(len(first['facts']),305);self.assertEqual(len(first['copies']),1)
+            cold=len(calls);self.assertLessEqual(cold,32)
+            second=cache.raw_tables(db,lambda:None,chunk_loader=loader)
+            self.assertEqual(len(calls),cold);self.assertEqual(first,second)
+            db.execute('INSERT INTO stat_fact_revisions VALUES(?,1)',(str(4).zfill(64),))
+            third=cache.raw_tables(db,lambda:None,chunk_loader=loader)
+            self.assertEqual(len(calls),cold+1);self.assertEqual(first,third)
+            # Old databases without revisions must use normal SQL, not break reports.
+            db.execute('DROP TABLE stat_fact_revisions')
+            self.assertEqual(len(cache.raw_tables(db,lambda:None,chunk_loader=loader)['facts']),305)
