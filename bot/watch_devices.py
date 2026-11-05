@@ -54,9 +54,9 @@ def _gap(value):
     return ('%d 小时 %d 分钟'%(hours,rest)) if rest else ('%d 小时'%hours)
 
 
-def game_details(database, games):
+def game_details(database, games, limit=9):
     """Enrich only the nine displayed digests; no replay parsing or fact writes."""
-    result=[dict(game) for game in games[:9]]
+    result=[dict(game) for game in games[:max(1,min(60,int(limit)))]]
     digests=list(dict.fromkeys(g['digest'] for g in result if g.get('digest')))
     if not digests:return result
     outcomes={};identities={}

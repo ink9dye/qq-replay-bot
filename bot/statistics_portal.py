@@ -114,6 +114,12 @@ class StatisticsPortal:
         if parts==['statistics','api','devices']:
             dashboard=getattr(self,'device_dashboard',None)
             if dashboard is None:return self._reply(503,'设备看板尚未配置。')
+            args=parse_qs(parsed.query)
+            if 'before_id' in args:
+                try:result=dashboard.recording_history(int(args['before_id'][0]))
+                except (ValueError,TypeError):return self._reply(400,'录像游标无效。')
+                except (OSError,sqlite3.Error):return self._reply(503,'录像读取失败，请重试。')
+                return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
             return self._reply(200,json.dumps(dashboard.snapshot(),ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics']:
             return self._reply(200,Path(__file__).with_name('statistics_portal.html').read_text(encoding='utf8'),'text/html; charset=utf-8')

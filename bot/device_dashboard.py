@@ -42,12 +42,13 @@ class DeviceDashboard:
         if data.get('ok') is not True: raise ValueError('remote_unavailable')
         return data
 
-    def _recordings(self):
+    def _recordings(self, before=0):
         with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=1)) as db:
             db.row_factory=sqlite3.Row
             # Primary-key tail only: never scan/sort the complete statistics database.
             rows=db.execute('SELECT id,digest,focus_player,players_json,recorded_at,saved_at '
-                            'FROM replays ORDER BY id DESC LIMIT 240').fetchall()
+                            'FROM replays WHERE id<? ORDER BY id DESC LIMIT 240',
+                            (int(before) if before else 9223372036854775807,)).fetchall()
         games={}
         for row in rows:
             digest=row['digest']
@@ -59,7 +60,35 @@ class DeviceDashboard:
             except (TypeError,ValueError): players=[]
             games[digest]=dict(id=row['id'],digest=digest,players=players if isinstance(players,list) else [],
                 focus=[row['focus_player']],recorded_at=row['recorded_at'],saved_at=row['saved_at'])
-        return list(games.values())
+        result=list(games.values())
+        from .watch_devices import game_details
+        result=game_details(self.database,result,limit=60)
+        # Persistent upload ledger is authoritative for device source. Old rows may have none.
+        ledger=self.database.parent/'watch-upload-sessions.sqlite3'
+        if ledger.is_file() and result:
+            try:
+                with closing(sqlite3.connect(ledger.resolve().as_uri()+'?mode=ro',uri=True,timeout=1)) as db:
+                    marks=','.join('?' for _ in result)
+                    workers={}
+                    # Receipt worker names are bounded to nine; the ownership ledger retains older sources.
+                    owners=self.database.parent/'watch-task-owners.sqlite3'
+                    jobs={}
+                    if owners.is_file():
+                        with closing(sqlite3.connect(owners.resolve().as_uri()+'?mode=ro',uri=True,timeout=1)) as owner_db:
+                            # Resolve only jobs found for the displayed digests below.
+                            for digest,job in db.execute('SELECT digest,job FROM uploads WHERE digest IN ('+marks+')',[g['digest'] for g in result]):
+                                row=owner_db.execute('SELECT worker FROM owners WHERE job=?',(job,)).fetchone()
+                                workers.setdefault(digest,set()).add(row[0] if row else '')
+                    for game in result:game['source']='、'.join(sorted(x for x in workers.get(game['digest'],set()) if x)) or '来源未记录'
+            except sqlite3.Error:
+                pass
+        return result
+
+    def recording_history(self, before):
+        before=int(before)
+        if before < 0:raise ValueError('invalid_history_cursor')
+        rows=self._recordings(before)
+        return dict(recordings=rows,next_before=min((r['id'] for r in rows),default=None))
 
     def _ingest(self, now):
         """When the last replay was ingested and how many landed per hour (24h).

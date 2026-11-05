@@ -59,7 +59,8 @@ class WatchDevicesTests(unittest.TestCase):
         job.claimed_by='pc-a';jobs._jobs[job.id]=job
         server=WatchApiServer(jobs,self.root/'replays','test',log=lambda *a:None)
         server.save_upload(job.id,'one.yrp',b'one',['A','B'],900)
-        server.save_upload(job.id,'one.yrp.evidence.json',b'{}',['A','B'],900)
+        with self.assertRaises(ValueError):
+            server.save_upload(job.id,'one.yrp.evidence.json',b'{}',['A','B'],900)
         rows=read_receipts(self.root/'watch-receipts.json')
         self.assertEqual(len(rows),1);self.assertEqual(rows[0]['worker'],'pc-a')
         self.assertEqual(jobs.snapshot()['stats']['uploaded'],1)

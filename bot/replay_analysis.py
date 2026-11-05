@@ -265,10 +265,17 @@ def apply_live_evidence(report, path, cards=None):
         evidence = json.loads(sidecar(path, 'evidence').read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return
-    winner = evidence.get('winner')
-    if (evidence.get('digest') != report['digest'] or type(winner) is not int or winner not in (0, 1, 2)
+    winner = evidence.get('winner') if isinstance(evidence, dict) else None
+    if (not isinstance(evidence, dict) or evidence.get('digest') != report['digest']
             or evidence.get('players') != [p['name'] for p in report['players']]):
         report['warnings'].append('观战结果与录像未能一致关联，未采用。')
+        return
+    # Match identity survives even when this game has no captured win.
+    report['evidence'] = evidence
+    if winner is None:
+        return
+    if type(winner) is not int or winner not in (0, 1, 2):
+        report['warnings'].append('观战胜者编号无效，未采用。')
         return
     if report['winner'] is not None and winner != report['winner']:
         report.update(result='unknown', winner=None, result_source=None, result_conflict=True)

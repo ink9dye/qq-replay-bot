@@ -273,6 +273,7 @@ class WatchApiServer:
         self.receipt_path = Path(receipt_path) if receipt_path else self.replay_root.parent / "watch-receipts.json"
         self._httpd = None
         self._thread = None
+        self._upload_lock = threading.RLock()
         from .watch_task_api import TaskLifecycle
         self.lifecycle = TaskLifecycle(self)
 
@@ -294,6 +295,10 @@ class WatchApiServer:
 
     def save_upload(self, job_id: str, name: str, body: bytes,
                     players: list[str], recorded: float) -> dict:
+        with self._upload_lock:
+            return self._save_replay_upload(job_id, name, body, players, recorded)
+
+    def _save_replay_upload(self, job_id, name, body, players, recorded):
         storage = self.replay_root if self.replay_root.exists() else self.replay_root.parent
         if shutil.disk_usage(storage).free < max(64*1024*1024, 2*len(body)):
             raise InsufficientStorageError("replay_storage_low")
@@ -311,6 +316,26 @@ class WatchApiServer:
         suffix = ".yrp.evidence.json" if evidence else ".yrp"
         safe_name = name if _SAFE_NAME.sub("", name) == name else _safe_part(name[: -len(suffix)]) + suffix
         path = target_dir / safe_name
+        from . import watch_replay_evidence as live
+        if evidence:
+            capture = live.decode(body)
+            replay = live.locate(self, target_dir/safe_name[:-len('.evidence.json')], capture)
+            path = Path(str(replay)+'.evidence.json')
+            previous = live.decode(path.read_bytes()) if path.is_file() else None
+            capture = live.merge(previous, capture)
+            changed = live.write(path, capture)
+            status = 'unchanged'
+            if changed or not replay.is_file():
+                try:
+                    status = live.register_and_refresh(self, replay, job_id, players or [folder], recorded, capture)
+                except (OSError, sqlite3.Error):
+                    status = 'facts_pending'
+                    self.log('[远程] 旁证已保存，单局事实待同步')
+            self.log(f'[远程] 收到小局证据 {path.relative_to(self.replay_root)}（任务 {job_id}，{status}）')
+            return dict(path=str(path), digest=hashlib.sha256(body).hexdigest(), evidence_status=status)
+        # Repeated replay bytes reuse the canonical path; never detach its sidecar.
+        if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == hashlib.sha256(body).hexdigest():
+            return dict(path=str(path), digest=hashlib.sha256(body).hexdigest(), evidence_status='unchanged')
         index = 2
         while path.exists():
             path = target_dir / f"{Path(safe_name).stem} ({index}){Path(safe_name).suffix}"
@@ -332,6 +357,13 @@ class WatchApiServer:
                 self.log('[远程] 来源记录写入失败，录像接收继续')
             self.jobs.enqueue_ingest(str(path), players or [folder], recorded, digest)
             self.jobs.note_upload(job_id)
+            metadata = Path(str(path)+'.evidence.json')
+            if metadata.is_file():
+                try:
+                    capture = live.decode(metadata.read_bytes())
+                    live.register_and_refresh(self, path, job_id, players or [folder], recorded, capture)
+                except (OSError, ValueError, sqlite3.Error):
+                    self.log('[远程] 已有旁证待核对；录像继续正常入库')
         else:
             # Evidence may arrive after ingest. Keep its small identity separately
             # so readers see it without replaying the fact database.
