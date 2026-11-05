@@ -523,20 +523,16 @@ class StatisticsPortal:
             if parts[-1]=='build' and (not player or len(player)>128):return self._reply(400,'需要玩家名称。')
             if player is None:
                 return self._roster_reply()
-            return self._cached_query_reply(('deck-detail',player), lambda db:query(db,self.replay_root,float(self.clock()),player), ttl=300.0, stamp_seconds=86400)
-            try:
-                # 独立只读连接，不抢服务Store事务、不触发迁移；本次响应固定一个快照。
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
-                    db.row_factory=sqlite3.Row;db.execute('BEGIN')
-                    result=query(db,self.replay_root,float(self.clock()),player)
-                if result is None:return self._reply(404,'暂无当前有效构筑。')
-                if player:
+            def build_with_names(db):
+                result=query(db,self.replay_root,float(self.clock()),player)
+                if result and player:
                     from .statistics_card_names import index
                     names=index(self.database.parent)
-                    for card in result['cards']:
-                        info=names.get(str(card['code']),{});card['name']=card_name(info) if info else '卡名暂缺'
-                return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
-            except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')
+                    for card in result.get('cards',[]):
+                        info=names.get(str(card['code']),{})
+                        card['name']=card_name(info) if info else '卡名暂缺'
+                return result
+            return self._cached_query_reply(('deck-detail',player), build_with_names, ttl=300.0, stamp_seconds=86400)
         return self._reply(404,'找不到此统计页面。')
 
     def warmup(self):

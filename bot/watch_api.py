@@ -23,6 +23,7 @@ import sqlite3
 import threading
 import time
 from .watch_task_state import AuthorizationExpired
+from .query_api import QueryHandlerMixin
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -41,7 +42,7 @@ class InsufficientStorageError(OSError):
     pass
 
 
-class _Handler(BaseHTTPRequestHandler):
+class _Handler(QueryHandlerMixin, BaseHTTPRequestHandler):
     server_version = "ygobot-watch/1"
     protocol_version = "HTTP/1.1"
 
@@ -88,6 +89,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.auth_worker = str(row.get("worker") or "")
                 self.auth = dict(row, generation='device:' + str(row['id']))
                 return True
+        self.close_connection = True
         self._send(401, dict(ok=False, error="unauthorized"))
         return False
 
@@ -111,6 +113,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     # ---- 路由 ----------------------------------------------------------
     def do_GET(self):
+        parts = urlsplit(self.path)
+        if parts.path.startswith("/query-api/"):
+            return self._query_dispatch(parts, post=False)
         if not self._auth():
             return
         parts = urlsplit(self.path)
@@ -120,6 +125,9 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(404, dict(ok=False, error="not_found"))
 
     def do_POST(self):
+        parts = urlsplit(self.path)
+        if parts.path.startswith("/query-api/"):
+            return self._query_dispatch(parts, post=True)
         if not self._auth():
             return
         try:
@@ -249,11 +257,16 @@ class WatchApiServer:
 
     def __init__(self, jobs, replay_root, token: str, log=print,
                  bind=("127.0.0.1", 8791), max_upload: int = MAX_UPLOAD, receipt_path=None,
-                 token_store=None):
+                 token_store=None, query_auth=None, admin_token="", query_core=None,
+                 writes_enabled=False):
         self.jobs = jobs
         self.replay_root = Path(replay_root)
         self.token = str(token or "")
         self.token_store = token_store
+        self.query_auth = query_auth
+        self.admin_token = str(admin_token or "")
+        self.query_core = query_core
+        self.writes_enabled = bool(writes_enabled)
         self.log = log
         self.bind = bind
         self.max_upload = max_upload
@@ -342,13 +355,18 @@ class WatchApiServer:
     def start(self) -> bool:
         if self._httpd is not None:
             return True
-        if not self.token and self.token_store is None:
+        if not self.token and self.token_store is None and self.query_auth is None:
             self.log("[远程] 未配置 token 且没有每设备令牌库，接口不启动")
             return False
         httpd = _Server(self.bind, _Handler)
         httpd.app = self
         httpd.app_token = self.token
         httpd.token_store = self.token_store
+        httpd.query_gate = threading.BoundedSemaphore(2)
+        httpd.query_auth = self.query_auth
+        httpd.admin_token = self.admin_token
+        httpd.query_core = self.query_core
+        httpd.writes_enabled = self.writes_enabled
         self._httpd = httpd
         self._thread = threading.Thread(target=httpd.serve_forever, name="watch-api", daemon=True)
         self._thread.start()
@@ -365,3 +383,5 @@ class WatchApiServer:
                 httpd.server_close()
             except Exception:
                 pass
+        if self.query_core is not None:
+            self.query_core.close()

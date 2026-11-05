@@ -1,4 +1,13 @@
 {
+  "query": {
+    "enabled": false,
+    "writes_enabled": false,
+    "admin_token": "",
+    "token_hours": 24,
+    "refresh_days": 180,
+    "code_hours": 24,
+    "portal_port": 8788
+  },
   "_comment": "账号密码只在本机填写。可以双击 setup.bat 完成配置。service_mode=unified 是全开（今天的行为），split 是观战与 QQ 分进程。",
   "service_mode": "unified",
   "ygopro_dir": "D:\\MyCardLibrary\\ygopro",

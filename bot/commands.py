@@ -106,6 +106,16 @@ def parse_command(text: str) -> dict:
         return {"op": "limits_card", "value": query}
     if head in ("查卡", "ck", "CK"):
         return {"op": "card_search", "query": " ".join(rest)}
+    if head == "开通查询":
+        return {"op": "error", "message": "直接发送“开通查询”即可。"} if rest else {"op": "query_enroll"}
+    if head == "查卡下一页":
+        return {"op": "error", "message": "直接发送“查卡下一页”即可。"} if rest else {"op": "card_next"}
+    card_select = re.fullmatch(r"选卡\s*(\d+)", head)
+    if head == "选卡" or card_select:
+        index = card_select.group(1) if card_select else (rest[0] if len(rest) == 1 else "")
+        if not re.fullmatch(r"\d{1,4}", index or ""):
+            return {"op": "error", "message": "格式：选卡 序号，例如：选卡 1。"}
+        return {"op": "card_select", "index": index}
     if head == "帮助":
         return {"op": "help"}
     if head == "统计":

@@ -2798,6 +2798,9 @@ async def serve(
                                           migrate=True)
         except Exception as exc:
             log(f"[远程] 每设备令牌库不可用，仅使用 remote.token：{type(exc).__name__}")
+        from bot.query_setup import build_query
+        query_options = build_query(config, Path(config.get("data_dir") or DATA_DIR),
+                                    Path(config["replay_dir"]), log)
         jobs = RemoteJobs(lease=float(remote_cfg.get("lease_seconds") or 120),
                           job_ttl=float(remote_cfg.get("job_ttl_seconds") or 180),
                           single_ip_max=int(remote_cfg.get("single_ip_max") or 7),
@@ -2806,7 +2809,7 @@ async def serve(
                              receipt_path=Path(config.get("data_dir") or DATA_DIR)/"watch-receipts.json",
                              log=log, bind=(str(remote_cfg.get("bind_host") or "127.0.0.1"),
                                             int(remote_cfg.get("bind_port") or 8791)),
-                             token_store=token_store)
+                             token_store=token_store, **query_options)
         if api.start():
             remote = dict(jobs=jobs, api=api, wait=float(remote_cfg.get("claim_wait_seconds") or 3.0))
             log(f"远程观战：已启用，等待间隔 {remote['wait']:g} 秒，任务租期 {jobs.lease:g} 秒")

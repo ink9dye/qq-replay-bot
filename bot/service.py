@@ -171,6 +171,21 @@ def read_external_public_base(data_dir, fallback="", *, max_age=PUBLIC_BASE_MAX_
     return valid_public_https(value)
 
 
+def _enroll_reply(result: dict, code_hours: int) -> str:
+    """「开通查询」结果 → 用户回复文案。纯函数，便于单测。"""
+    if result.get("ok"):
+        return (f"已开通查询账号。\n登录账号：{result.get('identity')}\n"
+                f"激活码：{result.get('code')}\n"
+                f"激活码 {code_hours} 小时内有效、只能使用一次；请勿泄露，本条消息不会重发。\n"
+                f"在安卓端「我的-登录」里填上面的账号和激活码即可登录。")
+    error = result.get("error")
+    if error == "already_provisioned":
+        return "你已经开通过查询账号了；激活码不重复发放，如需重置请联系管理员。"
+    if error == "not_found":
+        return "查询账号不存在，请先发送“开通查询”。"
+    return "查询服务暂不可用，请稍后再试。"
+
+
 class BotService:
     def __init__(self, config: dict, root: Path, clock=None, roles=None):
         # roles=None 仍是全开；拆分后每个进程只跑自己的任务，但共用同一个库。
@@ -515,6 +530,16 @@ class BotService:
         temporary.replace(path)
         self._capture_status_written=now
 
+    def _query_enroll(self, user: str) -> str:
+        from .query_core import admin_issue
+        cfg = self.config.get("query") or {}
+        admin_token = str(cfg.get("admin_token") or "")
+        if not cfg.get("enabled") or not admin_token:
+            return "查询功能未启用。"
+        port = int((self.config.get("remote") or {}).get("bind_port") or 8791)
+        result = admin_issue(f"http://127.0.0.1:{port}", admin_token, user)
+        return _enroll_reply(result, int(cfg.get("code_hours") or 24))
+
     def handle_text(self, user_id, text: str, conversation: str = "") -> str:
         user = str(user_id)
         from .private_commands import dispatch
@@ -536,6 +561,10 @@ class BotService:
             if not self._statistics_allowed(user, conversation):
                 text = "\n".join(line for line in text.splitlines() if not line.startswith(("统计：", "观战设备：", "统计对局：")))
             return text
+        if op == "query_enroll":
+            if conversation.startswith("group:"):
+                return "请私聊我发送“开通查询”，激活码只在私聊中发放。"
+            return self._query_enroll(user)
         if op == "empty":
             return "请发送“帮助”查看用法。"
         if op == "error":
@@ -544,6 +573,10 @@ class BotService:
             return self.player_history.handle(command["player"])
         if op in ("random", "guess_start", "guess_answer", "guess_reveal", "limits_card", "limits_table"):
             return self.card_extras.handle(conversation or user, op, command.get("value", ""))
+        if op in ("card_select", "card_next"):
+            return self.card_search.handle((conversation + ":" + user) if conversation else user,
+                                           "select" if op == "card_select" else "next",
+                                           command.get("index", ""))
         if op == "card_search":
             return self.card_search.handle((conversation + ":" + user) if conversation else user, "search", command["query"])
         if op == "top100_rank_build":
