@@ -1,6 +1,8 @@
 """QQ text view of worker capacity, queues and the latest received small games."""
 import json
+import sqlite3
 import time
+from contextlib import closing
 from datetime import datetime,timezone,timedelta
 from pathlib import Path
 from .device_dashboard import DeviceDashboard
@@ -52,6 +54,30 @@ def _gap(value):
     return ('%d 小时 %d 分钟'%(hours,rest)) if rest else ('%d 小时'%hours)
 
 
+def game_details(database, games):
+    """Enrich only the nine displayed digests; no replay parsing or fact writes."""
+    result=[dict(game) for game in games[:9]]
+    digests=list(dict.fromkeys(g['digest'] for g in result if g.get('digest')))
+    if not digests:return result
+    outcomes={};identities={}
+    try:
+        with closing(sqlite3.connect(Path(database).resolve().as_uri()+'?mode=ro',uri=True,timeout=1)) as db:
+            db.row_factory=sqlite3.Row
+            db.execute('BEGIN')
+            marks=','.join('?' for _ in digests)
+            for row in db.execute('SELECT digest,player,outcome FROM stat_views WHERE digest IN ('+marks+')',digests):
+                outcomes.setdefault(row['digest'],{})[row['player']]=row['outcome']
+            from .statistics_match_identity import identity_metadata
+            try:identities=identity_metadata(db,digests)
+            except (sqlite3.Error,OSError,ValueError,TypeError):pass
+    except (sqlite3.Error,OSError):pass
+    for game in result:
+        proof=identities.get(game.get('digest'))
+        game['game_no']=proof[1] if proof and type(proof[1]) is int and proof[1]>0 and proof[2] is True else None
+        game['outcomes']=outcomes.get(game.get('digest'),{})
+    return result
+
+
 def format_status(snapshot, games, capture, now, activity=None):
     fresh=snapshot.get('remote_ok',False)
     workers=[w for w in snapshot.get('workers',[]) if w.get('online')]
@@ -95,6 +121,11 @@ def format_status(snapshot, games, capture, now, activity=None):
         names=' vs '.join(clean(p,70) for p in g.get('players',[])[:4]) or '玩家未记录'
         worker=clean(g.get('worker') or ('历史未记录来源' if g.get('received_at') is None else '来源未确认'),64)
         parts=['来源：'+worker]
+        parts.append('第%d局'%g['game_no'] if g.get('game_no') else '局次未确认')
+        labels={'win':'胜','loss':'负','draw':'平'}
+        outcomes=g.get('outcomes') or {}
+        parts.append('；'.join(clean(p,70)+'：'+labels.get(outcomes.get(p),'胜负未知')
+                              for p in g.get('players',[])[:4]) or '胜负未知')
         if g.get('received_at') is not None:parts.append('接收 '+stamp(g['received_at']))
         else:parts.append('入库 '+stamp(g.get('saved_at'))+'（接收时间未记录）')
         if g.get('recorded_at'):parts.append('录制 '+stamp(g['recorded_at']))
@@ -117,4 +148,5 @@ def device_message(service):
     try:capture=json.loads((service.data_dir/'capture-status.json').read_text(encoding='utf-8'))
     except (OSError,ValueError):capture={}
     stored=(activity or {}).get('games') or []
-    return format_status(snapshot,recent_games(service.data_dir,snapshot.get('recordings',[]),stored),capture,float(service.clock()),activity)
+    games=recent_games(service.data_dir,snapshot.get('recordings',[]),stored)
+    return format_status(snapshot,game_details(service.store.path,games),capture,float(service.clock()),activity)

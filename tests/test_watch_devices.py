@@ -13,6 +13,34 @@ class WatchDevicesTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
 
+    def test_recent_game_results_are_per_player_and_numbers_need_proof(self):
+        import sqlite3
+        from bot.watch_devices import game_details
+        path=self.root/'facts.sqlite3'
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE stat_views(digest TEXT,player TEXT,outcome TEXT)')
+            db.executemany('INSERT INTO stat_views VALUES(?,?,?)',
+                           [('one','A','loss'),('one','B','win'),('two','A','draw'),('two','B','unknown')])
+        games=[dict(digest=d,players=['B','A'],worker='pc',received_at=1000) for d in ('one','two','missing')]
+        with patch('bot.statistics_match_identity.identity_metadata',return_value={'one':('match',2,True),'two':('match',3,False)}):
+            enriched=game_details(path,games)
+        text=format_status({},enriched,{},1001)
+        self.assertIn('第2局',text)
+        self.assertIn('B：胜；A：负',text)
+        self.assertIn('B：胜负未知；A：平',text)
+        self.assertEqual(text.count('局次未确认'),2)
+        self.assertNotIn('第3局',text)
+        self.assertNotIn('outcomes',games[0])
+
+    def test_result_lookup_failure_is_unknown_and_does_not_create_database(self):
+        from bot.watch_devices import game_details
+        path=self.root/'missing.sqlite3'
+        games=game_details(path,[dict(digest='x',players=['A','B'])])
+        self.assertFalse(path.exists())
+        text=format_status({},games,{},1000)
+        self.assertIn('局次未确认',text)
+        self.assertIn('A：胜负未知；B：胜负未知',text)
+
     def test_command_and_argument_rejection(self):
         self.assertEqual(parse_command('观战设备'),{'op':'watch_devices'})
         self.assertEqual(parse_command('观战设备 extra')['op'],'error')
