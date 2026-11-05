@@ -23,3 +23,9 @@ ygo-web新增systemd CPUQuota=100%、CPUWeight=50；两核服务器上代表web�
 真实浏览器使用最终页面与生产响应数据的本地夹具，依次模拟繁忙、旧结果、刷新完成：排名100行、录像26组、卡片142行均完成展示，自动重试后提示消失；不是生产登录态的浏览器验收。线上接口与实际服务加载已单独验证。尚未做长期压力测试或所有复杂筛选组合的线上对照。
 
 代码提交ff41e8e；本文件随随后文档提交一并上传GitHub master。最终提交、浏览器与GitHub证据由PROJECT_HANDOFF.md指向workflow-results/statistics-performance-20261105/。
+
+## 21:55 后续修正：后台批次阻塞查询
+
+用户实报页面长期空白；21:53线上日志显示排名连续8秒取锁超时，21:42后无成功快照。原实现把整批Side分析放入网页查询锁，属于过大的临界区；后台批次与录像分析不再持有网页查询锁，CPUQuota100%/CPUWeight50仍限制整个web及子进程。统计查询之间仍单次后台串行，不改Side算法或limit20。不能宣称已现场取得持锁线程栈；日志确认的是持续取锁失败，源码确认整批任务持锁风险。
+
+6013751已部署且GitHub master已核一致；7项HTTP服务/并发专项通过，Python语法与diff通过。首次测试因缺少tests导入路径报错，修正PYTHONPATH后通过；首次部署验收误用/api/roster得到404，不作为成功证据，改正/statistics/api/roster后HTTP200/0.050秒。仅web重启，collector启动/PID未变；无UI改动。备份/opt/ygobot/data/config-backups/query-starvation-1793886878，源码摘要与collector证据query-starvation-deploy.json，正确接口证据query-starvation-http.json。真实浏览器本轮未另验，不称长期无竞争；需继续观察新录像写入下的更新耗时。
