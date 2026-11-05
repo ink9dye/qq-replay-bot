@@ -30,6 +30,20 @@ object YgoProtocol {
     const val NETPLAYER_OBSERVER = 7
     const val DEFAULT_VERSION = 0x1362
 
+    /**
+     * STOC_GAME_MSG 正文里的对局消息号。数值与服务端 `bot/replay_native.py` 一致：
+     * MSG_WIN = 5（正文 3 字节：类型/胜方/原因），MSG_START = 4（正文 19 字节）。
+     * 服务端就是靠这两个号把「小局胜负」与录像对上的，改动前先对一遍 Python 侧。
+     */
+    const val MSG_START = 4
+    const val MSG_WIN = 5
+
+    /** MSG_DRAW 是变长消息：`类型 + 玩家 + 张数 + 张数*4`，服务端按同一公式校验。 */
+    const val MSG_DRAW = 90
+
+    /** MSG_WIN 正文里的胜方：0/1 为座位，2 为平局。 */
+    const val WIN_DRAW = 2
+
     const val REPLAY_MAGIC_YRP1 = 0x31707279
     const val REPLAY_MAGIC_YRP2 = 0x32707279
 

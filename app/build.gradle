@@ -11,8 +11,8 @@ android {
         applicationId 'com.moecard.watch'
         minSdk 26
         targetSdk 34
-        versionCode 2
-        versionName '1.0.1'
+        versionCode 7
+        versionName '1.2'
         vectorDrawables { useSupportLibrary true }
     }
 
@@ -74,6 +74,9 @@ dependencies {
     implementation 'androidx.navigation:navigation-compose:2.7.7'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+    // .yrp 正文是 LZMA1 raw 流；要读出录像里双方的真实顺序（服务端会逐字比对），
+    // 只能照服务端 decompress_replay() 的算法解一遍。纯 Java 实现，体积约 120KB。
+    implementation 'org.tukaani:xz:1.9'
 
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1'

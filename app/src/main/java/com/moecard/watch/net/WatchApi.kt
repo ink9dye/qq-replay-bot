@@ -63,7 +63,7 @@ class WatchApi(private val server: String, private val token: String) {
         }
         val builder = Request.Builder().url("${base()}$path").method(method, bodyObj)
         builder.header("Authorization", "Bearer $token")
-        builder.header("User-Agent", "MoeCardWatch/1.0.1")
+        builder.header("User-Agent", "MoeCardWatch/1.2")
         headers.forEach { (k, v) -> builder.header(k, v) }
         Http.client.newCall(builder.build()).execute().use { resp ->
             val data = resp.body?.bytes() ?: ByteArray(0)
@@ -92,10 +92,17 @@ class WatchApi(private val server: String, private val token: String) {
         )
     }
 
-    fun heartbeat(worker: String, active: List<String>) {
+    /**
+     * 心跳。[active] 传 null 表示“本端情况未知，别动我的任务”（服务端保留旧状态）；
+     * 传空列表表示“本端确实没在跑任何任务”，服务端会释放本 worker 的旧任务租约。
+     *
+     * 这两种语义必须分开：进程重启后如果一直省略 active，服务端会把上一个进程认领、
+     * 实际上已经没人跑的任务一直续租，把唯一的并发槽位永久占死（2026-11-05 实测踩到）。
+     */
+    fun heartbeat(worker: String, active: List<String>?) {
         val payload = JSONObject().apply {
             put("worker", worker)
-            if (active.isNotEmpty()) put("active", JSONArray(active))
+            if (active != null) put("active", JSONArray(active))
         }
         request("POST", "/watch-api/heartbeat", payload.toString().toByteArray(Charsets.UTF_8), jsonHeader())
     }
@@ -124,8 +131,9 @@ class WatchApi(private val server: String, private val token: String) {
 
     fun upload(jobId: String, name: String, bytes: ByteArray, players: List<String>, recordedAt: Double): Boolean {
         val query = "?job=${enc(jobId)}&name=${enc(name)}"
-        // PC 端 watch.py: X-Players 使用 urllib.parse.quote URL 编码后放入头部（玩家名可能包含中文）
-        val xPlayers = java.net.URLEncoder.encode(players.joinToString(","), "UTF-8")
+        // PC 端 watch.py 用 urllib.parse.quote（空格 → %20）放在 X-Players 头里。
+        // 不能用 URLEncoder 的 "+"：服务端 unquote 不会把 "+" 还原成空格，含空格玩家名会错位。
+        val xPlayers = urlQuote(players.joinToString(","))
         val headers = mapOf(
             "Content-Type" to "application/octet-stream",
             "X-Players" to xPlayers,
@@ -149,6 +157,10 @@ class WatchApi(private val server: String, private val token: String) {
         mapOf("Content-Type" to "application/json; charset=utf-8")
 
     private fun enc(s: String): String = java.net.URLEncoder.encode(s, "UTF-8")
+
+    /** 与 urllib.parse.quote 一致：空格编码成 %20，而不是表单编码的 "+"。 */
+    private fun urlQuote(s: String): String =
+        java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
     companion object {
         /** 静态探测：验证服务器地址 + 令牌是否有效。 */
