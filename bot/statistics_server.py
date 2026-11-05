@@ -10,6 +10,14 @@ from .statistics_portal import StatisticsPortal,owner_secret
 _access_lock=threading.Lock()
 
 
+class StatisticsHTTPServer(ReplayHTTPServer):
+    def server_close(self):
+        super().server_close()
+        app=getattr(self,'share_app',None)
+        if app is not None:
+            app.store.close()
+
+
 def _visitor_ip(handler):
     for name in ('CF-Connecting-IP','True-Client-IP','X-Real-IP'):
         value=(handler.headers.get(name) or '').strip()
@@ -46,8 +54,10 @@ def _log_access(handler,portal,status,kind):
         pass
 
 
-def make_handler(portal):
-    class Handler(BaseHTTPRequestHandler):
+def make_handler(portal, share_app=None):
+    from .share import make_handler as share_handler
+    base = share_handler(share_app) if share_app is not None else BaseHTTPRequestHandler
+    class Handler(base):
         protocol_version='HTTP/1.1'
         def _compress(self,kind,body,headers):
             """P11：文本/JSON 响应按需 gzip（>1KB 且客户端接受），不改任何统计口径。"""
@@ -66,6 +76,8 @@ def make_handler(portal):
                     handle.write(time.strftime('%Y-%m-%dT%H:%M:%S')+'\t'+traceback.format_exc()+'\n')
             except OSError:pass
         def do_GET(self):
+            if share_app is not None and self.path.split('?',1)[0].startswith('/s/'):
+                return super().do_GET()
             try:
                 if self.path=='/health':
                     result=portal._reply(200,json.dumps(dict(service='qq-statistics-web',status='running',pid=os.getpid(),
@@ -112,8 +124,12 @@ def create_server(root,port=8788):
     from .device_dashboard import DeviceDashboard
     remote=cfg.get('remote') or (cfg.get('watch') or {}).get('remote') or {}
     portal.device_dashboard=DeviceDashboard(data/'bot.sqlite3',replays,str(remote.get('token') or ''))
-    server=ReplayHTTPServer(('127.0.0.1',port),make_handler(portal))
+    from .share import ShareApp
+    from .store import Store
+    share_app=ShareApp(Store(data/'bot.sqlite3',readonly=True,migrate=False),replays,time.time)
+    server=StatisticsHTTPServer(('127.0.0.1',port),make_handler(portal,share_app))
     server.portal=portal
+    server.share_app=share_app
     return server
 
 

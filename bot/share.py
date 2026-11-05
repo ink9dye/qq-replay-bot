@@ -105,6 +105,7 @@ class ShareApp:
         self.link_hours = float(link_hours)
         self.public_url_provider = None
         self.statistics_portal = None
+        self.web_remote_only = False
         # 同一分享范围优先复用未过期链接；失败有限重试，避免把死链发出去。
         self.link_reuse_margin_seconds = 600.0
         self.link_attempts = 3
@@ -409,6 +410,11 @@ def make_handler(app: ShareApp):
             self.wfile.write(payload)
 
         def _route(self, parts: list[str]) -> tuple[int, str, bytes]:
+            if len(parts)>=2 and parts[0]=='s' and (getattr(app,'web_remote_only',False) or getattr(app.statistics_portal, 'remote_only', False)):
+                if app.statistics_portal is None:
+                    from .statistics_gateway import StatisticsGateway
+                    return StatisticsGateway.unavailable()
+                return app.statistics_portal.public(self.path)
             if len(parts) >= 2 and parts[0] == 'stats':
                 from .statistics_proxy import route as stats_route
                 return stats_route(app, self.path, parts)
@@ -422,6 +428,7 @@ def make_handler(app: ShareApp):
                            'retention_days': RETENTION_DAYS}
                 payload.update(getattr(app, 'watch_runtime', {}))
                 if app.statistics_portal is not None:payload['statistics_portal']=True
+                payload['web_backend']='remote_web' if getattr(app,'web_remote_only',False) else 'inline'
                 return 200, "application/json; charset=utf-8", json.dumps(payload).encode('utf-8')
             if len(parts) == 2 and parts[0] == "s":
                 return app.page(parts[1], "dir")

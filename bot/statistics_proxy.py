@@ -96,6 +96,8 @@ def route(app, path, parts):
         headers = {key: value for key, value in remote_headers.items()
                    if key.lower() in ("location", "content-disposition")}
     except (OSError, urllib.error.URLError):
+        if getattr(portal, 'remote_only', False):
+            return portal.unavailable()
         # ygo-web 不可用时回退进程内 portal，至少还能看统计。
         try:
             status, content_type, body, headers = portal.route(
@@ -152,6 +154,8 @@ def post(app, path, parts, body):
         content_type = next((value for key, value in remote_headers.items()
                              if key.lower() == "content-type"), "application/octet-stream")
     except (OSError, urllib.error.URLError):
+        if getattr(portal, 'remote_only', False):
+            return portal.unavailable()[:3]
         try:
             status, content_type, payload, _extra = portal.post(upstream, headers, "127.0.0.1", body)
         except Exception:

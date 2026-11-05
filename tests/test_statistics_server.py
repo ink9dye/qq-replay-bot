@@ -9,11 +9,20 @@ import test_card_statistics as C
 class StatisticsServerTests(unittest.TestCase):
     def test_standalone_server_reads_existing_data_without_store_or_watch_start(self):
         C.CardStatisticsTests.setUp(self)
+        from bot.share import ShareApp
+        link=ShareApp(self.store,self.replays,lambda:C.NOW).create_link('owner','甲',[self.rows[0]['id']],C.NOW-100)
         db=sqlite3.connect(self.root/'bot.sqlite3');self.store._db.backup(db);db.close()
         (self.root/'config.json').write_text(json.dumps(dict(data_dir=str(self.root),replay_dir=str(self.replays))),encoding='utf8')
         before=(self.root/'bot.sqlite3').read_bytes()
-        with patch('bot.store.Store.__init__',side_effect=AssertionError('No migration Store allowed')):
+        from bot.store import Store
+        original=Store.__init__
+        def readonly_init(instance,*args,**kwargs):
+            self.assertIs(kwargs.get('readonly'),True)
+            self.assertIs(kwargs.get('migrate'),False)
+            return original(instance,*args,**kwargs)
+        with patch('bot.store.Store.__init__',new=readonly_init):
             server=create_server(self.root,0)
+        server.share_app.clock=lambda:C.NOW
         self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         base='http://127.0.0.1:'+str(server.server_address[1]);opener=build_opener(HTTPCookieProcessor(CookieJar()))
@@ -22,4 +31,5 @@ class StatisticsServerTests(unittest.TestCase):
         secret=(self.root/'statistics-owner.key').read_text(encoding='ascii')
         with opener.open(base+'/statistics/access/'+secret) as r:self.assertEqual(r.status,200)
         with opener.open(base+'/statistics/api/roster') as r:self.assertEqual(json.load(r)['covered_players'],1)
+        with opener.open(base+'/s/'+link['token']) as r:self.assertEqual(r.status,200)
         self.assertEqual((self.root/'bot.sqlite3').read_bytes(),before)

@@ -22,7 +22,8 @@ class DeviceDashboardTests(unittest.TestCase):
 
     def test_ip_limit_deduplication_and_no_credentials(self):
         s=self.dashboard.snapshot()
-        self.assertEqual(s['summary'],dict(online=2,active=5,capacity=6,pending=1))
+        self.assertEqual(s['summary'],dict(online=2,active=5,capacity=6,pending=None))
+        self.assertEqual(s['task_board_pending'],1)
         self.assertEqual(len(s['recordings']),1)
         self.assertEqual(set(s['recordings'][0]['focus']),{'A','B'})
         self.assertNotIn('SECRET',json.dumps(s));self.assertNotIn('DO_NOT_EXPOSE',json.dumps(s))

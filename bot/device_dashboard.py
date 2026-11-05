@@ -90,6 +90,15 @@ class DeviceDashboard:
         rows=self._recordings(before)
         return dict(recordings=rows,next_before=min((r['id'] for r in rows),default=None))
 
+    def _waiting_rooms(self, now):
+        # Same producer and 90s freshness rule as QQ 观战设备. Never substitute queue size.
+        try:
+            capture=json.loads((self.database.parent/'capture-status.json').read_text(encoding='utf-8-sig'))
+            age=now-float(capture.get('updated_at') or 0)
+            count=capture.get('waiting_rooms')
+            return max(0,count) if 0<=age<=90 and type(count) is int else None
+        except (OSError,ValueError,TypeError,AttributeError):return None
+
     def _ingest(self, now):
         """When the last replay was ingested and how many landed per hour (24h).
 
@@ -248,7 +257,8 @@ class DeviceDashboard:
                 error='' if remote_ok else '设备状态暂时不可用；以下为最后一次成功采样，不能视为当前状态。',
                 workers=workers,ips=list(ips.values()),rooms=rooms,ended=ended,
                 summary=dict(online=len(online),active=sum(row['active'] for row in online),
-                    capacity=sum(row['limit'] for row in ips.values()),pending=int(self._remote.get('pending') or 0)),
+                    capacity=sum(row['limit'] for row in ips.values()),pending=self._waiting_rooms(now)),
+                task_board_pending=int(self._remote.get('pending') or 0),
                 stats={key:int(raw_stats.get(key) or 0) for key in ('offered','claimed','reported','unclaimed','expired','uploaded','failed')},
                 recordings=recordings,recordings_ok=recordings_ok,ingest=ingest)
             self._cached=result;self._cached_at=now

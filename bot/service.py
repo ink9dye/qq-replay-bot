@@ -226,11 +226,16 @@ class BotService:
             bind_port=int(share_cfg.get("bind_port", 8787)),
             link_hours=self.link_hours,
         )
+        self.share.web_remote_only = os.environ.get('YGO_STATISTICS_REMOTE_ONLY') == '1'
         if bool(config.get('_pycharm_watch_entry')):
-            from .statistics_portal import StatisticsPortal, owner_secret
             try:
-                secret=owner_secret(self.data_dir/'statistics-owner.key')
-                self.share.statistics_portal=StatisticsPortal(self.store.path,self.replay_root,self.clock,secret)
+                if os.environ.get('YGO_STATISTICS_REMOTE_ONLY') == '1':
+                    from .statistics_gateway import StatisticsGateway
+                    self.share.statistics_portal=StatisticsGateway(self.data_dir/'statistics-owner.key')
+                else:
+                    from .statistics_portal import StatisticsPortal, owner_secret
+                    secret=owner_secret(self.data_dir/'statistics-owner.key')
+                    self.share.statistics_portal=StatisticsPortal(self.store.path,self.replay_root,self.clock,secret)
             except (OSError,ValueError):
                 print('本机统计入口暂不可用：入口凭据文件无法安全读取。')
         self.share_server = ShareServer(self.share)
