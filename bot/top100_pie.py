@@ -328,10 +328,50 @@ def _render_payload(payload):
 _RENDER_LOCK = threading.Lock()
 
 
+def _payload_cache_path(database):
+    return Path(database).parent / 'cache' / 'top100-pie' / 'payload.json'
+
+
+def _db_stamp(database):
+    try:
+        stat = Path(database).stat()
+        return [stat.st_mtime_ns // 1_000_000_000, stat.st_size]
+    except OSError:
+        return None
+
+
+def load_payload(database, now, max_age=120.0):
+    """2 分钟内的同一库版本复用 collect() 结果（QQ 饼图每次重算名册约 8 秒）。"""
+    path = _payload_cache_path(database)
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if record.get('stamp') != _db_stamp(database):
+        return None
+    if not 0 <= float(now) - float(record.get('saved') or 0) <= max_age:
+        return None
+    payload = record.get('payload')
+    return payload if isinstance(payload, dict) and payload.get('pie') else None
+
+
+def save_payload(database, now, payload):
+    path = _payload_cache_path(database)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix('.tmp')
+        tmp.write_text(json.dumps(dict(saved=float(now), stamp=_db_stamp(database), payload=payload),
+                                  ensure_ascii=False, default=str), encoding='utf-8')
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def render(database, replay_root, now):
-    """每次核对当前分布；只将同一数据/卡图版本的最终PNG落盘复用。"""
+    """每次核对当前分布；同一数据/卡图版本的最终PNG落盘复用，payload 2 分钟内复用。"""
     with _RENDER_LOCK:
-        payload = collect(database, replay_root, now)
+        payload = load_payload(database, now) or collect(database, replay_root, now)
+        save_payload(database, now, payload)
         codes = {row.get(key) for section in ('inner','middle','outer')
                  for row in (payload.get('pie') or {}).get(section, [])
                  for key in ('image','band_image') if row.get(key)}
