@@ -454,11 +454,11 @@ class ReplayStore:
                 self_name = me if me is not None else (players[0] if players else "")
                 opponent_name = other if other is not None else \
                     next((name for name in players if name != self_name), "")
-                if self_deck_needle and not self._player_has_deck(
-                        match, self_name, self_deck_needle):
+                if self_deck_needle and self_deck_needle not in \
+                        (match["decks"].get(self_name) or "").lower():
                     continue
-                if opp_deck_needle and not self._player_has_deck(
-                        match, opponent_name, opp_deck_needle):
+                if opp_deck_needle and opp_deck_needle not in \
+                        (match["decks"].get(opponent_name) or "").lower():
                     continue
                 if want_self and self_name not in top100:
                     continue
@@ -471,15 +471,6 @@ class ReplayStore:
         return dict(page=page, page_size=size, total=total, total_bytes=total_bytes,
                     items=[self.public_match(item, with_games=True)
                            for item in items[offset:offset + size]])
-
-    @staticmethod
-    def _player_has_deck(match: dict, player: str, needle: str) -> bool:
-        """该玩家在这场里任一局用过含 needle 的卡组就算命中（子串、忽略大小写）。"""
-        for game in match.get("games") or []:
-            for view in game.get("views") or []:
-                if view.get("player") == player and needle in (view.get("deck") or "").lower():
-                    return True
-        return needle in (match["decks"].get(player) or "").lower()
 
     def find_match(self, key: str) -> dict | None:
         key = str(key or "").strip()
