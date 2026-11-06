@@ -11,8 +11,8 @@ android {
         applicationId 'com.moecard.watch'
         minSdk 26
         targetSdk 34
-        versionCode 7
-        versionName '1.2'
+        versionCode 14
+        versionName '1.9'
         vectorDrawables { useSupportLibrary true }
     }
 
@@ -74,10 +74,14 @@ dependencies {
     implementation 'androidx.navigation:navigation-compose:2.7.7'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+    // 查询端：QQ 头像 / 卡图异步加载（阿里云 maven 可拉）
+    implementation 'io.coil-kt:coil-compose:2.6.0'
     // .yrp 正文是 LZMA1 raw 流；要读出录像里双方的真实顺序（服务端会逐字比对），
     // 只能照服务端 decompress_replay() 的算法解一遍。纯 Java 实现，体积约 120KB。
     implementation 'org.tukaani:xz:1.9'
 
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1'
+    // Android 单测里的 org.json 是空壳实现，补真实库给 QueryParseTest 用
+    testImplementation 'org.json:json:20231013'
 }

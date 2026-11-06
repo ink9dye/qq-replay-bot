@@ -19,6 +19,8 @@ data class SpectateResult(
     val replaysSaved: Int = 0,
     val connected: Boolean = false,
     val frames: Int = 0,
+    /** 结束时仍在等末局 MSG_WIN（录像已落盘但没收到胜负）：上层可据此重连再等。 */
+    val awaitingWin: Boolean = false,
 )
 
 /**
@@ -48,6 +50,17 @@ class Spectator(
     @Volatile private var duelEnded = false
     @Volatile private var replaysSaved = 0
     @Volatile private var receivedAny = false
+    /**
+     * 末局录像已落盘、但还没收到对应的 MSG_WIN。
+     *
+     * 萌卡在决斗结束后才把胜负推过来，而末局之后不会再有下一局的 MSG_START 撑住连接：
+     * 若仍按“决斗结束 25 秒”收尾，胜负还没到就断了（2026-11-06 实测：当天 11 场
+     * 打满三局的比赛，第 3 局胜负 100% 缺失，而第 1、2 局全有）。
+     * 置位后读超时放宽到 [WIN_WAIT_MS]，与上传协程的等待窗口对齐。
+     */
+    @Volatile private var waitingWin = false
+    /** 最近一批录像的尾份是否已经带上胜负；DUEL_END 时据此决定要不要继续等。 */
+    @Volatile private var lastTailHadCapture: Boolean? = null
     @Volatile private var socket: Socket? = null
     /** 网络切换 / 系统杀进程时由外部调用，立即断开当前连接以触发快速重连。 */
     @Volatile var aborted = false
@@ -83,12 +96,16 @@ class Spectator(
 
             while (true) {
                 if (aborted) {
+                    // 用户主动停止：不要被上层当成“还在等胜负”，否则会白白重连
+                    waitingWin = false
                     outcome = "lost"
                     break
                 }
                 // 对齐 PC watch.py watch_read_timeout：对局结束短等录像 25s；
                 // 收到过数据说明房间活跃，长等 120s；完全没数据 30s 后重连。
+                // 例外：末局录像已落盘但胜负未到 → 用 90s 窗口（与上传协程一致）。
                 s.soTimeout = when {
+                    waitingWin -> WIN_WAIT_MS
                     duelEnded -> 25_000
                     receivedAny -> 120_000
                     else -> 30_000
@@ -96,14 +113,27 @@ class Spectator(
                 val frame = try {
                     YgoProtocol.readFrame(input).also { if (it != null) { receivedAny = true; frames++ } }
                 } catch (e: SocketTimeoutException) {
-                    outcome = if (duelEnded) (if (replaysSaved > 0) "saved" else "noreplay") else "retry"
+                    outcome = when {
+                        // 还在等末局胜负：交回上层重连继续等，别直接收尾
+                        waitingWin -> "retry"
+                        duelEnded -> if (replaysSaved > 0) "saved" else "noreplay"
+                        else -> "retry"
+                    }
                     break
                 } catch (e: IOException) {
-                    outcome = if (duelEnded && replaysSaved > 0) "saved" else "retry"
+                    outcome = when {
+                        waitingWin -> "retry"
+                        duelEnded && replaysSaved > 0 -> "saved"
+                        else -> "retry"
+                    }
                     break
                 }
                 if (frame == null) {
-                    outcome = if (replaysSaved > 0) "saved" else "noreplay"
+                    outcome = when {
+                        waitingWin -> "retry"
+                        replaysSaved > 0 -> "saved"
+                        else -> "noreplay"
+                    }
                     break
                 }
                 val (proto, body) = frame
@@ -115,6 +145,12 @@ class Spectator(
                     YgoProtocol.STOC_DUEL_END -> {
                         duelEnded = true
                         evidence.onDuelEnd()
+                        // 三份录像常常在 DUEL_END 之前就全部下发完（实测 12:50:59）：
+                        // 这时末局还没有胜负，必须把接收窗口放宽，否则 25 秒后就断了。
+                        if (lastTailHadCapture == false) {
+                            waitingWin = true
+                            onLog("末局胜负还没到，继续等待（最多 ${WIN_WAIT_MS / 1000} 秒）", "info")
+                        }
                         onLog("决斗结束，等待录像", "info")
                     }
                     YgoProtocol.STOC_REPLAY -> {
@@ -124,6 +160,13 @@ class Spectator(
                         val batch = evidence.assign(list)
                         onReplay(batch)
                         replaysSaved += batch.blobs.size
+                        lastTailHadCapture = batch.blobs.lastOrNull()?.capture != null
+                        // 决斗已结束、且刚打完那份没配到胜负：继续等 MSG_WIN，放宽接收窗口。
+                        // （录像先于 DUEL_END 到达的情况由 DUEL_END 分支兜底）
+                        if (duelEnded && batch.blobs.lastOrNull()?.capture == null) {
+                            waitingWin = true
+                            onLog("末局录像已落盘，等待胜负消息（最多 ${WIN_WAIT_MS / 1000} 秒）", "info")
+                        }
                     }
                     YgoProtocol.STOC_GAME_MSG -> {
                         // 服务器把对局消息逐条转给观战者。除了 MSG_WIN（类型 5，3 字节）
@@ -145,6 +188,9 @@ class Spectator(
                                         "info",
                                     )
                                     onWinCaptured(capture)
+                                    // 胜负已到手：末局等待可以收尾了
+                                    waitingWin = false
+                                    lastTailHadCapture = true
                                 } else {
                                     onLog("忽略非法的胜方编号：$winner", "warn")
                                 }
@@ -176,10 +222,13 @@ class Spectator(
                     else -> { /* 其余协议号忽略 */ }
                 }
             }
-            SpectateResult(outcome, replaysSaved, connected, frames)
+            SpectateResult(outcome, replaysSaved, connected, frames, awaitingWin = waitingWin && !aborted)
         } catch (e: IOException) {
             onLog("连接失败：${e.message}", "error")
-            SpectateResult(if (aborted) "lost" else "retry", replaysSaved, connected, frames)
+            SpectateResult(
+                if (aborted) "lost" else "retry", replaysSaved, connected, frames,
+                awaitingWin = waitingWin && !aborted,
+            )
         } finally {
             try {
                 socket?.close()
@@ -192,6 +241,12 @@ class Spectator(
     private companion object {
         /** 单个 TCP 连接超时：切网瞬间连不上时快速失败，交给上层退避重连。 */
         const val CONNECT_TIMEOUT_MS = 12_000
+
+        /**
+         * 末局等胜负的接收窗口。必须与 WatchClient 的 WIN_WAIT_MS 一致：
+         * 录像落盘后上传协程会等这么久，收包线程也得等同样久，否则胜负还没到就先断线。
+         */
+        const val WIN_WAIT_MS = 90_000
 
         /** 局次公告：`第N局…录像`（允许中间少量标点/空格）。 */
         val ANNOUNCE_REGEX = Regex("第(\\d{1,2})局[^0-9]{0,4}录像")

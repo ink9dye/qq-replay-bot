@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">萌卡观战助手</string>
+    <string name="app_name">戏王版权局</string>
     <string name="channel_name">观战服务</string>
     <string name="channel_desc">萌卡观战助手后台运行时的常驻通知</string>
 </resources>

@@ -31,12 +31,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -51,7 +47,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.moecard.watch.ui.theme.MoeCardTheme
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -67,31 +62,8 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             MoeCardTheme {
-                val vm: MainViewModel = viewModel()
-                MainScreen(vm)
-            }
-        }
-    }
-}
-
-@Composable
-fun MainScreen(vm: MainViewModel) {
-    var tab by remember { mutableStateOf(0) }
-    Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("萌卡观战助手") })
-        },
-    ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            TabRow(selectedTabIndex = tab) {
-                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("设置 / 账号") })
-                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("任务") })
-                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("日志") })
-            }
-            when (tab) {
-                0 -> SettingsTab(vm)
-                1 -> TasksTab(vm)
-                2 -> LogsTab(vm)
+                // 查询端为应用主体（登录判定 + 抽屉导航），观战机器人保留为其中一个入口
+                AppRoot()
             }
         }
     }

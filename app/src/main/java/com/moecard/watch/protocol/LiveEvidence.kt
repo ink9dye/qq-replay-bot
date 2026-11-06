@@ -62,9 +62,22 @@ class LiveEvidence {
     private var numberingFromDuelStart = false
     /** 发牌姬公告：接下来下发的第一份录像是第 N 局。 */
     private var announced: Int? = null
+    /**
+     * 最近一次公告的局次（不清空）。
+     *
+     * 用途：末局的 MSG_WIN 常常在「第N局录像」公告之后才到（此时 [announced] 已被录像消费掉）。
+     * 留一份粘性的局次，让迟到的胜负能带上可信的局次，供上层按局次对回录像。
+     */
+    private var lastAnnounced: Int? = null
 
-    /** 尚未配到录像的胜负：键是本端局序号（0 表示没收到 MSG_START，序号未知）。 */
-    private val pendingWins = LinkedHashMap<Int, GameCapture>()
+    /**
+     * 尚未配到录像的胜负，**按到达顺序排队**。
+     *
+     * 这里不能再用「本端局序号 → 胜负」的映射：中途进房时客户端收不到之前的 MSG_START，
+     * `serial` 从 1 重新开始，和真实局次整体错位——2026-11-06 实测就出现过
+     * 「第 3 局的胜负被配到第 2 局」。MC 补发时按局序依次推送，按到达顺序消费才对齐。
+     */
+    private val pendingWins = ArrayList<GameCapture>()
 
     /** 已经配过录像的最大局序号：判断“这份录像是不是已经配过了”。 */
     private var lastAssignedSerial = 0
@@ -133,21 +146,22 @@ class LiveEvidence {
     @Synchronized
     fun onWin(winner: Int, reason: Int, body: ByteArray): GameCapture {
         if (accepted(body)) onGameMessage(body)
+        // 迟到的末局胜负：公告已被录像消费掉时，用粘性局次给它一个可信归属。
+        val hintedNo = announced ?: lastAnnounced
         val capture = GameCapture(
             winner = winner,
             reason = reason,
             raw = body.toHexString(),
             receivedAtMs = System.currentTimeMillis(),
             serial = if (serial > 0) serial else null,
-            gameNo = null,
-            gameNoSource = "unknown",
+            gameNo = hintedNo,
+            gameNoSource = if (hintedNo != null) "announce" else "unknown",
             events = current.toList(),
             capturedFromStart = currentFromStart && !overflow,
         )
-        pendingWins[if (serial > 0) serial else 0] = capture
+        pendingWins.add(capture)
         while (pendingWins.size > MAX_PENDING) {
-            val oldest = pendingWins.keys.first()
-            pendingWins.remove(oldest)
+            pendingWins.removeAt(0)
         }
         return capture
     }
@@ -159,7 +173,10 @@ class LiveEvidence {
      */
     @Synchronized
     fun onAnnounce(gameNo: Int) {
-        if (gameNo in 1..MAX_GAME_NO) announced = gameNo
+        if (gameNo in 1..MAX_GAME_NO) {
+            announced = gameNo
+            lastAnnounced = gameNo
+        }
     }
 
     /**
@@ -168,7 +185,7 @@ class LiveEvidence {
      */
     @Synchronized
     fun consume(capture: GameCapture) {
-        pendingWins.remove(if (capture.serial != null) capture.serial else 0)
+        pendingWins.remove(capture)
     }
 
     /**
@@ -186,7 +203,8 @@ class LiveEvidence {
         if (blobs.isEmpty()) return ReplayBatch(emptyList())
         val n = blobs.size
         val announcedNo = announced
-        val pendingMax = pendingWins.keys.filter { it > lastAssignedSerial }.maxOrNull()
+        val pendingMax = pendingWins.mapNotNull { it.serial }
+            .filter { it > lastAssignedSerial }.maxOrNull()
         // 下一份录像对应“下一局还没配过录像的小局”，而不是“最近一次 MSG_START”。
         // 反例（2026-11-05 实测）：三份录像在新一局已经开始之后才逐帧下发，
         // 旧写法把每份都当成“最近开始的那局”，结果第 3 份的胜负被配到了第 2 份录像上。
@@ -204,12 +222,19 @@ class LiveEvidence {
                 numberingFromDuelStart && blobSerial != null -> blobSerial to "duel_start"
                 else -> null to "unknown"
             }
-            val capture = matchCapture(blobSerial, index == n - 1, n)
+            val capture = when {
+                // 带「第N局录像」公告时，MC 是按局序依次推胜负和录像的：
+                // 单份录像直接取**最早**一条待配胜负，不能按本端序号挑（中途进房会整体错位，
+                // 2026-11-06 实测：第 2 局的胜负被第 1 局抢走、第 3 局的胜负被配到第 2 局）。
+                announcedNo != null && n == 1 -> pendingWins.firstOrNull()
+                else -> matchCapture(blobSerial, index == n - 1, n)
+            }
             // association 只说明“凭什么把这份胜负配给这份录像”，口径与官方参考包一致。
+            // 与非安卓参考实现（android-ingest-reference）保持逐字一致：
+            // 只要有可靠局次就写这一句，便于服务端/人工按同一口径核对。
             val association = when {
                 capture == null -> "none"
-                gameNoSource == "announce" -> "STOC_CHAT/第N局公告 + replay game number"
-                gameNoSource == "duel_start" -> "STOC_DUEL_START/MSG_START + replay game number"
+                gameNo != null -> "STOC_DUEL_START/MSG_START + replay game number"
                 else -> "STOC_GAME_MSG/MSG_WIN + replay（局次未确认）"
             }
             if (capture != null) consume(capture)
@@ -232,10 +257,11 @@ class LiveEvidence {
      * 序号未知时（没有 MSG_START），只在整批只有一份、且恰好一条待配胜负时才配。
      */
     private fun matchCapture(blobSerial: Int?, isTail: Boolean, batchSize: Int): GameCapture? {
-        if (blobSerial != null) return pendingWins[blobSerial]
+        if (blobSerial != null) return pendingWins.firstOrNull { it.serial == blobSerial }
         if (!isTail) return null
-        val unknown = pendingWins[0] ?: return null
-        return if (batchSize == 1) unknown else null
+        // 序号未知（中途进房）：按到达顺序取最早的一条——MC 补发时就是按局序依次推送的。
+        // 一帧多份时不猜，交给上层按局次/落盘顺序补。
+        return if (batchSize == 1) pendingWins.firstOrNull { it.serial == null } else null
     }
 
     private fun accepted(body: ByteArray): Boolean {

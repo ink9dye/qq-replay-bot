@@ -496,6 +496,7 @@ class WatchClient(
 
                 var attempt = 0            // 重连次数
                 var connectFails = 0       // 连续“连不上”次数
+                var winRetries = 0         // 末局等胜负的额外重连次数
                 while (true) {
                     // 首轮按全局错峰节奏进场；重连只需短暂间隔（房间还在，尽快接上）
                     ensureJoinGap(
@@ -580,6 +581,18 @@ class WatchClient(
 
                     lastFrames = result.frames
                     outcome = result.outcome
+                    // 末局还在等 MSG_WIN：给它有限次重连机会去接那条迟到的胜负，
+                    // 超过次数就按现状收尾（宁可没有胜负，也不能把任务挂死）。
+                    if (result.awaitingWin) {
+                        if (winRetries < MAX_WIN_RETRIES) {
+                            winRetries++
+                            onLog("末局胜负尚未收到，第 $winRetries 次重连继续等待（${room.title}）", "warn")
+                            outcome = "retry"
+                        } else {
+                            onLog("末局胜负等待超时，按现状上传（$winRetries 次重连仍未收到）", "warn")
+                            outcome = if (tally.saved > 0) "saved" else "noreplay"
+                        }
+                    }
                     if (outcome != "retry" && outcome != "lost") break
 
                     // ---- 连接中断 / 未完成：在同一任务内重连，不再直接放弃 ----
@@ -930,6 +943,7 @@ class WatchClient(
         val capture = game.capture
         val complete = capture != null && capture.capturedFromStart && capture.events.isNotEmpty()
         if (capture != null) {
+            // MSG_WIN 的胜方编号与录像内部玩家顺序同源（就是决斗席位），直接写。
             put("winner", capture.winner)
             put("reason", capture.reason)
             put("raw", capture.raw)
@@ -986,9 +1000,12 @@ class WatchClient(
             emptyList()
         }
         val distinct = (bySerial + byNo).distinct()
-        // 有局序号时只认序号；只有双方都没有序号时，才允许“全任务只剩一局”这种无歧义兜底，
-        // 绝不把已知序号的胜负塞给另一局（2026-11-05 实测就串到了第 2 局）。
-        val target = distinct.singleOrNull()
+        // 优先级：公告局次 > 本端局序号。
+        // 中途进房时本端 serial 会整体错位（实测把第 3 局的胜负配到了第 2 局），
+        // 而发牌姬的「第N局录像」公告是服务端给的真实局次，更可信。
+        val target = byNo.singleOrNull()
+            ?: bySerial.singleOrNull()
+            ?: distinct.singleOrNull()
             ?: candidates.singleOrNull()?.takeIf { it.serial == null || capture.serial == null }
             ?: return null
 
@@ -998,7 +1015,12 @@ class WatchClient(
             // 局次跟着这次落盘的结论走：有依据才有第 N 局，没依据保持 unknown
             target.capture = capture.numbered(target.gameNo, target.gameNoSource)
             if (target.association == "none") {
-                target.association = "STOC_GAME_MSG/MSG_WIN + replay game serial（胜负晚于录像）"
+                // 与参考实现同口径：有局次就写标准那一句
+                target.association = if (target.gameNo != null) {
+                    "STOC_DUEL_START/MSG_START + replay game number"
+                } else {
+                    "STOC_GAME_MSG/MSG_WIN + replay game serial（胜负晚于录像）"
+                }
             }
             touched.add(target)
             // 下一局如果已经落盘，把它的 previous_game 也补上（按落盘序号，不按猜测的局次）
@@ -1156,6 +1178,8 @@ class WatchClient(
         const val CLAIM_GRACE_MS = 15_000L
         /** 刚打完那局最多等这么久的 MSG_WIN（实测约 25 秒到）；超时就先把录像传上去。 */
         const val WIN_WAIT_MS = 90_000L
+        /** 末局等胜负时额外允许的重连次数（重连只为了接那条迟到的 MSG_WIN）。 */
+        const val MAX_WIN_RETRIES = 2
         /** 定时补传的检查间隔。 */
         const val FLUSH_TICK_MS = 3_000L
         /** 待补传记录的落盘文件名与有效期（超过一天的一般已被服务器重新派发）。 */
