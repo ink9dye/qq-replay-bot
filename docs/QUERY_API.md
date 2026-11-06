@@ -1,4 +1,4 @@
-# 服务端总接口文档
+﻿# 服务端总接口文档
 
 本文是服务端对外的**总接口文档**，把原来的查询接口和录像库接口合成一份：
 
@@ -50,7 +50,7 @@
 | GET /query-api/top100 | 无 | data为既有门户roster结果 |
 | GET /query-api/player/名称/pt | 路径名称百分号编码 | data为门户积分历史 |
 | GET /query-api/player/名称/history | 同上 | data为门户历史结果 |
-| GET /query-api/player/名称/decks | 同上 | data为门户玩家构筑，补齐card.name |
+| GET /query-api/player/名称/decks | 同上 | data为门户玩家构筑（`cards` 含 `partition=main/extra/side`，补齐 `card.name`）；Side 为推测，标 `inferred:true`，并附 `side_inferred` |
 | GET /query-api/player/名称/replays | 同上 | data.items及data.link；逐项url为下载链接，link含目录URL、expires_at、public |
 | GET /query-api/charts/pie | 无 | data.items、pie、covered、current、unidentified；与门户前百快照共源 |
 | GET /query-api/search?type=player& q=关键词 | 实际URL去掉空格；type支持player/card/deck，q最多80字 | player/card沿门户；deck按当前前百deck_distribution名称检索，最多30项 |
@@ -63,6 +63,11 @@
 订阅写入同时要求query.writes_enabled=true与账号writes=true；账号权限变动按请求实时验证。调用方不能通过正文选择其他账号。订阅与QQ使用同一张既有subscriptions表；本次没有新建自动推送任务。录像GET在需要时沿现有分享机制创建/复用share_links记录，不能称为数据库完全只读。
 
 查询读取通常返回{"ok":true,"data":...}，认证/管理/订阅写入直接返回字段。预期错误：400输入无效、401认证失败、403无写权限、404无对应路径、409账号已开通、429限流/繁忙、503查询未启用或上游不可用。/query-api/command保留为已认证请求501，不提供命令文本透传。客户端应使用结构化端点，不能把所有200业务结果都理解为“有数据”。
+
+
+
+> decks 的 Side 说明（2026-11-06 23:40）：stat_build_cards 没有真实 side 分区，cards 里的 partition=side 来自构筑页同一套推测（statistics_build_detail.infer_side）：同场多局差异 + 收敛，每张带 inferred:true、copies、sources、
+ame；顶层 side_inferred={complete,conflict,reason,order} 说明是否完整、是否冲突、原因和排序。completeness.side 仍为 false（无直接记录），不要把它当真实 Side。
 
 ## 3. QQ 开通与管理（查询接口）
 

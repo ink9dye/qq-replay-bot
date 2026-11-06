@@ -211,8 +211,79 @@ class QueryCore:
             hit = read_precomputed(self.data_dir, name, latest)
             if hit is not MISS:
                 return hit
-        return self._cached(("decks", name), 300.0,
-                            lambda: self.portal.get_json("/statistics/api/build", {"player": name}))
+        payload = self._cached(("decks", name), 300.0,
+                               lambda: self.portal.get_json("/statistics/api/build", {"player": name}))
+        return self._with_side(name, payload)
+
+    def _side_cards(self, name: str):
+        """构筑页的推测 Side（只读）：/query-api 的 decks 也要能带 Side。
+
+        优先在本进程用只读连接算，避免门户 /statistics/api/build-detail 的 3 秒锁超时
+        （门户会 503）。没有 database/replay_root 时退回门户。
+        """
+        try:
+            detail = self._cached(("build-detail", name), 300.0,
+                                  lambda: self._build_detail_inprocess(name))
+        except Exception:
+            return None
+        if not isinstance(detail, dict):
+            return None
+        side = detail.get("inferred_side") or {}
+        return dict(cards=side.get("cards") or [],
+                    complete=bool(side.get("complete")),
+                    conflict=bool(side.get("conflict")),
+                    reason=str(side.get("reason") or ""),
+                    order=detail.get("side_order") or [])
+
+    def _build_detail_inprocess(self, name: str):
+        """和构筑页同一份 build_detail 逻辑，只取 Side；读事务只读、不写库。"""
+        if not self.database or not self.replay_root:
+            return self.portal.get_json("/statistics/api/build-detail", {"player": name})
+        import sqlite3
+        from contextlib import closing
+
+        from .card_search import card_name
+        from .statistics_build_detail import query as build_detail
+        from .statistics_card_names import index
+
+        path = Path(self.database).resolve()
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=15)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN")
+            detail = build_detail(db, Path(self.replay_root), self.clock(), name, None, "build")
+        if isinstance(detail, dict):
+            names = index(path.parent)
+            for card in (detail.get("inferred_side") or {}).get("cards") or []:
+                info = names.get(str(card.get("code")))
+                card["name"] = card_name(info) if info else "卡名暂缺"
+        return detail
+
+    def _with_side(self, name: str, payload):
+        """把推测 Side 按主卡/额外的同一形状并入 cards（partition=side、inferred=true）。"""
+        if not isinstance(payload, dict):
+            return payload
+        side = self._side_cards(name)
+        if not side:
+            return payload
+        cards = [dict(card) for card in (payload.get("cards") or []) if isinstance(card, dict)]
+        seen = {(str(card.get("code")), str(card.get("partition"))) for card in cards}
+        order = {str(code): index for index, code in enumerate(side.get("order") or [])}
+        extra = []
+        for card in side.get("cards") or []:
+            if not isinstance(card, dict):
+                continue
+            item = dict(card)
+            item["partition"] = "side"
+            item["inferred"] = True
+            if (str(item.get("code")), "side") in seen:
+                continue
+            extra.append(item)
+        extra.sort(key=lambda item: order.get(str(item.get("code")), 999))
+        result = dict(payload)
+        result["cards"] = cards + extra
+        result["side_inferred"] = dict(complete=side["complete"], conflict=side["conflict"],
+                                       reason=side["reason"], order=side.get("order") or [])
+        return result
 
     def player_replays(self, name: str, identity: str = ""):
         """P3：有 share 时返回 {items, link}（/s/ 分享链接，与 QQ「录像」同机制）；
