@@ -61,7 +61,10 @@ class Store:
         # 多进程共用同一个库：collector 与 QQ 各开连接，不是单写者。
         # WAL 允许读写并行，busy_timeout 让偶发写锁最多等 5 秒；M3 才把 QQ 的写请求收敛到 collector。
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA busy_timeout=5000")
+        # 2026-11-06：统计扫描会长时间占写锁，5 秒超时会让 top100 刷新抛 database is locked 并打死 collector；放宽到 30 秒。
+        self._db.execute("PRAGMA busy_timeout=30000")
+        # WAL 曾被长读事务拖到 10.5GB；reset 时把文件截到 128MB，避免长期占盘。
+        self._db.execute("PRAGMA journal_size_limit=134217728")
         if not self.migrate:
             self._commit()
             return

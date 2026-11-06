@@ -507,6 +507,15 @@ class BotService:
                 message=(f"官方前100刷新失败：{state['last_error']}，连续{state['consecutive_failures']}轮；"
                          f"上次成功{stamp}，保留完整旧名单并标记过期；暂停新增前100自动观战，关注及在录对局继续")
                 print(message,flush=True);self.write_log(message)
+            except Exception as error:
+                # 2026-11-06：写锁/磁盘等运行时异常不能再打死整个 collector（当日两次 database is locked 崩溃）。
+                detail=f"{type(error).__name__}: {error}"[:160]
+                try:
+                    self.store.top100_failed(float(self.clock()),'runtime_error')
+                except Exception:
+                    pass
+                message=f"官方前100刷新异常（已跳过本轮，下轮重试）：{detail}"
+                print(message,flush=True);self.write_log(message)
             await asyncio.sleep(REFRESH_SECONDS)
 
     def on_capture_status(self, status):
