@@ -215,8 +215,10 @@ def _query(db,root,now,args,limit=2000,ranges=None):
     early_firsts = _list_arg(args, 'first', length=8, label='先后攻')
     if any(x not in ('1','0','None') for x in early_firsts):
         raise ValueError('先后攻条件无效。')
+    early_player = str((args.get('player') or [''])[0]).strip().lower()
     def row_filter(row):
-        return ((early_start is None or row['recorded_at'] >= early_start)
+        return ((not early_player or early_player in str(row.get('player') or '').lower())
+                and (early_start is None or row['recorded_at'] >= early_start)
                 and (early_end is None or row['recorded_at'] < early_end)
                 and (not early_outcomes or row['outcome'] in early_outcomes)
                 and (not early_firsts or str(row['first_player']) in early_firsts))

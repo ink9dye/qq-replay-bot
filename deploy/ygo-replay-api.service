@@ -1,0 +1,21 @@
+[Unit]
+Description=YGO replay library read-only API (search/download)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+ExecStart=/usr/bin/python3 -m bot.replay_api --root /opt/ygobot
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
