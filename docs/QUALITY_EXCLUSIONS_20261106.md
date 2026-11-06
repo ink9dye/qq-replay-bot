@@ -18,25 +18,27 @@
 - `bot/statistics_server.py` 的 `create_server()` 从配置 `statistics.quality_filter.enabled` 启用，仅 `ygo-web` 打开；QQ/collector 不启用，行为保持不变。
 - 性能：首次计算约 1.0s，命中缓存约 0.02s；热查询约 0.17s。回填活跃时指纹会变化，下一次查询重新计算约 1s。
 
-## 3. 数据与验证（2026-11-06 23:10）
+## 3. 数据与验证（2026-11-06 23:15）
 
 | 项 | 数值 |
 |---|---|
-| `stat_views` / 摘要 | 29,646 / 14,823 |
+| `stat_views` / 摘要 | 29,668 / 14,834 |
 | 排除摘要 | **2,418**（1,029 整场 + 1,388 局次未知 + 1 单局未知） |
 | `stat_exclusions` 自动行 | **0**（一次性补跑后已清零） |
-| 录像筛选 total | 5,258 |
-| 已确认胜负分母 | 5,258 |
+| 录像筛选 total | 5,266 |
+| 已确认胜负分母 | 5,266 |
 | 胜负未知 | **0** |
 
 - `outcome=unknown` 筛选返回 0。
 - 直接检查过滤后的 5,266 个有效视角：胜负未知 **0**、无可靠局次 **0**。
 - 固定三局样本（第 1/2 局已知、第 3 局 unknown）整场不再出现；正常已知对局仍在。
+- 冷查询约 7s（含查询排队与重试），热查询约 0.10s；过滤计算约 1.0s，缓存命中约 0.02s。
 - 一次性补跑历史：20:39 写入 2,259 行；22:58 补跑到 2,418 行；查询层过滤验证通过后删除全部 2,418 行，避免与查询层重复并恢复分享/打包的原始可达性。删除前快照为 `stat_exclusions-before-filter-20261106-2308.tsv`。
 
 ## 4. 部署与回滚
 
 - 文件：新增 `bot/statistics_quality.py`；修改 `bot/top100.py`、`bot/statistics_server.py`。
+- 提交：实现提交 `8110736`（已推送）；本文件后续数字修订随最新提交同步。
 - 配置：`statistics.quality_filter = {"enabled": true}`；备份在 `/opt/ygobot/data/config-backups/quality-filter-20261106/`（含旧 `top100.py`、`statistics_server.py`、`config.json`）。
 - 只重启 `ygo-web`；`ygo-collector`、`ygo-qq`、`ygo-replay-api`、nginx 未因本轮改动重启。
 - 回滚：
