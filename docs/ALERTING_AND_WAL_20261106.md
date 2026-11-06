@@ -39,7 +39,7 @@
 ### 第二次膨胀与稳态确认（09:52）
 截断后 WAL 在 5 分钟内又涨到 **1.98GB**（约 6MB/s），`PASSIVE` 只能推进到第 1381 帧——有连接从 09:47 起钉住旧快照，checkpoint 无法 reset。停 `ygo-collector` + `ygo-web` 后 `wal_checkpoint(TRUNCATE)` 一次成功（`0|0|0`），重启两服务，WAL 追到 `journal_size_limit` 后**稳定在 128MB 整**。
 
-写放大来源已确认：重启后 collector 的 `/proc/<pid>/io` 写入约 **10MB/s**，但 `bot.sqlite3` 大小不变、行数不变（`stat_card_facts` 1,057,320），说明不是数据增长，而是同一批页被反复重写。与 01:42 夜间版“卡片事实投影随上传刷新”一致：每次上传重写约 1M 行（~100MB）。这属性能问题而非数据损坏，但单次 100MB 写入叠上长读事务，就足以在十几分钟内把 WAL 推到 GB 级——所以告警阈值从 8GB 下调到 2GB（正常稳态是 128MB）。
+写入来源尚未定位：重启后 collector 的 `/proc/<pid>/io` 写入约 **10MB/s**，但 `bot.sqlite3` 大小不变、行数不变（`stat_card_facts` 1,057,320）——不是数据增长，而是同一批页被反复重写。已排除 `stat_card_facts` 整表重写：该表按 `(digest,player)` UPSERT 增量更新（`statistics_facts.py` 的 `ON CONFLICT ... DO UPDATE`）。候选是报表缓存 BLOB（`entries.payload`）或周期性刷新循环，待测量。这属 I/O 与 SSD 磨损问题，但十几 MB/s 的写入叠上长读事务就足以把 WAL 推到 GB 级——所以告警阈值从 8GB 下调到 2GB（正常稳态 128MB）。
 
 ### 部署证据
 - 备份原文件：`/opt/ygobot/data/config-backups/wal-fix-20261106-1793929468/`（store.py `6332009f…`、service.py `ad1de920…`）。
