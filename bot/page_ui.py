@@ -34,8 +34,9 @@ def date(stamp):
     return datetime.fromtimestamp(stamp).strftime('%Y-%m-%d %H:%M:%S')
 
 
-def deck_card_images(main, extra, side, names):
+def deck_card_images(main, extra, side, names, data_dir=None):
     """把主卡、额外、side 渲染成三列卡图网格，点击卡图弹出卡片详情。"""
+    from . import card_image_cache
     def column(title, cards):
         if not cards:
             return ''
@@ -46,9 +47,18 @@ def deck_card_images(main, extra, side, names):
                 raw = raw[1:-1].strip()
             name = names.get(code) or names.get(raw) or str(raw)
             badge = f'<span class="card-count">×{count}</span>' if count > 1 else ''
+            try:
+                number = int(raw)
+            except (TypeError, ValueError):
+                number = None
+            if data_dir is not None and number:
+                primary, fallback = card_image_cache.page_urls(data_dir, number)
+            else:
+                primary = CARD_IMAGE_URL.format(code=raw)
+                fallback = f'https://cdn.233.momobako.com/ygopro/pics/{raw}.jpg'
             items.append(
                 f'<a class="card-item" href="javascript:void(0)" onclick="openCardModal(\'{raw}\')" title="{e(name)}">'
-                f'<img src="{CARD_IMAGE_URL.format(code=raw)}" onerror="this.onerror=null;this.src=&quot;https://cdn.233.momobako.com/ygopro/pics/{raw}.jpg&quot;" alt="{e(name)}" loading="lazy">{badge}</a>'
+                f'<img src="{primary}" onerror="this.onerror=null;this.src=&quot;{fallback}&quot;" alt="{e(name)}" loading="lazy">{badge}</a>'
             )
         return (f'<div class="deck-col"><h4>{e(title)}</h4><span class="muted">{len(cards)} 张</span>'
                 f'<div class="card-images">{"".join(items)}</div></div>')
@@ -151,7 +161,7 @@ def directory_body(app, link, title_provider, points_provider):
         deck_html = (f'<section class="panel deck"><span class="eyebrow">DECK ARCHIVE</span><h2>最近观战卡组</h2>'
                      f'<h3>{heading}</h3><div class="metrics"><span class="metric">主卡<b>{len(main)}</b></span>'
                      f'<span class="metric">额外<b>{len(extra)}</b></span><span class="metric">推断side<b>{len(side)}</b></span></div>'
-                     f'{deck_card_images(main, extra, side, names)}'
+                     f'{deck_card_images(main, extra, side, names, app.replay_root.parent)}'
                      f'<div class="actions">{deck_download_button(deck_filename, main, extra, side)}{action}</div>'
                      f'<p class="note">卡组来自该玩家最新观战记录，不受录像列表的对手排名条件限制。'
                      f'本场已观测 {current["game_count"]} 局，'
@@ -176,7 +186,7 @@ def directory_body(app, link, title_provider, points_provider):
             except ValueError:
                 ourygo = ''
             deck_details = (f'<details class="deck-details"><summary>本场卡组 · 主卡 {len(main)} · 额外 {len(extra)} · side {len(side)}</summary>'
-                            f'{deck_card_images(main, extra, side, names)}'
+                            f'{deck_card_images(main, extra, side, names, app.replay_root.parent)}'
                             f'<div class="actions">{deck_download_button(safe_filename_part(link["player"]) or "deck", main, extra, side)}{ourygo}</div></details>')
         games = []
         for order, (number, replay, path) in enumerate(group['entries'], 1):

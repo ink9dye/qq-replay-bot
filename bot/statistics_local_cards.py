@@ -222,7 +222,15 @@ def thumb_dir(data_dir):
 
 
 def _thumb_file(thumbs, code):
-    for candidate in _image_codes(code):
+    candidates = list(_image_codes(code))
+    try:
+        from . import card_image_cache
+        mapped = card_image_cache.image_id_cached(thumbs.parent, code)
+        if mapped and mapped not in candidates:
+            candidates.insert(0, mapped)
+    except (ImportError, OSError, ValueError):
+        pass
+    for candidate in candidates:
         for suffix in ('.webp', '.jpg', '.png'):
             path = thumbs / (str(candidate) + suffix)
             try:
@@ -259,33 +267,50 @@ def _schedule_thumb(data_dir, code, thumbs, pics=None):
             return
         _thumb_pending.add(code)
     def work():
+        def try_thumb(candidate):
+            try:
+                with urllib.request.urlopen(THUMB_REMOTE % candidate, timeout=15) as response:
+                    blob = response.read(2 * 1024 * 1024 + 1)
+            except OSError:
+                return False
+            if len(blob) < 64 or len(blob) > 2 * 1024 * 1024:
+                return False
+            if blob[:4] == b'RIFF' and blob[8:12] == b'WEBP':
+                suffix = '.webp'
+            elif blob[:2] == b'\xff\xd8':
+                suffix = '.jpg'
+            elif blob[:4] == b'\x89PNG':
+                suffix = '.png'
+            else:
+                return False
+            path = (thumbs / (str(candidate) + suffix)).resolve()
+            if not path.is_relative_to(thumbs):
+                return False
+            temporary = path.with_suffix(suffix + '.tmp')
+            temporary.write_bytes(blob)
+            os.replace(temporary, path)
+            return True
         try:
             thumbs.mkdir(parents=True, exist_ok=True)
+            from . import card_image_cache
+            # 普通卡先按卡号拿 !thumb2，命中就不查百鸽页。
             for candidate in _image_codes(code):
-                try:
-                    with urllib.request.urlopen(THUMB_REMOTE % candidate, timeout=15) as response:
-                        blob = response.read(2 * 1024 * 1024 + 1)
-                except OSError:
-                    continue
-                if len(blob) < 64 or len(blob) > 2 * 1024 * 1024:
-                    continue
-                if blob[:4] == b'RIFF' and blob[8:12] == b'WEBP':
-                    suffix = '.webp'
-                elif blob[:2] == b'\xff\xd8':
-                    suffix = '.jpg'
-                elif blob[:4] == b'\x89PNG':
-                    suffix = '.png'
-                else:
-                    continue
-                path = (thumbs / (str(candidate) + suffix)).resolve()
-                if not path.is_relative_to(thumbs):
-                    continue
-                temporary = path.with_suffix(suffix + '.tmp')
-                temporary.write_bytes(blob)
-                os.replace(temporary, path)
+                if try_thumb(candidate):
+                    with _lock:
+                        _thumb_failed.pop(code, None)
+                    return
+            mapped = card_image_cache.image_id(data_dir, code)
+            if mapped and mapped not in _image_codes(code) and try_thumb(mapped):
                 with _lock:
                     _thumb_failed.pop(code, None)
                 return
+            full = card_image_cache.ensure_full(data_dir, code, timeout=15)
+            if full is not None:
+                derived = _derive_thumb(thumbs, full, code)
+                if derived is not None:
+                    with _lock:
+                        _thumb_failed.pop(code, None)
+                    return
             raise ValueError('no thumb')
         except (OSError, ValueError):
             with _lock:
@@ -357,12 +382,22 @@ def wait_for_thumbs(data_dir, codes, timeout=3):
 
 
 def web_thumb(data_dir, code):
-    """网页仅查磁盘；缺图排队补小图，不在HTTP线程缩图或等待网络。"""
+    """网页优先本地：有缩略图直接回，有原图离线缩，都没有才后台补。"""
     number = _card_number(code)
     if number is None or not 0 < number <= 4294967295:
         return None
     thumbs = thumb_dir(data_dir)
     found = _thumb_file(thumbs, number)
-    if found is None:
-        _schedule_thumb(data_dir, number, thumbs)
-    return found
+    if found is not None:
+        return found
+    try:
+        from . import card_image_cache
+        full = card_image_cache.local_full(data_dir, number)
+        if full is not None:
+            derived = _derive_thumb(thumbs, full, number)
+            if derived is not None:
+                return derived
+    except (ImportError, OSError, ValueError):
+        pass
+    _schedule_thumb(data_dir, number, thumbs)
+    return None

@@ -84,40 +84,25 @@ IMAGE_WAIT_SECONDS = 25
 
 
 def _card_image_blob(code, data_dir):
-    """Use the existing shared downloader; never start a second fetch for a card."""
-    cache_dir = Path(data_dir) / 'card-images'
-    path = cache_dir / (str(code) + '.jpg')
-    if path.is_file() and 0 < path.stat().st_size <= IMAGE_MAX_BYTES:
+    """本地优先；卡密和卡图文件名可能不同，由百鸽卡页补映射。"""
+    from . import card_image_cache
+    path = card_image_cache.local_full(data_dir, code)
+    if path is not None:
         return path.read_bytes()
-    from .statistics_local_cards import library_root, _existing_picture, _schedule
-    root = library_root(data_dir)
-    if root is not None:
-        pics = (root / 'pics').resolve()
-        found = _existing_picture(pics, code)
-        if not found:
-            future = _schedule(data_dir, code, pics)
-            if future is not None:
-                from concurrent.futures import TimeoutError
-                try:
-                    future.result(timeout=IMAGE_WAIT_SECONDS)
-                except TimeoutError:
-                    return b''
-            found = _existing_picture(pics, code)
-        if found and found[0].stat().st_size <= IMAGE_MAX_BYTES:
-            return found[0].read_bytes()
-        return b''
-    # Configurations without a local YGO library still support ordinary lookup.
-    for url in (f'https://cdn.233.momobako.com/ygopro/pics/{code}.jpg',
-                f'https://cdntx.moecube.com/ygopro-super-pre/data/pics/{code}.jpg'):
-        try:
-            with urlopen(Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=5) as response:
-                blob = response.read(IMAGE_MAX_BYTES + 1)
-            if blob[:2] == b'\xff\xd8' and len(blob) <= IMAGE_MAX_BYTES:
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(blob)
-                return blob
-        except OSError:
-            continue
+    try:
+        from .statistics_local_cards import library_root, _existing_picture
+    except ImportError:
+        library_root = None
+    if library_root is not None:
+        root = library_root(data_dir)
+        if root is not None:
+            pics = (root / 'pics').resolve()
+            found = _existing_picture(pics, int(code))
+            if found and found[0].stat().st_size <= IMAGE_MAX_BYTES:
+                return found[0].read_bytes()
+    path = card_image_cache.ensure_full(data_dir, code, timeout=12)
+    if path is not None:
+        return path.read_bytes()
     return b''
 
 
@@ -125,6 +110,7 @@ def card_image_payload(code, data_dir):
     """Small byte-bounded cache; same-card single flight; no network under the cache lock."""
     import base64
     from concurrent.futures import Future, TimeoutError
+    from . import card_image_cache
     code = _numeric_code(code)
     with _IMAGE_BYTES_LOCK:
         cached = _IMAGE_BYTES.get(code)
@@ -138,10 +124,10 @@ def card_image_payload(code, data_dir):
         try:
             return pending.result(timeout=IMAGE_WAIT_SECONDS)
         except TimeoutError:
-            return f'https://cdn.233.momobako.com/ygopro/pics/{code}.jpg'
+            return card_image_cache.full_url(data_dir, code)
     # The shared blob loader already tries both sources. Do not probe a URL
     # before reading a local image or while another card waits on the HEAD lock.
-    reply = f'https://cdn.233.momobako.com/ygopro/pics/{code}.jpg'
+    reply = card_image_cache.full_url(data_dir, code)
     try:
         blob = _card_image_blob(code, data_dir)
         if blob:
@@ -252,7 +238,10 @@ class CardSearch:
                 self.release_cache[card_id] = (self.clock()+remaining,lines,note)
             else:
                 try:
-                    lines = release_lines(self.release_fetch(card_id))
+                    page = self.release_fetch(card_id)
+                    from . import card_image_cache
+                    card_image_cache.remember_page(self.data_dir, card_id, page)
+                    lines = release_lines(page)
                     if not lines:raise ValueError('release data not parsed')
                     self.release_known[card_id] = dict(lines=lines,checked_at=self.wall_clock())
                     self.release_known.move_to_end(card_id)
