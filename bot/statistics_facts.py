@@ -137,9 +137,12 @@ def import_replay(db, replay, path, report=None, now=None):
                        for p, d in zip(report['players'], decks))):
             raise ValueError('解析结果与录像身份或构筑不符')
     version = _number((report or {}).get('version'))
+    start_changes = db.total_changes
     db.execute('INSERT INTO stat_games(digest,recorded_at,received_at,expires_at) VALUES(?,?,?,?) '
                'ON CONFLICT(digest) DO UPDATE SET received_at=MIN(received_at,excluded.received_at),'
-               'expires_at=MIN(expires_at,excluded.expires_at)',
+               'expires_at=MIN(expires_at,excluded.expires_at) '
+               'WHERE received_at<>MIN(received_at,excluded.received_at) '
+               'OR expires_at<>MIN(expires_at,excluded.expires_at)',
                (digest, source['recorded_at'], received, expires))
     db.execute('INSERT OR IGNORE INTO stat_files(replay_id,digest) VALUES(?,?)', (replay['id'], digest))
     for index, (name, main, extra) in enumerate(decks):
@@ -211,6 +214,11 @@ def import_replay(db, replay, path, report=None, now=None):
                             fact['used_after_draw'] = 0
                     elif draw_complete:
                         fact.update(drawn=0, draw_count=0, initial_count=0, used_after_draw=0)
+                if (before and before.get('copies') == copies
+                        and all(before.get(key) == fact.get(key) for key in
+                                ('drawn', 'draw_count', 'initial_count', 'used', 'use_count',
+                                 'used_after_draw', 'appeared', 'appearance_count'))):
+                    continue
                 values = [fact[k] for k in ('drawn','draw_count','initial_count','used','use_count',
                                             'used_after_draw','appeared','appearance_count')]
                 db.execute('INSERT INTO stat_card_facts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) '
@@ -236,16 +244,18 @@ def import_replay(db, replay, path, report=None, now=None):
                 outcome, result_source = new_outcome, incoming_source
         first = (report or {}).get('first_player')
         first_flag = int(first == index) if type(first) is int and first in (0, 1) else old['first_player']
-        db.execute('UPDATE stat_views SET outcome=?,result_source=?,first_player=?,usage_complete=?,draw_complete=?,'
-                   'report_version=MAX(report_version,?) WHERE digest=? AND player=?',
-                   (outcome, result_source, first_flag,
-                    int(usage_complete) if replace_use else old['usage_complete'],
-                    int(draw_complete) if replace_draw else old['draw_complete'], version, digest, name))
-    db.execute('UPDATE stat_games SET report_version=MAX(report_version,?) WHERE digest=?', (version, digest))
-    # One indexed update per imported report, in the same transaction as facts.
-    # Do not infer freshness from report_version: same-version evidence can improve.
-    db.execute('INSERT INTO stat_fact_revisions VALUES(?,1) ON CONFLICT(digest) '
-               'DO UPDATE SET revision=revision+1', (digest,))
+        new_usage = int(usage_complete) if replace_use else old['usage_complete']
+        new_draw = int(draw_complete) if replace_draw else old['draw_complete']
+        new_report_version = max(int(old['report_version'] or 0), version)
+        if (outcome, result_source, first_flag, new_usage, new_draw, new_report_version) != (
+                old['outcome'], old['result_source'], old['first_player'],
+                old['usage_complete'], old['draw_complete'], old['report_version']):
+            db.execute('UPDATE stat_views SET outcome=?,result_source=?,first_player=?,usage_complete=?,'
+                       'draw_complete=?,report_version=? WHERE digest=? AND player=?',
+                       (outcome, result_source, first_flag, new_usage, new_draw,
+                        new_report_version, digest, name))
+    if existing is None or version > int(existing['report_version'] or 0):
+        db.execute('UPDATE stat_games SET report_version=? WHERE digest=?', (version, digest))
     if report is not None and (existing is None or version >= existing['report_version']):
         payload = {key: report.get(key) for key in ('winner', 'first_player', 'initiative_chooser',
                    'result_source', 'result_conflict', 'inference_rule', 'match_evidence', 'version')}
@@ -257,7 +267,11 @@ def import_replay(db, replay, path, report=None, now=None):
         kind = 'analysis:' + hashlib.sha256(encoded.encode()).hexdigest()
         db.execute('INSERT OR IGNORE INTO stat_evidence VALUES(?,?,?,?)',
                    (digest, kind, report.get('result_source') or 'unknown', encoded))
-    return True
+    # 未变行不写事实页；revision 仍按既有契约每次真实导入推进，供报表缓存失效。
+    changed = db.total_changes > start_changes
+    db.execute('INSERT INTO stat_fact_revisions VALUES(?,1) ON CONFLICT(digest) '
+               'DO UPDATE SET revision=revision+1', (digest,))
+    return changed
 
 
 def visible_games(db, replay_root, now):

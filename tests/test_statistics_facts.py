@@ -177,3 +177,21 @@ class StatisticsFactsTests(unittest.TestCase):
         self.store.import_replay_facts(row,path,report,NOW)
         self.assertIsNone(self.card(row,2)['used'])
         self.assertEqual(self.details(row)['views'][0]['usage_complete'],0)
+
+    def test_identical_reimport_is_noop_and_does_not_bump_revision(self):
+        row, path = self.source()
+        report = self.report(row)
+        self.assertTrue(self.store.import_replay_facts(row, path, report, NOW))
+        revision = self.store._db.execute(
+            'SELECT revision FROM stat_fact_revisions WHERE digest=?', (row['digest'],)).fetchone()[0]
+        changes = self.store._db.total_changes
+        self.assertFalse(self.store.import_replay_facts(row, path, report, NOW))
+        # 事实/视图/文件行不再重写，只推进 revision 这一行。
+        self.assertEqual(self.store._db.total_changes, changes + 1)
+        self.assertEqual(self.store._db.execute(
+            'SELECT revision FROM stat_fact_revisions WHERE digest=?', (row['digest'],)).fetchone()[0], revision + 1)
+        changed = self.report(row)
+        changed['players'][0]['used_cards'].append(dict(code=2, events=1))
+        self.assertTrue(self.store.import_replay_facts(row, path, changed, NOW))
+        self.assertGreater(self.store._db.execute(
+            'SELECT revision FROM stat_fact_revisions WHERE digest=?', (row['digest'],)).fetchone()[0], revision + 1)
