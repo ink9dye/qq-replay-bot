@@ -505,6 +505,24 @@ class StatisticsPortal:
                     {'Content-Disposition':f'attachment; filename="source-{parts[2][:16]}.yrp"'})
                 return status,content_type,blob,extra
             except (sqlite3.Error,OSError):return self._reply(404,'源录像当前不可用。')
+        if len(parts)==3 and parts[:2]==['statistics','replay']:
+            from .share import safe_replay_file
+            value=parts[2]
+            if not value.isdigit() or len(value)>12:return self._reply(400,'录像编号无效。')
+            try:
+                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
+                    db.row_factory=sqlite3.Row;db.execute('BEGIN')
+                    row=db.execute('SELECT id,digest,rel_path FROM replays WHERE id=?',(int(value),)).fetchone()
+                if row is None:return self._reply(404,'录像不存在或已过期。')
+                path=safe_replay_file(self.replay_root,row['rel_path'])
+                if path is None or not path.is_file():return self._reply(404,'录像文件不可用。')
+                blob=path.read_bytes()
+                digest=str(row['digest'] or '')
+                filename=f"replay-{int(row['id'])}-{digest[:12]}.yrp"
+                status,kind,_,extra=self._reply(200,'','application/octet-stream',
+                    {'Content-Disposition':f'attachment; filename="{filename}"','Cache-Control':'no-store'})
+                return status,kind,blob,extra
+            except (sqlite3.Error,OSError):return self._reply(503,'录像暂时不可用，请稍后重试。')
         if parts==['statistics','api','card-search']:
             term=parse_qs(parsed.query).get('q',[''])[0].strip()
             if not term or len(term)>80:return self._reply(400,'请输入卡名或卡号。')
