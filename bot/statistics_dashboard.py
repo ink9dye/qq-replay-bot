@@ -193,12 +193,15 @@ def query(db, replay_root, now, player=None):
             types[name]=types.get(name,0)+1
     distribution = [dict(name=k, players=v) for k, v in sorted(types.items(), key=lambda kv: (-kv[1], kv[0]))]
     try:
-        from .deck_pie import from_data_dir
-        deck_pie = from_data_dir(distribution, _data_dir(db), deck_images=deck_images(db, types))
+        from .deck_pie import from_data_dir, single_from_data_dir
+        images = deck_images(db, types)
+        deck_pie = from_data_dir(distribution, _data_dir(db), deck_images=images)
+        deck_single = single_from_data_dir(distribution, _data_dir(db), deck_images=images)
     except Exception:
         deck_pie = None
+        deck_single = None
     return dict(generated_at=now,roster={k:v for k,v in basis['roster'].items() if k!='members'},
         current_players=len(people),covered_players=len(latest),missing_players=len(people)-len(latest),
         unidentified_players=sum(p['observed'] and not p['deck_type'] for p in people),people=people,
-        deck_distribution=distribution,deck_pie=deck_pie,
+        deck_distribution=distribution,deck_pie=deck_pie,deck_single=deck_single,
         data_quality=basis['diagnostics'],series_reference=basis['series_reference'],classification_revision=basis['classification_revision'])

@@ -118,6 +118,9 @@ def make_handler(portal, share_app=None):
 
 def create_server(root,port=8788):
     root=Path(root).resolve();cfg=json.loads((root/'config.json').read_text(encoding='utf-8-sig'))
+    from .statistics_quality import enable as enable_quality_filter
+    quality=(cfg.get('statistics') or {}).get('quality_filter') or {}
+    enable_quality_filter(bool(quality.get('enabled')))
     data=Path(cfg.get('data_dir') or root/'data');replays=Path(cfg.get('replay_dir') or data/'replays')
     if not (data/'bot.sqlite3').is_file():raise ValueError('statistics_database_missing')
     portal=StatisticsPortal(data/'bot.sqlite3',replays,time.time,owner_secret(data/'statistics-owner.key'),background=True)
@@ -138,7 +141,6 @@ def main():
     args=parser.parse_args()
     try:
         server=create_server(args.root,args.port)
-        cfg=json.loads((Path(args.root).resolve()/'config.json').read_text(encoding='utf-8-sig'))
         def _warm():
             time.sleep(5)
             server.portal._roster_reply()
@@ -153,52 +155,25 @@ def main():
                 except Exception:
                     pass
         threading.Thread(target=_roster_keepwarm,daemon=True).start()
-        # 常用范围预热：默认关闭；只在 config.prewarm.enabled 时启动，且与刷新/Side 批次互斥。
-        from .statistics_prewarm import config_section as prewarm_section,warm_step as prewarm_step
-        from .statistics_prewarm import build_cursor_state as prewarm_build
-        prewarm=prewarm_section(cfg)
-        if prewarm:
-            def _prewarm_loop(steps=prewarm['steps'],interval=prewarm['interval'],
-                              builds=prewarm.get('builds') or {}):
-                cursor=0;build_cursor=0
-                last_scope=time.monotonic();last_build=0.0
-                while True:
-                    time.sleep(5)
-                    now=time.monotonic()
-                    try:
-                        if now-last_scope>=interval:
-                            last_scope=now
-                            cursor=prewarm_step(server.portal,steps,cursor)[1]
-                        elif builds.get('enabled') and now-last_build>=builds.get('interval',15):
-                            last_build=now
-                            payload,build_cursor=prewarm_build(server.portal,steps,build_cursor)
-                            if payload:last_build=now
-                    except Exception:pass
-            threading.Thread(target=_prewarm_loop,daemon=True,name='statistics-prewarm').start()
-        # Side 批次与网页请求争 CPU/GIL：默认仍按旧行为在进程内跑；把
-        # config.side_inference.external 设为 true 时由独立 oneshot 服务执行（bot.side_runner），
-        # web 进程不再启动这条线程，避免重叠执行与重复写缓存。
-        side_external = bool(((cfg.get('side_inference') or {}).get('external')))
-        if not side_external:
-            def _side_loop():
-                import json as _json
-                while True:
-                    time.sleep(300)
-                    try:
-                        status_path = server.portal.database.parent / 'capture-status.json'
-                        status = _json.loads(status_path.read_text(encoding='utf-8'))
-                        if int(status.get('active_observations') or 0) != 0:
-                            continue
-                        if time.time() - float(status.get('updated_at') or 0) > 180:
-                            continue
-                        from .side_inference import run as side_run
-                        # A complete batch can take minutes; the service CPU quota
-                        # bounds its load without blocking interactive query locks.
-                        side_run(args.root, limit=20)
-                    except Exception:
-                        pass
+        def _side_loop():
+            import json as _json
+            while True:
+                time.sleep(300)
+                try:
+                    status_path = server.portal.database.parent / 'capture-status.json'
+                    status = _json.loads(status_path.read_text(encoding='utf-8'))
+                    if int(status.get('active_observations') or 0) != 0:
+                        continue
+                    if time.time() - float(status.get('updated_at') or 0) > 180:
+                        continue
+                    from .side_inference import run as side_run
+                    # A complete batch can take minutes; the service CPU quota
+                    # bounds its load without blocking interactive query locks.
+                    side_run(args.root, limit=20)
+                except Exception:
+                    pass
 
-            threading.Thread(target=_side_loop, daemon=True).start()
+        threading.Thread(target=_side_loop, daemon=True).start()
         from .draw_analysis_worker import start_worker
         analysis_stop=start_worker(args.root)
         try:server.serve_forever()
