@@ -155,13 +155,24 @@ def main():
         threading.Thread(target=_roster_keepwarm,daemon=True).start()
         # 常用范围预热：默认关闭；只在 config.prewarm.enabled 时启动，且与刷新/Side 批次互斥。
         from .statistics_prewarm import config_section as prewarm_section,warm_step as prewarm_step
+        from .statistics_prewarm import build_cursor_state as prewarm_build
         prewarm=prewarm_section(cfg)
         if prewarm:
-            def _prewarm_loop(steps=prewarm['steps'],interval=prewarm['interval']):
-                cursor=0
+            def _prewarm_loop(steps=prewarm['steps'],interval=prewarm['interval'],
+                              builds=prewarm.get('builds') or {}):
+                cursor=0;build_cursor=0
+                last_scope=time.monotonic();last_build=0.0
                 while True:
-                    time.sleep(interval)
-                    try:cursor=prewarm_step(server.portal,steps,cursor)[1]
+                    time.sleep(5)
+                    now=time.monotonic()
+                    try:
+                        if now-last_scope>=interval:
+                            last_scope=now
+                            cursor=prewarm_step(server.portal,steps,cursor)[1]
+                        elif builds.get('enabled') and now-last_build>=builds.get('interval',15):
+                            last_build=now
+                            payload,build_cursor=prewarm_build(server.portal,steps,build_cursor)
+                            if payload:last_build=now
                     except Exception:pass
             threading.Thread(target=_prewarm_loop,daemon=True,name='statistics-prewarm').start()
         # Side 批次与网页请求争 CPU/GIL：默认仍按旧行为在进程内跑；把

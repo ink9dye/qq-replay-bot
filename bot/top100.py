@@ -109,7 +109,6 @@ def snapshot(db,now):
 
 def eligible_views(db,replay_root,now,internal_only=False,scope='default',series_catalog=None,player=None,check_files=True,annotate_series=True):
     """不聚合的动态有效视角：掉榜立即无效，重回恢复未到期事实。"""
-    from .share import safe_replay_file
     from .card_series import reference,annotate,SEMANTICS
     series_catalog=series_catalog or reference(db)
     series_reference=dict(status=series_catalog['status'],revision=series_catalog['revision'],semantics=SEMANTICS)
@@ -144,32 +143,49 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
         sql+='AND v.player=? '
         params+=(player,)
     if wide_population:sql=sql.replace('JOIN stat_current_top100 m ON m.player=v.player','LEFT JOIN stat_current_top100 m ON m.player=v.player')
+    allowed=None;before_range=None
+    if wide_population and population_scope is not None and not internal_only and player is None:
+        # 200 范围：先按“前100 + 已核验名次<=200”确定玩家集，再限制 SQL；
+        # 未核验者仍不计入，filter_rows 的最终结果不变，但不再加载其全部视角。
+        from .statistics_rank_scope import ranks_for
+        known_players={r['player'] for r in state['members']}
+        candidates={r[0] for r in db.execute('SELECT DISTINCT v.player FROM stat_views v JOIN stat_games g ON g.digest=v.digest WHERE g.expires_at>?',(float(now),))}-known_players
+        extra=ranks_for(candidates,now) if candidates else {}
+        allowed=known_players|{name for name,rank in extra.items() if isinstance(rank,int) and 0<rank<=200}
+        population_scope['unknown'].update(candidates-extra.keys())
+        before_range=db.execute('SELECT COUNT(*) FROM stat_views v JOIN stat_games g ON g.digest=v.digest WHERE g.expires_at>?',(float(now),)).fetchone()[0]
+        if not allowed:return dict(roster=state,classification_revision=revision,views=[],diagnostics=diagnostics,series_reference=series_reference,identity={},source_alive={})
+        if len(allowed)>0.6*(len(known_players)+len(candidates)):
+            # 允许集接近全量时，SQL 过滤没有收益，保持原路径（避免 IN 子查询计划退化）。
+            allowed=None
+    if allowed is not None:
+        db.execute('DROP TABLE IF EXISTS temp.eligible_players')
+        db.execute('CREATE TEMP TABLE eligible_players(player TEXT PRIMARY KEY)')
+        db.executemany('INSERT OR IGNORE INTO eligible_players(player) VALUES(?)',((name,) for name in allowed))
+        sql+='AND v.player IN (SELECT player FROM eligible_players) '
     rows=[dict(r) for r in db.execute(sql+'ORDER BY g.recorded_at,v.digest,v.player_index',params)]
     if check_files:
-        file_paths={}
-        for file_row in db.execute('SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
-            file_paths.setdefault(file_row['digest'],[]).append(file_row['rel_path'])
-        alive={}
-        root_resolved=replay_root.resolve();dir_cache={}
-        for row in rows:
-            digest=row['digest']
-            if digest not in alive:
-                alive[digest]=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
-                                  for rel_path in file_paths.get(digest,()))
+        # 存活判定仍以 safe_replay_file 为准；快路径只把“逐文件 stat”换成“每父目录列一次”，
+        # 结论逐条等价（见 replay_alive）。只为本次候选视角判定，不再扫全部 digest。
+        from .replay_alive import alive_map
+        alive=alive_map(db,replay_root,{row['digest'] for row in rows})
     else:
         alive={row['digest']: True for row in rows}
     if annotate_series:
         annotate(db,rows,series_catalog)
     from .statistics_match_identity import inherit_first_game_types
     # Only eligible, source-present first games may supply a later game's identity.
-    inherit_first_game_types(db,[r for r in rows if alive[r['digest']]])
+    # 身份信息一次算到全部候选视角：录像命名/首局卡组直接复用，不再重复读证据。
+    identity=inherit_first_game_types(db,[r for r in rows if alive[r['digest']]],
+                                      digests={r['digest'] for r in rows})
     revision=db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
     if population_scope is not None:
-        before_range=len(rows)
+        if before_range is None:before_range=len(rows)
         rows=filter_rows(db,rows,state,now)
         diagnostics.update(population='selected_self_and_opponent_rank_ranges',before_rank_range_views=before_range,rank_range_excluded_views=before_range-len(rows))
     diagnostics.update(after_scope_and_internal_views=len(rows),missing_source_views=sum(not alive[r['digest']] for r in rows))
-    return dict(roster=state,classification_revision=revision,views=[r for r in rows if alive[r['digest']]],diagnostics=diagnostics,series_reference=series_reference)
+    return dict(roster=state,classification_revision=revision,views=[r for r in rows if alive[r['digest']]],diagnostics=diagnostics,series_reference=series_reference,
+                identity=identity,source_alive=alive)
 
 
 def main():

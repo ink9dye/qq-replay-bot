@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 _cache={}
+_BUILD_CACHE={}
 SEMANTICS='contains_official_series_in_observed_main_or_extra'
 
 
@@ -58,9 +59,16 @@ def annotate(db,rows,catalog):
             for row in db.execute("SELECT build,partition,code,copies FROM stat_build_cards WHERE partition IN ('main','extra') AND build IN ("+marks+")",chunk):
                 cards.setdefault(row['build'],[]).append(dict(row))
     results={}
+    revision=catalog.get('revision')
     for row in rows:
         build=row['build']
         if build not in results:
+            key=(revision,build,row.get('classification_source'),bool(row.get('main_complete')),
+                 bool(row.get('extra_complete')),row.get('series_status'))
+            if catalog['status']=='ready' and key in _BUILD_CACHE:
+                results[build]=_BUILD_CACHE[key]
+                row.update(results[build])
+                continue
             saved=stored.get(build,set())
             if row.get('classification_source')=='manual' or catalog['status']!='ready':
                 results[build]=dict(series=sorted(saved),series_status=row.get('series_status','unknown'),series_origin='manual' if row.get('classification_source')=='manual' else 'stored_reference',series_membership={})
@@ -77,5 +85,8 @@ def annotate(db,rows,catalog):
                         entry[card['partition']+'_copies']+=card['copies']
                 results[build]=dict(series=sorted(tags),series_status='known' if complete else 'partial' if tags else 'unknown',
                     series_origin=SEMANTICS,series_membership=counts)
+                if revision is not None:
+                    if len(_BUILD_CACHE)>50000:_BUILD_CACHE.clear()
+                    _BUILD_CACHE[key]=results[build]
         row.update(results[build])
     return rows

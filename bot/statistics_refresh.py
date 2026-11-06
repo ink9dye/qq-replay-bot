@@ -7,8 +7,8 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-MAX_KEYS = 16
-MAX_BYTES = 8 * 1024 * 1024
+MAX_KEYS = 256
+MAX_BYTES = 64 * 1024 * 1024
 MAX_AGE = 1800
 COOLDOWN = 30
 

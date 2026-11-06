@@ -31,7 +31,7 @@ RECORDINGS_PARAMS = dict(mode='drawn', match='any', not_match='all', opponent_mo
 CARD_PARAMS = dict(seat='all', metric='opening', threshold='1', min='0', sort='rate')
 MEMINFO = Path('/proc/meminfo')
 # 预热在 web 进程内：400MB 预留 + 该 key 的瞬时峰值余量
-MIN_AVAILABLE_MB = {'recordings': 550, 'card-report': 650}
+MIN_AVAILABLE_MB = {'recordings': 550, 'card-report': 650, 'matrix': 650}
 
 
 def recordings_query(own, opponent):
@@ -50,13 +50,21 @@ def card_query(own, opponent):
     return urlencode(pairs)
 
 
-def plan(scopes=DEFAULT_SCOPES, include_recordings=True, include_card=True):
+def matrix_query(own, opponent):
+    """卡组胜率页 load() 默认参数：first=all + 双方范围（未选行列）。"""
+    return urlencode([('first', 'all'), ('self_range', own), ('opponent_range', opponent)])
+
+
+def plan(scopes=DEFAULT_SCOPES, include_recordings=True, include_card=True,
+         include_matrix=True):
     steps = []
     for own, opponent in scopes:
         if include_recordings:
             steps.append(('recordings', own, opponent))
         if include_card:
             steps.append(('card-report', own, opponent))
+        if include_matrix:
+            steps.append(('matrix', own, opponent))
     return tuple(steps)
 
 
@@ -69,6 +77,68 @@ def available_mb(meminfo_path=None):
     except (OSError, ValueError, IndexError):
         return None
     return None
+
+
+BUILD_STALE_SECONDS = 1200   # 20 分钟内已算过就跳过
+_TOP_PLAYERS = {'saved': 0.0, 'names': []}
+
+
+def top_players(portal, ttl=600):
+    """前 100 名（缓存 10 分钟），用于构筑预热轮转。"""
+    now = time.time()
+    if _TOP_PLAYERS['names'] and now - _TOP_PLAYERS['saved'] < ttl:
+        return _TOP_PLAYERS['names']
+    import sqlite3
+    try:
+        db = sqlite3.connect('file:%s?mode=ro' % portal.database, uri=True, timeout=10)
+        try:
+            names = [row[0] for row in db.execute(
+                'SELECT player FROM stat_current_top100 ORDER BY rank LIMIT 100')]
+        finally:
+            db.close()
+    except Exception:
+        names = []
+    if names:
+        _TOP_PLAYERS.update(saved=now, names=names)
+    return names
+
+
+def build_cursor_state(portal, steps, cursor, meminfo_path=None):
+    """返回 (payload, cursor)；payload 为 None 表示这一轮没有动作。"""
+    from urllib.parse import quote
+    players = top_players(portal)
+    if not players:
+        return None, cursor
+    name = players[cursor % len(players)]
+    refresh = getattr(portal, '_refresh', None)
+    if refresh is None:
+        return None, cursor
+    with refresh.lock:
+        item = refresh.items.get(('deck-detail', name))
+        if item is None:
+            item = refresh._read(('deck-detail', name))
+    if item and 0 <= time.time() - item['saved'] < BUILD_STALE_SECONDS:
+        return dict(skipped='build_fresh', player=name, age=round(time.time() - item['saved'], 1)), (cursor + 1) % len(players)
+    free = available_mb(meminfo_path)
+    if free is None:
+        return dict(skipped='meminfo_unavailable', player=name), cursor
+    # 构筑页响应很小（约 6KB），门槛按录像档（550MB）即可，不必占用卡片宽表的 650MB。
+    if free < MIN_AVAILABLE_MB['recordings']:
+        return dict(skipped='memory_low', player=name, available_mb=free), cursor
+    reason = busy(portal)
+    if reason:
+        return dict(skipped=reason, player=name), cursor
+    headers = {'Host': '127.0.0.1:8788',
+               'Cookie': 'qqstats_owner=%s' % portal._session(int(portal.clock()) + 600)}
+    started = time.monotonic()
+    try:
+        portal.route('/statistics/api/build?player=' + quote(name), headers, '127.0.0.1')
+        status = 'queued'
+    except Exception as exc:  # 单个玩家失败不影响整轮
+        status = '%s: %s' % (type(exc).__name__, str(exc)[:80])
+    payload = dict(step='build', player=name, status=status,
+                   seconds=round(time.monotonic() - started, 3))
+    return payload, (cursor + 1) % len(players)
 
 
 def side_lock(data_dir):
@@ -171,6 +241,31 @@ def warm_step(portal, steps, cursor=0, meminfo_path=None):
 
         result = portal._cached_query_reply(('recordings', query_string), compute,
                                             ttl=30.0, background=True)
+    elif kind == 'matrix':
+        from .statistics_matrix import query as matrix_fn
+        query_string = matrix_query(own, opponent)
+        args = parse_qs(query_string)
+        ranges = parse_ranges(args)
+        order = args.get('first', ['all'])[0]
+        rows = tuple(args.get('row', ()))
+        columns = tuple(args.get('column', ()))
+
+        def compute(db, args=args, ranges=ranges):
+            return scoped_query(ranges, lambda: matrix_fn(
+                db, portal.replay_root, float(portal.clock()), rows, columns,
+                None if order == 'all' else order == 'first',
+                args.get('internal', ['0'])[0] == '1'))
+
+        result = portal._cached_query_reply(('matrix', query_string), compute,
+                                            ttl=30.0, background=True)
+        step = dict(step=kind, scope=scope, status=result[0],
+                    seconds=round(time.monotonic() - started, 3), bytes=len(result[2]),
+                    available_mb=free, cursor=cursor)
+        payload = snapshot(portal, steps)
+        payload.update(last_step=dict(step=kind, scope=scope, status=result[0],
+                                      at=round(time.time(), 3)), cursor=(cursor + 1) % len(steps))
+        record(portal, payload)
+        return step, (cursor + 1) % len(steps)
     else:
         query_string = card_query(own, opponent)
         args = parse_qs(query_string, keep_blank_values=True)
@@ -212,6 +307,11 @@ def config_section(config):
                 scopes.append((own, opponent))
     scopes = tuple(scopes) or DEFAULT_SCOPES
     steps = plan(scopes, bool(section.get('include_recordings', True)),
-                 bool(section.get('include_card', True)))
-    return dict(scopes=scopes, steps=steps,
+                 bool(section.get('include_card', True)),
+                 bool(section.get('include_matrix', True)))
+    builds = section.get('builds') or {}
+    builds = dict(enabled=bool(builds.get('enabled', True)),
+                  interval=max(5, int(builds.get('interval_seconds') or 15)),
+                  stale_seconds=max(300, int(builds.get('stale_seconds') or BUILD_STALE_SECONDS)))
+    return dict(scopes=scopes, steps=steps, builds=builds,
                 interval=max(300, int(section.get('interval_seconds') or 300)))

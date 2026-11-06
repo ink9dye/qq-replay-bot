@@ -79,9 +79,12 @@ class PrewarmTests(unittest.TestCase):
     def test_plan_covers_both_ranges_and_both_kinds(self):
         self.assertEqual(prewarm.plan(),
                          (('recordings', '100', '100'), ('card-report', '100', '100'),
-                          ('recordings', '200', '200'), ('card-report', '200', '200')))
+                          ('matrix', '100', '100'),
+                          ('recordings', '200', '200'), ('card-report', '200', '200'),
+                          ('matrix', '200', '200')))
         self.assertEqual(prewarm.plan(include_card=False),
-                         (('recordings', '100', '100'), ('recordings', '200', '200')))
+                         (('recordings', '100', '100'), ('matrix', '100', '100'),
+                          ('recordings', '200', '200'), ('matrix', '200', '200')))
 
     def test_one_key_per_round_and_cursor_advances(self):
         mem = self.meminfo()
@@ -95,7 +98,8 @@ class PrewarmTests(unittest.TestCase):
 
     def test_cursor_wraps(self):
         mem = self.meminfo()
-        _, cursor = prewarm.warm_step(self.portal, prewarm.plan(), 3, meminfo_path=mem)
+        steps = prewarm.plan()
+        _, cursor = prewarm.warm_step(self.portal, steps, len(steps) - 1, meminfo_path=mem)
         self.assertEqual(cursor, 0)
 
     def test_skips_when_refresh_busy_and_keeps_state(self):
@@ -107,7 +111,7 @@ class PrewarmTests(unittest.TestCase):
         self.assertEqual(self.portal.calls, [])
         state = json.loads((self.data / 'prewarm-state.json').read_text(encoding='utf-8'))
         self.assertEqual(state['last_skip']['reason'], 'refresh_busy')
-        self.assertEqual(state['last_skip']['step'], 'recordings')
+        self.assertEqual(state['last_skip']['step'], 'matrix')
 
     def test_skips_while_side_batch_running(self):
         mem = self.meminfo()
@@ -151,9 +155,9 @@ class PrewarmTests(unittest.TestCase):
         self.assertEqual(prewarm.config_section(dict(prewarm=dict(enabled=False))), {})
         enabled = prewarm.config_section(dict(prewarm=dict(enabled=True)))
         self.assertEqual(enabled['interval'], 300)
-        self.assertEqual(len(enabled['steps']), 4)
+        self.assertEqual(len(enabled['steps']), 6)
         custom = prewarm.config_section(dict(prewarm=dict(enabled=True, interval_seconds=60,
-                                                         include_card=False)))
+                                                         include_card=False, include_matrix=False)))
         self.assertEqual(custom['interval'], 300)
         self.assertEqual([s[0] for s in custom['steps']], ['recordings', 'recordings'])
 

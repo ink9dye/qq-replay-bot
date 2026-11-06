@@ -588,9 +588,10 @@ class StatisticsPortal:
         return self._roster_reply(force=getattr(self,'_refresh',None) is None, background=True)
 
     def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False,background=False):
-        if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings','matrix','cards-extra'):
+        if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings','matrix','cards-extra','deck-detail'):
             from urllib.parse import parse_qs,urlencode
-            if len(key)>1:key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
+            # deck-detail 的 key[1] 是玩家名，不是查询串：不能按参数归一化，否则不同玩家会撞成同一个 key。
+            if len(key)>1 and key[0]!='deck-detail':key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
             from .statistics_roster_version import snapshot_version
             return self._refresh.get(key,lambda:self._cached_query_reply_sync(
                 key,callback,ttl,stamp_seconds,force),lambda:snapshot_version(self.database),ttl,background=background)

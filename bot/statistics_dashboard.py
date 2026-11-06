@@ -1,5 +1,6 @@
 """只读的当前榜单与每人最新有效构筑；不生成长期事实副本。"""
 from pathlib import Path
+import time
 from .top100 import eligible_views
 from .statistics_match_identity import identity_metadata
 
@@ -81,6 +82,66 @@ def search_players(db,replay_root,now,text):
     return dict(people=result,limited=len(names)>30)
 
 
+_DECK_IMAGE_CACHE = {}   # deck_type -> (代表卡 code, 计算时间)
+_DECK_IMAGE_TTL = 1800
+
+
+def deck_images(db, names):
+    """每个精确卡组名选一张代表卡：该卡组构筑里总投入最多的主卡。
+
+    按卡组名逐项缓存（30 分钟）：新出现的卡组只补算缺失项，
+    避免每次刷新都重跑全表的 15s 聚合。展示用，不参与任何资格判断。
+    """
+    wanted = {str(name) for name in names}
+    if not wanted:
+        return {}
+    now = time.time()
+    missing = sorted(label for label in wanted
+                     if label not in _DECK_IMAGE_CACHE
+                     or now - _DECK_IMAGE_CACHE[label][1] > _DECK_IMAGE_TTL)
+    if missing:
+        clause = 'b.deck_type IN (' + ','.join('?' for _ in missing) + ')'
+        if '未识别' in missing:
+            clause += " OR b.deck_type IS NULL OR b.deck_type=''"
+        best = {}
+        rows = db.execute(
+            "SELECT COALESCE(b.deck_type,'') AS deck_type, c.code, SUM(c.copies) AS copies "
+            "FROM stat_builds b JOIN stat_build_cards c ON c.build=b.fingerprint "
+            "WHERE c.partition='main' AND (" + clause + ") GROUP BY deck_type, c.code",
+            missing)
+        for deck_type, code, copies in rows:
+            key = '未识别' if not deck_type else str(deck_type)
+            old = best.get(key)
+            if old is None or copies > old[1] or (copies == old[1] and code < old[0]):
+                best[key] = (int(code), int(copies))
+        for label, item in best.items():
+            _DECK_IMAGE_CACHE[label] = (item[0], now)
+    return {name: _DECK_IMAGE_CACHE[name][0] for name in wanted if name in _DECK_IMAGE_CACHE}
+
+
+def search_players(db,replay_root,now,text):
+    if not text or len(text)>128:raise ValueError('invalid_search')
+    needle=text.casefold()
+    names={r[0]for r in db.execute('SELECT player FROM stat_current_top100 UNION SELECT player FROM subscriptions UNION SELECT DISTINCT player FROM stat_views')if needle in r[0].casefold()}
+    result=[]
+    for name in sorted(names)[:30]:
+        _,latest,people=population(db,replay_root,now,name,resolve_rank=False)
+        person=next((p for p in people if p['player']==name.strip()),dict(player=name.strip(),rank=None,points=None,observed=False))
+        result.append(person)
+    resolve_ranks(db,result,now)
+    return dict(people=result,limited=len(names)>30)
+
+
+_DECK_IMAGE_CACHE={}
+
+
+def _build_count(db):
+    try:
+        return db.execute('SELECT COUNT(*) FROM stat_builds').fetchone()[0]
+    except Exception:
+        return None
+
+
 def deck_images(db, names):
     """每个精确卡组名选一张代表卡：该卡组构筑里总投入最多的主卡。"""
     wanted = {str(name) for name in names}
@@ -88,6 +149,12 @@ def deck_images(db, names):
         return {}
     best = {}
     labels = sorted(wanted)
+    # 代表卡只影响展示、且新卡组会通过 labels 变化立即重算；按 30 分钟桶缓存，
+    # 避免每局新构筑都让这条 15s 的聚合重跑。
+    key = (tuple(labels), int(time.time() // 1800))
+    cached = _DECK_IMAGE_CACHE.get(key)
+    if cached is not None:
+        return dict(cached)
     clause = 'b.deck_type IN (' + ','.join('?' for _ in labels) + ')'
     if '未识别' in wanted:
         clause += " OR b.deck_type IS NULL OR b.deck_type=''"
@@ -102,7 +169,11 @@ def deck_images(db, names):
         old = best.get(key)
         if old is None or copies > old[1] or (copies == old[1] and code < old[0]):
             best[key] = (int(code), int(copies))
-    return {name: item[0] for name, item in best.items()}
+    result = {name: item[0] for name, item in best.items()}
+    if len(_DECK_IMAGE_CACHE) > 4:
+        _DECK_IMAGE_CACHE.clear()
+    _DECK_IMAGE_CACHE[key] = dict(result)
+    return result
 
 
 def query(db, replay_root, now, player=None):
