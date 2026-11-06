@@ -113,6 +113,65 @@ class QueryWatchBoundaryTests(unittest.TestCase):
                                {'X-Admin-Token': ADMIN})[0], 400)
 
 
+class EnrollFlowTests(unittest.TestCase):
+    """QQ「开通查询」：首次开通建号，已开通账号再次发送应重发码而不是拒绝。"""
+
+    def _service(self):
+        service = object.__new__(BotService)
+        service.config = {"query": {"enabled": True, "admin_token": "x" * 24, "code_hours": 24},
+                          "remote": {"bind_port": 8791}}
+        return service
+
+    def test_first_enroll_provisions(self):
+        service = self._service()
+        with patch('bot.query_core.admin_issue',
+                   return_value={"ok": True, "identity": "12345", "code": "first-code"}), \
+             patch('bot.query_core.admin_reissue') as reissue:
+            text = service._query_enroll("12345")
+        self.assertIn("first-code", text)
+        self.assertNotIn("重新发放", text)
+        reissue.assert_not_called()
+
+    def test_second_enroll_reissues_instead_of_refusing(self):
+        service = self._service()
+        with patch('bot.query_core.admin_issue',
+                   return_value={"ok": False, "error": "already_provisioned", "status": 409}), \
+             patch('bot.query_core.admin_reissue',
+                   return_value={"ok": True, "identity": "12345", "code": "fresh-code"}) as reissue:
+            text = service._query_enroll("12345")
+        reissue.assert_called_once()
+        self.assertIn("fresh-code", text)
+        self.assertIn("重新发放", text)
+        self.assertNotIn("不重复发放", text)
+        self.assertIn("再私聊发送“开通查询”", text)
+
+    def test_disabled_account_cannot_self_reissue(self):
+        service = self._service()
+        with patch('bot.query_core.admin_issue',
+                   return_value={"ok": False, "error": "already_provisioned", "status": 409}), \
+             patch('bot.query_core.admin_reissue',
+                   return_value={"ok": False, "error": "not_found", "status": 404}):
+            text = service._query_enroll("12345")
+        self.assertIn("停用", text)
+        self.assertIn("联系管理员", text)
+
+    def test_help_lists_enroll_only_for_confidential_list(self):
+        service = object.__new__(BotService)
+        service.config = {'statistics': {'allowed_groups': ['1'], 'private_users': ['12345']}}
+        service.admins = set()
+        service.authorized = lambda *_: True
+        with patch('bot.private_commands.dispatch', return_value=(False, None)):
+            self.assertIn('开通查询：', service.handle_text('12345', '帮助', '12345'))
+            self.assertNotIn('开通查询：', service.handle_text('99999', '帮助', '99999'))
+            self.assertIn('开通查询：', service.handle_text('12345', '帮助', 'group:1'))
+            self.assertNotIn('开通查询：', service.handle_text('12345', '帮助', 'group:2'))
+            # 连普通使用权限都没有的人，即使私聊也不显示
+            service.authorized = lambda *_: False
+            denied = service.handle_text('12345', '帮助', '12345')
+            self.assertIn('没有使用权限', denied)
+            self.assertNotIn('开通查询：', denied)
+
+
 class MergeBehaviorTests(unittest.TestCase):
     def test_existing_commands_and_group_code_protection(self):
         self.assertEqual(parse_command('令牌分发')['op'], 'watch_token')
@@ -120,6 +179,8 @@ class MergeBehaviorTests(unittest.TestCase):
         self.assertEqual(parse_command('统计对局 前100')['op'], 'game_counts')
         self.assertEqual(parse_command('选卡 1')['op'], 'card_select')
         service = object.__new__(BotService)
+        service.config = {'statistics': {'allowed_groups': ['1'], 'private_users': ['12345']}}
+        service.admins = set()
         service.authorized = lambda *_: True
         service._query_enroll = Mock(return_value='secret-code')
         with patch('bot.private_commands.dispatch', return_value=(False, None)):
@@ -127,6 +188,35 @@ class MergeBehaviorTests(unittest.TestCase):
             self.assertNotIn('secret-code', reply)
             service._query_enroll.assert_not_called()
             self.assertEqual(service.handle_text('12345', '开通查询', '12345'), 'secret-code')
+
+    def test_query_enroll_is_limited_to_confidential_list(self):
+        service = object.__new__(BotService)
+        service.config = {'statistics': {'allowed_groups': ['1'], 'private_users': ['12345']}}
+        service.admins = set()
+        service.authorized = lambda *_: True      # allow_all_users=true 时普通授权对所有人成立
+        service._query_enroll = Mock(return_value='secret-code')
+        with patch('bot.private_commands.dispatch', return_value=(False, None)):
+            # 名单外私聊：明确拒绝且不发码
+            self.assertIn('保密名单', service.handle_text('99999', '开通查询', '99999'))
+            service._query_enroll.assert_not_called()
+            # 名单外群：静默（同「观战设备」）
+            self.assertIsNone(service.handle_text('99999', '开通查询', 'group:2'))
+            # 名单内群：只提示私聊
+            self.assertIn('私聊', service.handle_text('12345', '开通查询', 'group:1'))
+            # 名单内私聊：发码
+            self.assertEqual(service.handle_text('12345', '开通查询', '12345'), 'secret-code')
+
+    def test_query_enroll_honors_explicit_remote_token_list(self):
+        service = object.__new__(BotService)
+        # 显式空 token_users 表示关闭该范围，不再回退 statistics.private_users
+        service.config = {'remote': {'token_users': []},
+                          'statistics': {'private_users': ['12345']}}
+        service.admins = set()
+        service.authorized = lambda *_: True
+        service._query_enroll = Mock(return_value='secret-code')
+        with patch('bot.private_commands.dispatch', return_value=(False, None)):
+            self.assertIn('保密名单', service.handle_text('12345', '开通查询', '12345'))
+            service._query_enroll.assert_not_called()
 
     def test_replay_cache_is_scoped_to_user(self):
         core = QueryCore(FakePortal(), store=object(), share=object(), replay_root=Path('.'))

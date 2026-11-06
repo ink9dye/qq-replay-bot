@@ -77,7 +77,7 @@ PC/云端客户端仍可使用 `config.json` 的 `remote.token`；它不绑定 `
 
 ### 3.2 “保密名单”判定
 
-签发入口在 `bot/watch_token_command.py` 的 `_allowed()`：
+签发入口在 `bot/watch_token_command.py` 的 `confidential_allowed()`（「令牌分发」「开通查询」共用）：
 
 1. 群聊：取 `remote.token_groups`；**只要配置里存在这个键**（包括空数组），就只用它，不再看统计名单；键不存在时回退 `statistics.allowed_groups`。群号必须在列表内。管理员身份**不能**绕过群名单。
 2. 私聊：取 `remote.token_users`；存在该键时只用它；否则回退 `statistics.private_users`。名单内用户或管理员可以签发。

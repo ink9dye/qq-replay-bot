@@ -8,7 +8,7 @@ import urllib.request
 from pathlib import Path
 
 from bot.query_auth import QueryAuth
-from bot.query_core import PortalClient, PortalUnavailable, QueryCore, admin_issue
+from bot.query_core import PortalClient, PortalUnavailable, QueryCore, admin_issue, admin_reissue
 from bot.service import _enroll_reply
 from bot.watch_api import WatchApiServer
 from bot.watch_jobs import RemoteJobs
@@ -299,11 +299,28 @@ class EnrollReplyTests(unittest.TestCase):
         self.assertIn("24 小时", text)
         self.assertIn("只能使用一次", text)
 
+    def test_success_message_says_code_can_be_reissued(self):
+        self.assertIn("再私聊发送“开通查询”",
+                      _enroll_reply({"ok": True, "identity": "123", "code": "abc"}, 24))
+        self.assertNotIn("不会重发",
+                         _enroll_reply({"ok": True, "identity": "123", "code": "abc"}, 24))
+
+    def test_reissued_message_invalidates_old_code(self):
+        text = _enroll_reply({"ok": True, "identity": "123", "code": "new-code", "reissued": True}, 24)
+        self.assertIn("重新发放", text)
+        self.assertIn("旧码已作废", text)
+        self.assertIn("new-code", text)
+
     def test_already_provisioned_and_down(self):
         self.assertIn("联系管理员", _enroll_reply({"ok": False, "error": "already_provisioned"}, 24))
         self.assertIn("暂不可用", _enroll_reply({"ok": False, "error": "query_service_unavailable"}, 24))
         self.assertIn("账号不存在", _enroll_reply({"ok": False, "error": "not_found"}, 24))
         self.assertIn("暂不可用", _enroll_reply({"ok": False, "error": "unknown_error"}, 24))
+
+    def test_reissue_not_found_means_disabled_account(self):
+        text = _enroll_reply({"ok": False, "error": "not_found", "after_reissue": True}, 24)
+        self.assertIn("停用", text)
+        self.assertIn("联系管理员", text)
 
 
 class AdminIssueIntegrationTests(unittest.TestCase):
@@ -326,6 +343,35 @@ class AdminIssueIntegrationTests(unittest.TestCase):
             # 服务不可达
             down = admin_issue("http://127.0.0.1:1", ADMIN, "50003", timeout=1)
             self.assertEqual(down["error"], "query_service_unavailable")
+        finally:
+            api.stop()
+            tmp.cleanup()
+
+    def test_admin_reissue_end_to_end(self):
+        """再次「开通查询」的自助重发链路：旧码作废、新码可登录、停用账号拒绝。"""
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            qa = QueryAuth(Path(tmp.name) / "qa.sqlite3", log=lambda *_: None)
+            api = WatchApiServer(RemoteJobs(), Path(tmp.name) / "replays", TOKEN,
+                                 log=lambda *_: None, bind=("127.0.0.1", 0),
+                                 query_auth=qa, admin_token=ADMIN)
+            self.assertTrue(api.start())
+            base = f"http://127.0.0.1:{api._httpd.server_address[1]}"
+            first = admin_issue(base, ADMIN, "50004")
+            self.assertTrue(first["ok"])
+            again = admin_issue(base, ADMIN, "50004")
+            self.assertEqual(again["error"], "already_provisioned")
+            reissued = admin_reissue(base, ADMIN, "50004")
+            self.assertTrue(reissued["ok"])
+            self.assertNotEqual(first["code"], reissued["code"])
+            # 旧码随重发作废，新码可用
+            self.assertEqual(qa.login("50004", first["code"], "1.1.1.1")["error"], "bad_credentials")
+            self.assertTrue(qa.login("50004", reissued["code"], "1.1.1.1")["ok"])
+            # 不存在的账号不能重发
+            self.assertEqual(admin_reissue(base, ADMIN, "59999")["error"], "not_found")
+            # 停用账号不能靠自助重发恢复
+            self.assertTrue(qa.disable_user("50004")["ok"])
+            self.assertEqual(admin_reissue(base, ADMIN, "50004")["error"], "not_found")
         finally:
             api.stop()
             tmp.cleanup()

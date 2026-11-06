@@ -175,14 +175,19 @@ def read_external_public_base(data_dir, fallback="", *, max_age=PUBLIC_BASE_MAX_
 def _enroll_reply(result: dict, code_hours: int) -> str:
     """「开通查询」结果 → 用户回复文案。纯函数，便于单测。"""
     if result.get("ok"):
-        return (f"已开通查询账号。\n登录账号：{result.get('identity')}\n"
+        head = ("已重新发放查询激活码（之前收到的旧码已作废）。" if result.get("reissued")
+                else "已开通查询账号。")
+        return (f"{head}\n登录账号：{result.get('identity')}\n"
                 f"激活码：{result.get('code')}\n"
-                f"激活码 {code_hours} 小时内有效、只能使用一次；请勿泄露，本条消息不会重发。\n"
+                f"每个激活码 {code_hours} 小时内有效、只能使用一次；请勿泄露。\n"
+                f"以后需要新的激活码，再私聊发送“开通查询”即可。\n"
                 f"在安卓端「我的-登录」里填上面的账号和激活码即可登录。")
     error = result.get("error")
     if error == "already_provisioned":
-        return "你已经开通过查询账号了；激活码不重复发放，如需重置请联系管理员。"
+        return "查询账号已存在，但激活码重发失败；请稍后再试或联系管理员。"
     if error == "not_found":
+        if result.get("after_reissue"):
+            return "查询账号已被停用，不能自助重发激活码；请联系管理员恢复。"
         return "查询账号不存在，请先发送“开通查询”。"
     return "查询服务暂不可用，请稍后再试。"
 
@@ -304,6 +309,18 @@ class BotService:
             return group in {str(x) for x in (cfg.get("allowed_groups") or [])}
         owners = {str(x) for x in (cfg.get("private_users") or [])}
         return str(user_id) in owners
+
+    def help_text(self, user_id, conversation: str = "") -> str:
+        """帮助清单：保密名单功能只对名单内、且已有使用权限的人显示。"""
+        from .watch_token_command import confidential_allowed
+        text = HELP
+        if not self._statistics_allowed(user_id, conversation):
+            text = "\n".join(line for line in text.splitlines()
+                             if not line.startswith(("统计：", "观战设备：", "统计对局：")))
+        if not (self.authorized(user_id) and confidential_allowed(self, user_id, conversation)):
+            text = "\n".join(line for line in text.splitlines()
+                             if not line.startswith("开通查询："))
+        return text
 
     def default_query_rule_line(self) -> str:
         """启动时确认“未订阅默认对手前100”落在当前榜单上；名单缺失时明确说明不把未知当上榜。
@@ -546,13 +563,20 @@ class BotService:
         self._capture_status_written=now
 
     def _query_enroll(self, user: str) -> str:
-        from .query_core import admin_issue
+        from .query_core import admin_issue, admin_reissue
         cfg = self.config.get("query") or {}
         admin_token = str(cfg.get("admin_token") or "")
         if not cfg.get("enabled") or not admin_token:
             return "查询功能未启用。"
         port = int((self.config.get("remote") or {}).get("bind_port") or 8791)
-        result = admin_issue(f"http://127.0.0.1:{port}", admin_token, user)
+        base = f"http://127.0.0.1:{port}"
+        result = admin_issue(base, admin_token, user)
+        if not result.get("ok") and result.get("error") == "already_provisioned":
+            # 已开通账号再次发送「开通查询」= 自助重发：旧待用码作废，发新的一次性码。
+            result = admin_reissue(base, admin_token, user)
+            result["after_reissue"] = True
+            if result.get("ok"):
+                result["reissued"] = True
         return _enroll_reply(result, int(cfg.get("code_hours") or 24))
 
     def handle_text(self, user_id, text: str, conversation: str = "") -> str:
@@ -566,19 +590,20 @@ class BotService:
             return None
         if not self.authorized(user):
             if command.get("op") == "help":
-                text = HELP
-                if not self._statistics_allowed(user, conversation):
-                    text = "\n".join(line for line in text.splitlines() if not line.startswith(("统计：", "观战设备：", "统计对局：")))
+                text = self.help_text(user, conversation)
                 return text + "\n\n你还没有使用权限，不能订阅或查看录像。"
             return "你没有使用权限，不能订阅或查看录像。"
         if op == "help":
-            text = HELP
-            if not self._statistics_allowed(user, conversation):
-                text = "\n".join(line for line in text.splitlines() if not line.startswith(("统计：", "观战设备：", "统计对局：")))
-            return text
+            return self.help_text(user, conversation)
         if op == "query_enroll":
+            from .watch_token_command import confidential_allowed
             if conversation.startswith("group:"):
+                # 群聊不暴露该功能：名单内群只提示私聊，名单外群静默（同「观战设备」）。
+                if not confidential_allowed(self, user, conversation):
+                    return None
                 return "请私聊我发送“开通查询”，激活码只在私聊中发放。"
+            if not confidential_allowed(self, user, conversation):
+                return "开通查询只对保密名单开放；如需使用请联系管理员。"
             return self._query_enroll(user)
         if op == "empty":
             return "请发送“帮助”查看用法。"

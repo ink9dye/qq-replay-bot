@@ -317,14 +317,15 @@ class QueryCore:
                                                          {"code": code, "partition": partition}))
 
 
-def admin_issue(base_url: str, admin_token: str, identity: str, timeout: float = 4.0) -> dict:
-    """QQ 进程「开通查询」用：回环调 collector 管理接口建号并取一次性码。
+def _admin_call(base_url: str, admin_token: str, action: str, identity: str,
+                timeout: float = 4.0) -> dict:
+    """回环调 collector 管理接口。
 
     返回 {ok, code, code_expires_at, identity} 或 {ok:False, error, status}。
     激活码只出现在本返回值里，调用方负责只通过 QQ 私聊展示、不写日志。
     """
     request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/query-api/admin/issue",
+        f"{base_url.rstrip('/')}/query-api/admin/{action}",
         data=json.dumps({"identity": str(identity or "")}).encode("utf-8"), method="POST",
         headers={"Content-Type": "application/json", "X-Admin-Token": str(admin_token or "")})
     try:
@@ -335,5 +336,16 @@ def admin_issue(base_url: str, admin_token: str, identity: str, timeout: float =
             return json.loads(exc.read().decode("utf-8"))
         except ValueError:
             return dict(ok=False, error=f"http_{exc.code}", status=exc.code)
-    except (urllib.error.URLError, OSError) as exc:
+    except (urllib.error.URLError, OSError):
         return dict(ok=False, error="query_service_unavailable", status=503)
+
+
+def admin_issue(base_url: str, admin_token: str, identity: str, timeout: float = 4.0) -> dict:
+    """QQ「开通查询」首次开通：建号并取一次性激活码；已有账号返回 already_provisioned。"""
+    return _admin_call(base_url, admin_token, "issue", identity, timeout)
+
+
+def admin_reissue(base_url: str, admin_token: str, identity: str, timeout: float = 4.0) -> dict:
+    """QQ「开通查询」自助重发：旧待用码作废、发新一次性码；不动已有令牌。
+    账号不存在或已停用返回 not_found（停用账号不能靠自助恢复）。"""
+    return _admin_call(base_url, admin_token, "reissue", identity, timeout)

@@ -35,8 +35,8 @@ def _in_group(conversation) -> bool:
     return str(conversation or "").startswith("group:")
 
 
-def _allowed(service, user, conversation) -> bool:
-    """令牌分发只对保密名单开放。
+def confidential_allowed(service, user, conversation="") -> bool:
+    """保密名单判定，供「令牌分发」「开通查询」共用。
 
     优先用 remote.token_groups / token_users；没配置时沿用统计的
     statistics.allowed_groups / private_users。群聊不因管理员身份绕过群名单。
@@ -173,7 +173,7 @@ def handle(service, user, args, conversation="") -> str:
         return _list(service, user, conversation)
     if tokens and tokens[0] in ("吊销", "revoke"):
         return _revoke(service, user, tokens[1:], conversation)
-    if not _allowed(service, user, conversation):
+    if not confidential_allowed(service, user, conversation):
         return "令牌分发只对保密名单内的群/用户开放。"
     if len(tokens) > 1:
         return usage()
