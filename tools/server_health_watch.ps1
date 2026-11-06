@@ -181,11 +181,21 @@ function Show-AlertPopup([string]$Title, [string]$Text) {
     Write-Log ("toast failed: {0}" -f $_.Exception.Message)
   }
   try {
+    # VBScript 字符串不能跨行、也不能含双引号：逐行转成字面量，再用 & vbCrLf & 拼接。
+    # 2026-11-06 修：原实现把多行正文塞进一个 "..."，报 800A0409 未结束的字符串常量，弹窗从未成功。
     $vbs = Join-Path $env:TEMP ("ygo-alert-{0}.vbs" -f $PID)
-    $cleanTitle = $Title -replace '"', "'"
-    $cleanText = $Text -replace '"', "'"
-    Set-Content -Path $vbs -Value ("MsgBox `"$cleanText`", 64, `"$cleanTitle`"") -Encoding Default
+    $cleanTitle = ($Title -replace '"', "'")
+    $cleanText = ($Text -replace '"', "'")
+    if ($cleanText.Length -gt 900) { $cleanText = $cleanText.Substring(0, 900) + '...' }
+    $lines = @($cleanText -split "\r?\n")
+    while ($lines.Count -gt 1 -and [string]::IsNullOrWhiteSpace($lines[-1])) { $lines = @($lines[0..($lines.Count - 2)]) }
+    $expr = (($lines | ForEach-Object { '"' + $_ + '"' }) -join ' & vbCrLf & ')
+    Set-Content -Path $vbs -Value ('MsgBox ' + $expr + ', 64, "' + $cleanTitle + '"') -Encoding Default
     Start-Process -FilePath 'wscript.exe' -ArgumentList ("`"$vbs`"") -WindowStyle Minimized
+    # 顺手清掉两天前的残留，避免 %TEMP% 里堆积。
+    Get-ChildItem -Path $env:TEMP -Filter 'ygo-alert-*.vbs' -ErrorAction SilentlyContinue |
+      Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-2) } |
+      Remove-Item -Force -ErrorAction SilentlyContinue
   } catch {
     Write-Log ("popup failed: {0}" -f $_.Exception.Message)
   }
