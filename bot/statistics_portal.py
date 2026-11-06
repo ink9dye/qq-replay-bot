@@ -19,7 +19,7 @@ QUERY_WAIT_SECONDS=8.0
 QUERY_CACHE_MAX_BYTES = 8 * 1024 * 1024
 CACHED_API_PATHS=frozenset('/statistics/api/'+name for name in (
     'recordings','deck-naming/groups','card-table','cards-extra','card-combo',
-    'card-report','roster','build','matrix'))
+    'card-report','roster','build','matrix','side-analysis'))
 
 
 def owner_secret(path):
@@ -448,8 +448,7 @@ class StatisticsPortal:
                 if order not in ('all','first','second'):raise ValueError()
                 ranges=parse_ranges(args)
             except (ValueError,TypeError):return self._reply(400,'矩阵筛选条件无效。')
-            include_samples=args.get('samples',['1'])[0]!='0'
-            return self._cached_query_reply(('matrix',parsed.query),lambda db:scoped_query(ranges,lambda:matrix(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1',include_samples=include_samples)),ttl=30.0)
+            return self._cached_query_reply(('matrix',parsed.query),lambda db:scoped_query(ranges,lambda:matrix(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1')),ttl=30.0)
         if parts==['statistics','api','matrix-cell']:
             from .statistics_matrix_cell import query as matrix_cell
             from .statistics_rank_scope import parse_ranges,scoped_query
@@ -463,6 +462,63 @@ class StatisticsPortal:
             except (ValueError,TypeError):return self._reply(400,'矩阵格子条件无效。')
             try:
                 return self._query_reply(lambda db:scoped_query(ranges,lambda:matrix_cell(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1',threshold=args.get('threshold',['10'])[0])))
+            except ValueError as exc:
+                return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
+        if parts==['statistics','api','side-analysis']:
+            # 玩家排行/构筑页与对战矩阵共用的 Side 换入换出证据查询；只读。
+            from .statistics_side_analysis import query as side_analysis
+            args=parse_qs(parsed.query,keep_blank_values=True)
+            mode=args.get('mode',['player'])[0]
+            player=(args.get('player',[''])[0] or '').strip()
+            deck=(args.get('deck',[''])[0] or '').strip()
+            opponent_deck=(args.get('opponent_deck',[''])[0] or '').strip()
+            algorithm=args.get('algorithm',['1'])[0]
+            first=args.get('first',['all'])[0]
+            cell_token=(args.get('cell_token',[''])[0] or '').strip()
+            if mode not in ('player','matrix') or algorithm not in ('0','1') or first not in ('all','first','second'):
+                return self._reply(400,json.dumps({'error':'Side 分析入口无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if len(cell_token)>64:
+                return self._reply(400,json.dumps({'error':'矩阵格样本标记无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if any(len(value)>128 for value in (player,deck,opponent_deck)):
+                return self._reply(400,json.dumps({'error':'玩家或卡组条件过长。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if mode=='player' and not player:
+                return self._reply(400,json.dumps({'error':'需要玩家名称。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if mode=='matrix' and not deck:
+                return self._reply(400,json.dumps({'error':'矩阵分析需要我方卡组。'},ensure_ascii=False),'application/json; charset=utf-8')
+            def side_run(db):
+                if mode=='matrix':
+                    from .statistics_rank_scope import parse_ranges,scoped_query
+                    ranges=parse_ranges(args)
+                    result=scoped_query(ranges,lambda:side_analysis(
+                        db,self.replay_root,float(self.clock()),None,deck,opponent_deck or None,
+                        mode='matrix',internal_only=args.get('internal',['0'])[0]=='1',
+                        algorithm=False,first=first,cell_token=cell_token))
+                else:
+                    result=side_analysis(
+                        db,self.replay_root,float(self.clock()),player,None,opponent_deck or None,
+                        mode='player',algorithm=algorithm=='1',first=first)
+                from .statistics_card_names import index as name_index
+                names=name_index(self.database.parent)
+                def decorate(cards):
+                    for card in cards:
+                        info=names.get(str(card['code']))
+                        card['name']=card_name(info) if info else ('#%d' % int(card['code']))
+                for side in result['sides']:
+                    for key in ('added','removed'):
+                        decorate(side['observed'][key])
+                    decorate(side['observed']['direct_side']['cards'])
+                    decorate(side['observed']['unknown_outcome']['cards'])
+                    decorate(side['algorithm']['cards'])
+                    decorate(side['algorithm']['latent_cards'])
+                    side['algorithm']['observed_only']=[
+                        dict(code=code, name=(card_name(names.get(str(code))) if names.get(str(code)) else '#%d' % code))
+                        for code in side['algorithm']['observed_only']]
+                    for session in side['sessions']:
+                        for key in ('added','removed'):
+                            decorate(session[key])
+                return result
+            try:
+                return self._cached_query_reply(('side-analysis',parsed.query),side_run,ttl=30.0)
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','api','sample'] or len(parts)==3 and parts[:2]==['statistics','sample']:
@@ -588,16 +644,20 @@ class StatisticsPortal:
         """后台保活让位于已请求的任务；按结果年龄与上次耗时退避。"""
         return self._roster_reply(force=getattr(self,'_refresh',None) is None, background=True)
 
-    def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False,background=False,wait=None):
+    def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False,background=False):
         if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings','matrix','cards-extra','deck-detail'):
             from urllib.parse import parse_qs,urlencode
             # deck-detail 的 key[1] 是玩家名，不是查询串：不能按参数归一化，否则不同玩家会撞成同一个 key。
             if len(key)>1 and key[0]!='deck-detail':key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
             from .statistics_roster_version import snapshot_version
-            # 构筑页计算已降到亚秒级：稍等一会儿比直接 503 再让用户重试更划算。
-            wait=wait if wait is not None else (4.0 if key[0]=='deck-detail' else 1.0)
-            return self._refresh.get(key,lambda:self._cached_query_reply_sync(
-                key,callback,ttl,stamp_seconds,force),lambda:snapshot_version(self.database),ttl,background=background,wait=wait)
+            wait=4.0 if key[0]=='deck-detail' else 1.0
+            if key[0]=='deck-detail':
+                # 构筑页计算本身是亚秒级：不要排进全局 _query_compute_lock，
+                # 否则会被 roster/matrix 的长计算堵到 8 秒超时。
+                compute=lambda:self._query_reply(callback)
+            else:
+                compute=lambda:self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
+            return self._refresh.get(key,compute,lambda:snapshot_version(self.database),ttl,background=background,wait=wait)
         return self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
 
     def _cached_query_reply_sync(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
