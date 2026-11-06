@@ -34,7 +34,7 @@ def deck_order(labels,usage):
     return sorted(labels,key=lambda label:(label is None,-usage.get(label,0),label or ''))
 
 
-def query(db,replay_root,now,rows=(),columns=(),first_player=None,internal_only=False):
+def query(db,replay_root,now,rows=(),columns=(),first_player=None,internal_only=False,include_samples=True):
     basis=eligible_views(db,replay_root,now,internal_only)
     opponents={}
     for row in db.execute('SELECT v.digest,v.player,b.deck_type FROM stat_views v JOIN stat_builds b ON b.fingerprint=v.build'):
@@ -50,9 +50,15 @@ def query(db,replay_root,now,rows=(),columns=(),first_player=None,internal_only=
         groups.setdefault((label,column),[]).append(sample);selected.append(sample)
     cells=[]
     for (label,column),samples in groups.items():
-        cells.append(dict(row=label,column=column,metrics=win_rate(samples),perspectives=len(samples),small_games=len({s['digest'] for s in samples}),
+        cell=dict(row=label,column=column,metrics=win_rate(samples),perspectives=len(samples),small_games=len({s['digest'] for s in samples}),
             first=win_rate([s for s in samples if s['first_player']==1]),second=win_rate([s for s in samples if s['first_player']==0]),
-            unknown_first=sum(s['first_player'] is None for s in samples),samples=sorted(samples,key=lambda s:s['recorded_at'],reverse=True)))
+            unknown_first=sum(s['first_player'] is None for s in samples))
+        if include_samples:
+            cell['samples']=sorted(samples,key=lambda s:s['recorded_at'],reverse=True)
+        else:
+            # 页面只用 metrics/perspectives；逐格明细由 matrix-cell 按需返回。
+            cell={k:cell[k] for k in ('row','column','metrics','perspectives')}
+        cells.append(cell)
     usage=deck_usage(db,replay_root,now,basis)
     order=lambda label:(label is None,-usage.get(label,0),label or '')
     usage_rows=[dict(deck_type=label,players=count) for label,count in

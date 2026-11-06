@@ -95,7 +95,7 @@ class StatisticsPortal:
             return self._reply(200,Path(__file__).with_name('statistics_small_world.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_small_world.js','small_world_engine.js','statistics_small_world.css'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
-            return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
+            return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime,{'Cache-Control':'private, max-age=3600'})
         if parts==['statistics','api','small-world-cards']:
             from .small_world import read_cards
             from .statistics_local_cards import library_root
@@ -112,7 +112,7 @@ class StatisticsPortal:
                 self._small_world_catalog_lock.release()
         if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_autocomplete.js','statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js','statistics_busy.js','statistics_refresh.js'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
-            return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
+            return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime,{'Cache-Control':'private, max-age=3600'})
         if parts==['statistics','devices']:
             return self._reply(200,Path(__file__).with_name('statistics_devices.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','api','devices']:
@@ -404,7 +404,7 @@ class StatisticsPortal:
             name='statistics_card_metrics.html' if parts[-1]=='cards' else 'statistics_matrix.html'
             return self._reply(200,Path(__file__).with_name(name).read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','assets','statistics_samples.js']:
-            return self._reply(200,Path(__file__).with_name('statistics_samples.js').read_text(encoding='utf8'),'text/javascript; charset=utf-8')
+            return self._reply(200,Path(__file__).with_name('statistics_samples.js').read_text(encoding='utf8'),'text/javascript; charset=utf-8',{'Cache-Control':'private, max-age=3600'})
         if parts==['statistics','api','card-metrics']:
             from .card_statistics import query as card_query,Filters
             args=parse_qs(parsed.query)
@@ -448,7 +448,8 @@ class StatisticsPortal:
                 if order not in ('all','first','second'):raise ValueError()
                 ranges=parse_ranges(args)
             except (ValueError,TypeError):return self._reply(400,'矩阵筛选条件无效。')
-            return self._cached_query_reply(('matrix',parsed.query),lambda db:scoped_query(ranges,lambda:matrix(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1')),ttl=30.0)
+            include_samples=args.get('samples',['1'])[0]!='0'
+            return self._cached_query_reply(('matrix',parsed.query),lambda db:scoped_query(ranges,lambda:matrix(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1',include_samples=include_samples)),ttl=30.0)
         if parts==['statistics','api','matrix-cell']:
             from .statistics_matrix_cell import query as matrix_cell
             from .statistics_rank_scope import parse_ranges,scoped_query
@@ -587,14 +588,16 @@ class StatisticsPortal:
         """后台保活让位于已请求的任务；按结果年龄与上次耗时退避。"""
         return self._roster_reply(force=getattr(self,'_refresh',None) is None, background=True)
 
-    def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False,background=False):
+    def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False,background=False,wait=None):
         if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings','matrix','cards-extra','deck-detail'):
             from urllib.parse import parse_qs,urlencode
             # deck-detail 的 key[1] 是玩家名，不是查询串：不能按参数归一化，否则不同玩家会撞成同一个 key。
             if len(key)>1 and key[0]!='deck-detail':key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
             from .statistics_roster_version import snapshot_version
+            # 构筑页计算已降到亚秒级：稍等一会儿比直接 503 再让用户重试更划算。
+            wait=wait if wait is not None else (4.0 if key[0]=='deck-detail' else 1.0)
             return self._refresh.get(key,lambda:self._cached_query_reply_sync(
-                key,callback,ttl,stamp_seconds,force),lambda:snapshot_version(self.database),ttl,background=background)
+                key,callback,ttl,stamp_seconds,force),lambda:snapshot_version(self.database),ttl,background=background,wait=wait)
         return self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
 
     def _cached_query_reply_sync(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
