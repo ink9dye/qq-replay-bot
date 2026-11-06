@@ -1,78 +1,59 @@
-# 统计口径排除：胜负未知整场与局次未知小局（2026-11-06）
+# 统计口径永久过滤：胜负未知整场与局次未知小局（2026-11-06）
 
-本轮把已入库录像中**胜负不确定的整场**和**第几局不确定的小局**从统计口径排除。只写生产库 `stat_exclusions`，不删录像、不删 `stat_views`/`stat_games`、不改代码、不重启服务；回滚只需删除本轮写入的 `auto:%` 行。
+目标：已入库录像中**胜负不确定的整场**、**第几局不确定的小局**以及它们的同场关联局，不再进入统计。最终实现为查询层过滤，不再依赖一次性排除表；`stat_exclusions` 中本轮自动行已清零。
 
-## 1. 判定口径
+## 1. 口径
 
 1. **整场排除**：同一场（可靠 `session_id` 一致）内只要有任意一局胜负未知，该场所有已入库小局一起排除。不能只删未知那一局而保留第 1、2 局，否则胜率、Side、构筑历史仍会引用不完整场次。
 2. **单局排除**：没有可靠正整数局次的小局单独排除；有局次但无法关联到可靠场次、且胜负未知的小局也单独排除。
 3. **不猜**：可靠来源仅限 capture、上传账本 `capture`、已确认身份、唯一 `replay_sessions` 关联。不用文件名、上传顺序或时间邻近补局次。
 
-## 2. 数据规模（执行时）
+## 2. 实现
+
+- 新模块 `bot/statistics_quality.py`：
+  - `compute(db)` 读取 `stat_views` 的胜负、`statistics_match_identity.identity_metadata` 的场次/局次，生成排除摘要集合；
+  - `excluded_digests(db)` 在进程内缓存结果，用 `stat_views`/`stat_games`/`stat_evidence`/`stat_files`/`replay_sessions` 的计数、最大 rowid、已知胜负计数，以及上传账本、身份确认库的 mtime 作为失效指纹；数据变化后自动重算，无需重启；
+  - 计算异常时 **fail-open**：返回空集合且不缓存，避免一次锁/证据读取失败把所有统计清空。
+- `bot/top100.py` 的 `eligible_views()` 在 SQL 取数后、文件存活检查和首局继承之前过滤；录像筛选、卡片统计、额外卡、矩阵、玩家页、构筑详情、Side 分析都走这个入口。
+- `bot/statistics_server.py` 的 `create_server()` 从配置 `statistics.quality_filter.enabled` 启用，仅 `ygo-web` 打开；QQ/collector 不启用，行为保持不变。
+- 性能：首次计算约 1.0s，命中缓存约 0.02s；热查询约 0.17s。回填活跃时指纹会变化，下一次查询重新计算约 1s。
+
+## 3. 数据与验证（2026-11-06 23:10）
 
 | 项 | 数值 |
 |---|---|
-| 玩家视角 / 录像摘要 | 28,268 / 14,134 |
-| 胜负未知摘要 | 2,033（双方视角均为 unknown） |
-| 有可靠身份摘要 | 12,905 |
-| 无可靠局次摘要 | 1,229 |
-| 至少一局未知的场次 | 400 |
-| 这些场次涉及的摘要 | 1,029（其中 84 份本身胜负已知） |
-| 无场次但局次已知、胜负未知 | 1 份（`a6adedf5…`，局次 1） |
-| 合计排除 | **2,259 份摘要** |
+| `stat_views` / 摘要 | 29,646 / 14,823 |
+| 排除摘要 | **2,418**（1,029 整场 + 1,388 局次未知 + 1 单局未知） |
+| `stat_exclusions` 自动行 | **0**（一次性补跑后已清零） |
+| 录像筛选 total | 5,258 |
+| 已确认胜负分母 | 5,258 |
+| 胜负未知 | **0** |
 
-清单构成：`auto:match_unknown_outcome` 1,030 行（946 份未知 + 84 份关联已知）、`auto:game_number_unknown` 1,229 行（1,087 份未知 + 142 份胜负已知但局次未知）。涉及 666 名玩家；400 场中 23 场 1 局、125 场 2 局、252 场 3 局。
+- `outcome=unknown` 筛选返回 0。
+- 直接检查过滤后的 5,266 个有效视角：胜负未知 **0**、无可靠局次 **0**。
+- 固定三局样本（第 1/2 局已知、第 3 局 unknown）整场不再出现；正常已知对局仍在。
+- 一次性补跑历史：20:39 写入 2,259 行；22:58 补跑到 2,418 行；查询层过滤验证通过后删除全部 2,418 行，避免与查询层重复并恢复分享/打包的原始可达性。删除前快照为 `stat_exclusions-before-filter-20261106-2308.tsv`。
 
-首轮按“整场 + 局次未知”写入 2,258 行；复核发现 `a6adedf5…` 有局次 1、无场次、胜负未知，未被两条规则覆盖，补入后为 2,259 行。
+## 4. 部署与回滚
 
-## 3. 写入方式
+- 文件：新增 `bot/statistics_quality.py`；修改 `bot/top100.py`、`bot/statistics_server.py`。
+- 配置：`statistics.quality_filter = {"enabled": true}`；备份在 `/opt/ygobot/data/config-backups/quality-filter-20261106/`（含旧 `top100.py`、`statistics_server.py`、`config.json`）。
+- 只重启 `ygo-web`；`ygo-collector`、`ygo-qq`、`ygo-replay-api`、nginx 未因本轮改动重启。
+- 回滚：
+  1. 把 `statistics.quality_filter.enabled` 改为 `false`（或删除该键），重启 `ygo-web`，立即恢复旧口径；
+  2. 需要连代码一起回滚时，用备份目录覆盖两个旧文件并删除 `bot/statistics_quality.py`，再重启 `ygo-web`；
+  3. 如要恢复一次性排除快照，用运维工作区的 `quality_exclusions.py` 对 `manifest-2258.tsv` 重放。
+- 无数据库迁移；`stat_exclusions` 仅保留人工排除（当前 0 行）。
 
-- 表：`stat_exclusions`；行：`player=''`（对双方生效）、`scope='default'`、`reason='auto:match_unknown_outcome'` 或 `'auto:game_number_unknown'`。
-- 以 `ygo` 用户单事务 `BEGIN IMMEDIATE`：先删除旧 `auto:%` 行，再 `INSERT OR IGNORE`，一次提交；可重复运行，按当时数据重算。
-- 执行前该表 0 行；执行后仅本轮 2,259 行，无其它行。DB/WAL/SHM 属主仍为 `ygo:ygo`，WAL 仍 128MB。
+## 5. 边界
 
-## 4. 生效验证
+- 只作用于 `ygo-web` 的统计查询；设备页“最近入库”、QQ 状态列表、`/replay-api` 录像库仍按原始记录展示。
+- QQ 的统计命令（前百饼图/构筑等）不走该过滤；如需同样口径，要在 QQ 进程启用同一模块并重启。
+- 手动排除表 `stat_exclusions` 仍然独立生效；查询层过滤不写该表。
+- 回填/晚到数据会自动纳入判断：新写入的未知局在下一次指纹变化后排除；晚到胜负把 unknown 变成已知后会重新进入统计。
+- 冷查询会增加约 1s 计算；回填频繁时可能重复计算。
 
-录像筛选接口（8788，owner cookie）：
+## 6. 测试
 
-| 指标 | 执行前 | 执行后 20:43 | 复查 20:49 |
-|---|---|---|---|
-| total | 6,316 | 4,922 | 4,876 |
-| 已确认胜负分母 | 5,080 | 4,922 | 4,876 |
-| 胜负未知 | 1,236 | 0 | 0 |
-| 胜 / 负 | 3,017 / 2,063 | 2,916 / 2,006 | 2,887 / 1,989 |
-
-- 4,922 与直接调用 `eligible_views` 一致（源文件存活检查后）；中间值 9,396→7,873（`excluded_current_views=1,523`）。
-- 20:49 的 4,876 是 14 天保留期清理了 64 个视角（32 局，其中 18 个属已排除视角），不是排除规则变化。
-- 固定三局样本（第 1/2 局已知、第 3 局 unknown）的 3 份摘要均不再出现在 `eligible_views`；正常对照仍在。
-- `outcome=unknown` 筛选返回 0；`ygo-web`/`ygo-collector`/`ygo-qq`/`ygo-replay-api` 均 active，8787/8788 `/health` 200，journal 无新增 Traceback。
-
-## 5. 影响与边界
-
-- **只影响统计口径**：录像文件、`stat_views`/`stat_games`/`stat_builds` 均未删除；录像库（`/replay-api`）仍列出这些文件。
-- 分享构筑深链对已排除摘要返回 404“来源已失效或被排除”；录像页打包下载直接指定已排除摘要会被拒。
-- 排除行 `player=''` 不出现在 owner 复核页的“按玩家排除”列表，不能从网页逐条恢复；回滚用 SQL。
-- **一次性回填**：只覆盖执行时已入库的视角。之后新入库的未知局不会自动排除；需要时重跑脚本。
-- 设备页“最近入库”和 QQ 状态列表不读该排除表，仍显示原始入库记录。
-
-## 6. 回滚与重跑
-
-回滚（只删本轮自动行，≤30 秒缓存后恢复）：
-
-```sql
-DELETE FROM stat_exclusions
- WHERE player = '' AND scope = 'default' AND reason LIKE 'auto:%';
-```
-
-重跑：脚本在运维工作区 `workflow-results/quality-exclusions-20261106/quality_exclusions.py`（默认 dry-run，`--apply` 写入，`--manifest` 输出清单）；未安装到 `/opt/ygobot/tools/`。以 `ygo` 用户执行，并先确认当时没有正在进行的统计刷新。
-
-## 7. 证据
-
-运维工作区 `workflow-results/quality-exclusions-20261106/`：
-
-- `README.md`：完整处理说明；
-- `manifest.tsv`：2,259 行清单（含玩家名与摘要，不随本文档提交仓库）；
-- `before.tsv`：执行前快照（表头）；
-- `apply.json`：计划、执行、前后对比；
-- `quality_exclusions.py`：使用的脚本；
-- `rollback.sql`：回滚语句。
+- `tests/test_statistics_quality.py`：5 项通过（整场关联、单局未知、无局次、缓存失效、fail-open、`eligible_views` 集成）。
+- 相关回归：`test_top100` 11 项、`test_statistics_recording_filters` 6 项、`test_card_statistics` 9 项、`test_statistics_server` 1 项通过；`test_player_statistics`/`test_statistics_detail` 各有 1 项既有环境失败（与本轮改动无关，过滤默认关闭时同样失败）。

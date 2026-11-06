@@ -118,6 +118,9 @@ def make_handler(portal, share_app=None):
 
 def create_server(root,port=8788):
     root=Path(root).resolve();cfg=json.loads((root/'config.json').read_text(encoding='utf-8-sig'))
+    from .statistics_quality import enable as enable_quality_filter
+    quality=(cfg.get('statistics') or {}).get('quality_filter') or {}
+    enable_quality_filter(bool(quality.get('enabled')))
     data=Path(cfg.get('data_dir') or root/'data');replays=Path(cfg.get('replay_dir') or data/'replays')
     if not (data/'bot.sqlite3').is_file():raise ValueError('statistics_database_missing')
     portal=StatisticsPortal(data/'bot.sqlite3',replays,time.time,owner_secret(data/'statistics-owner.key'),background=True)

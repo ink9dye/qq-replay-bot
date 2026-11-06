@@ -11,6 +11,8 @@ from urllib.error import HTTPError, URLError
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from . import statistics_quality
+
 SOURCE='https://sapi.moecube.com:444/ygopro/arena/users?o=pt'
 REFRESH_SECONDS=120
 STALE_SECONDS=600
@@ -145,6 +147,12 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
         params+=(player,)
     if wide_population:sql=sql.replace('JOIN stat_current_top100 m ON m.player=v.player','LEFT JOIN stat_current_top100 m ON m.player=v.player')
     rows=[dict(r) for r in db.execute(sql+'ORDER BY g.recorded_at,v.digest,v.player_index',params)]
+    if statistics_quality.enabled():
+        excluded=statistics_quality.excluded_digests(db)
+        before_quality=len(rows)
+        if excluded:rows=[row for row in rows if row['digest'] not in excluded]
+        diagnostics['quality_filter']=dict(enabled=True,excluded_digests=len(excluded),
+            excluded_views=before_quality-len(rows))
     if check_files:
         file_paths={}
         for file_row in db.execute('SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
