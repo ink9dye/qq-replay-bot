@@ -13,7 +13,7 @@
 | 新增 | 内核 `oom_kill` 计数增加 | 弹窗，带前后计数与 `dmesg` 建议 |
 | 新增 | `ygo-web/ygo-collector/ygo-qq` NRestarts 增加 | 弹窗，带服务名、最后异常行 |
 | 新增 | 三服务 journal 在最近 16 分钟出现新的 Traceback | 弹窗，带异常行 |
-| 新增 | WAL > 8GB 或 `/opt` 可用 < 8GB | 弹窗，带增长速率与耗尽时间估算 |
+| 新增 | WAL > 2GB 或 `/opt` 可用 < 8GB | 弹窗，带增长速率与耗尽时间估算 |
 | 新增 | 每天 09:00 资源摘要（available/swap/PSI/WAL/DB/重启次数） | 只发邮件 |
 
 - 同类冷却：PSI/WAL/磁盘 60 分钟，OOM/重启/Traceback 30 分钟；恢复通知照旧。
@@ -35,6 +35,11 @@
 3. 代码（已部署到 `/opt/ygobot`）：
    - `bot/store.py`：写连接 `busy_timeout 5000 → 30000`；新增 `journal_size_limit=134217728`，checkpoint 重置时把 WAL 截到 128MB。
    - `bot/service.py`：`top100_loop` 增加兜底 `except Exception`，记录“已跳过本轮，下轮重试”并在失败表登记 `runtime_error`，不再因单次写锁/磁盘异常退出整个 collector。
+
+### 第二次膨胀与稳态确认（09:52）
+截断后 WAL 在 5 分钟内又涨到 **1.98GB**（约 6MB/s），`PASSIVE` 只能推进到第 1381 帧——有连接从 09:47 起钉住旧快照，checkpoint 无法 reset。停 `ygo-collector` + `ygo-web` 后 `wal_checkpoint(TRUNCATE)` 一次成功（`0|0|0`），重启两服务，WAL 追到 `journal_size_limit` 后**稳定在 128MB 整**。
+
+写放大来源已确认：重启后 collector 的 `/proc/<pid>/io` 写入约 **10MB/s**，但 `bot.sqlite3` 大小不变、行数不变（`stat_card_facts` 1,057,320），说明不是数据增长，而是同一批页被反复重写。与 01:42 夜间版“卡片事实投影随上传刷新”一致：每次上传重写约 1M 行（~100MB）。这属性能问题而非数据损坏，但单次 100MB 写入叠上长读事务，就足以在十几分钟内把 WAL 推到 GB 级——所以告警阈值从 8GB 下调到 2GB（正常稳态是 128MB）。
 
 ### 部署证据
 - 备份原文件：`/opt/ygobot/data/config-backups/wal-fix-20261106-1793929468/`（store.py `6332009f…`、service.py `ad1de920…`）。

@@ -19,7 +19,7 @@ New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $LogPath = Join-Path $DataDir 'watch.log'
 $StatePath = Join-Path $DataDir 'state.json'
 
-$WAL_ALERT_BYTES = 8GB
+$WAL_ALERT_BYTES = 2GB
 $DISK_ALERT_BYTES = 8GB
 $PSI_ALERT_AVG300 = 40.0
 $HEALTH_SLOW_SECONDS = 2.0
@@ -335,7 +335,7 @@ try {
             if ($hoursLeft -ge 0) { $rate += ("，按此速率约 {0} 小时占满盘" -f $hoursLeft) }
           }
           if ($probe.WalBytes -gt $WAL_ALERT_BYTES -and ($now - $state.last_wal_alert) -gt $COOLDOWN_WAL) {
-            $body = ("WAL 当前 {0}{1}。`r`n时间：{2}`r`nDB：{3}，盘可用：{4}`r`n建议（低峰执行，避开在录）：`r`n  sqlite3 /opt/ygobot/data/bot.sqlite3 'PRAGMA busy_timeout=30000; PRAGMA wal_checkpoint(TRUNCATE);'`r`n  若返回 busy=1，先 systemctl restart ygo-web 再重试。`r`n`r`n最近日志：`r`n{5}" -f `
+            $body = ("WAL 当前 {0}{1}（阈值 2GB，正常应 <=128MB，超过说明有长读事务挡住 checkpoint）。`r`n时间：{2}`r`nDB：{3}，盘可用：{4}`r`n建议（低峰执行，避开在录）：`r`n  sqlite3 /opt/ygobot/data/bot.sqlite3 'PRAGMA busy_timeout=30000; PRAGMA wal_checkpoint(TRUNCATE);'`r`n  若返回 busy=1，先 systemctl restart ygo-web 再重试。`r`n`r`n最近日志：`r`n{5}" -f `
                 (Format-Bytes $probe.WalBytes), $rate, (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), (Format-Bytes $probe.DbBytes), (Format-Bytes $probe.DiskAvail), (Get-RecentLog 6))
             Send-Alert 'wal' '【YGO】WAL 增长需处理' $body $true
             $state.last_wal_alert = $now
