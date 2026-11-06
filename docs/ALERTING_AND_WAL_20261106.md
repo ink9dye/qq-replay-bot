@@ -57,5 +57,41 @@ WAL 截断不可逆但无数据损失（已 checkpoint 进主库，且有 811MB 
 
 ### 未解决
 - WAL 为什么会涨到 10GB 的根因（长时间持有读事务的查询/连接）未定位；`journal_size_limit` 只限制重置后的文件大小，若有进程长期钉住快照，WAL 仍会增长。
-- 现由探活脚本的 `WAL > 8GB` 判据兜底；`/etc/cron.d/ygobot` 04:15 备份脚本本就会尝试 `wal_checkpoint(TRUNCATE)`，但历史上一直静默失败。
+- 现由探活脚本的 `WAL > 2GB` 判据兜底；`/etc/cron.d/ygobot` 04:15 备份脚本本就会尝试 `wal_checkpoint(TRUNCATE)`，但历史上一直静默失败。
 - 其他后台循环若遇到 `sqlite3.Error` 仍可能退出进程，本轮只修了已复现的 top100 路径。
+
+## C. 本机弹窗通道修复（800A0409）
+
+### 现象
+- `%TEMP%\ygo-alert-<pid>.vbs` 弹「行 1 / 字符 46 / 未结束的字符串常量」，错误码 `800A0409`，告警内容从不显示。
+- 邮件一路正常（`Send-Alert` 先发信、后弹窗），等于“嘴在、眼睛瞎了”：10:28 的 Traceback 告警、前一夜 4 次「内存持续偏低」都只到了邮箱。
+
+### 根因
+`Show-AlertPopup` 把含 CRLF 的多行正文整体塞进一个 `"..."`。VBScript 字符串不能跨行，编译器在第一处换行就判“未结束”，`MsgBox` 一行都没执行。
+
+### 修法
+只改 `tools/server_health_watch.ps1` 的 `Show-AlertPopup` 一个函数：
+
+- 逐行转字面量，用 `& vbCrLf &` 拼接：`MsgBox "行1" & vbCrLf & "行2", 64, "标题"`。
+- 双引号仍替换成单引号；正文截断到 900 字（MsgBox 显示能力有限）。
+- 剔除末尾空行；每次告警顺手删除 2 天前的 `ygo-alert-*.vbs`。
+- toast 仍是首选通道，但本机 WinRT 不可用（`找不到类型 Windows.Data.Xml.Dom.XmlDocument`），实际全部走 VBS 兜底——所以这条链路必须可靠。
+
+### 验证方法（不用真发告警）
+1. 用 `Parser::ParseFile` + `Find(FunctionDefinitionAst)` 从脚本里单独取出 `Show-AlertPopup` 调用，避免执行整个探针。
+2. 把生成的 `.vbs` 首行 `MsgBox ` 换成 `WScript.Echo `，再用 `cscript //nologo` 执行：`exit=0` 说明 VBScript 引擎接受这段表达式，`Echo` 输出就是最终文案。
+3. 用例要覆盖：多行含 `"` 与 `%`、超长 1200 字、空正文、结尾多余空行。
+
+### 编码约束（本轮踩过）
+- `tools/server_health_watch.ps1` 必须保留 **UTF-8 BOM**。5.1 的 `powershell -File` 对无 BOM 文件按 ANSI(GBK) 解析，中文变乱码并直接语法报错，任务静默不执行。
+- 改完必须复查首字节是 `EF BB BF`。
+- 生成的 `.vbs` 用 `Set-Content -Encoding Default`（本机 =GBK），与 WSH 的 ANSI 读取一致；不要写成 UTF-8。
+
+### 排错速查
+
+| 报错 | 含义 | 处理 |
+|---|---|---|
+| `800A0409 未结束的字符串常量` | 字符串里有裸换行或未转义引号 | 按上面的逐行拼接写 |
+| 弹窗不出现、日志也没有 `popup failed` | `wscript` 未启动或路径被拦 | 查 `%TEMP%` 是否生成了 `.vbs` |
+| 日志只有 `toast failed` | 正常，已退 VBS 兜底 | 不用处理 |
+| 中文变乱码 / 任务直接不跑 | ps1 丢了 BOM | 补回 `EF BB BF` |
