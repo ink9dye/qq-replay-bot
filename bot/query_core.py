@@ -27,6 +27,14 @@ class PortalUnavailable(Exception):
     """统计门户不可达/拒绝/响应异常。"""
 
 
+class PortalBusy(PortalUnavailable):
+    """统计门户正在计算（可重试）；retry_after 来自门户或默认 3 秒。"""
+
+    def __init__(self, retry_after: int = 3):
+        super().__init__("portal_busy")
+        self.retry_after = int(retry_after)
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -84,7 +92,24 @@ class PortalClient:
             except PortalUnavailable:
                 raise
             except urllib.error.HTTPError as exc:
-                exc.close()
+                body = b""
+                try:
+                    body = exc.read(4096)
+                except OSError:
+                    pass
+                finally:
+                    exc.close()
+                if exc.code == 503 and body:
+                    try:
+                        doc = json.loads(body.decode("utf-8"))
+                    except (ValueError, UnicodeError):
+                        doc = None
+                    if isinstance(doc, dict) and doc.get("code") == "query_busy":
+                        try:
+                            retry = int(doc.get("retry_after") or 3)
+                        except (TypeError, ValueError):
+                            retry = 3
+                        raise PortalBusy(max(2, min(retry, 5)))
                 if exc.code == 403 and attempt == 1:
                     last = exc
                     continue  # cookie 失效：强制重取一次再试
@@ -100,18 +125,20 @@ class QueryCore:
     store/share/replay_root/database 可选注入：提供后解锁 P3 的饼图与 /s/ 链接。"""
 
     def __init__(self, portal: PortalClient, clock=time.monotonic,
-                 store=None, share=None, replay_root=None, database=None):
+                 store=None, share=None, replay_root=None, database=None, data_dir=None):
         self.portal = portal
         self.clock = clock
         self.store = store
         self.share = share
         self.replay_root = Path(replay_root) if replay_root else None
         self.database = Path(database) if database else None
+        self.data_dir = Path(data_dir) if data_dir else (self.database.parent if self.database else None)
         self._cache: OrderedDict = OrderedDict()
         self._lock = threading.Lock()
         self._owned_store = False
         self._cache_bytes = 0
-        self._compute_lock = threading.RLock()
+        self._inflight: OrderedDict = OrderedDict()
+        self._negative: OrderedDict = OrderedDict()
 
     def close(self):
         if self._owned_store and self.store is not None:
@@ -119,27 +146,45 @@ class QueryCore:
             self._owned_store = False
 
     def _cached(self, key: tuple, ttl: float, fn):
-        # Serialize cache misses to avoid duplicate work on a small collector.
-        with self._compute_lock:
-            marker = self.clock()
-            with self._lock:
-                hit = self._cache.get(key)
-                if hit and hit[0] > marker:
-                    self._cache.move_to_end(key)
-                    return hit[1]
+        # 按 key 单飞：锁只保护字典，门户请求在锁外；不同 key 可并行。
+        now = self.clock()
+        with self._lock:
+            neg = self._negative.get(key)
+            if neg and neg[0] > now:
+                raise PortalBusy(neg[1])
+            hit = self._cache.get(key)
+            if hit and hit[0] > now:
+                self._cache.move_to_end(key)
+                return hit[1]
+            if key in self._inflight:
+                raise PortalBusy(2)
+            self._inflight[key] = now
+            while len(self._inflight) > 64:
+                self._inflight.popitem(last=False)
+        try:
             value = fn()
-            size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+        except PortalBusy as exc:
             with self._lock:
-                old = self._cache.pop(key, None)
-                if old:
-                    self._cache_bytes -= old[2]
-                if size <= 4 * 1024 * 1024:
-                    self._cache[key] = (self.clock() + ttl, value, size)
-                    self._cache_bytes += size
-                    while len(self._cache) > 32 or self._cache_bytes > 8 * 1024 * 1024:
-                        _, expired = self._cache.popitem(last=False)
-                        self._cache_bytes -= expired[2]
-            return value
+                self._negative[key] = (self.clock() + 2.5,
+                                       max(2, min(int(getattr(exc, "retry_after", 3) or 3), 5)))
+                while len(self._negative) > 64:
+                    self._negative.popitem(last=False)
+            raise
+        finally:
+            with self._lock:
+                self._inflight.pop(key, None)
+        size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+        with self._lock:
+            old = self._cache.pop(key, None)
+            if old:
+                self._cache_bytes -= old[2]
+            if size <= 4 * 1024 * 1024:
+                self._cache[key] = (self.clock() + ttl, value, size)
+                self._cache_bytes += size
+                while len(self._cache) > 32 or self._cache_bytes > 8 * 1024 * 1024:
+                    _, expired = self._cache.popitem(last=False)
+                    self._cache_bytes -= expired[2]
+        return value
 
     def top100(self):
         # 门户对 roster 有 300s 缓存 + 后台预热；这里再兜一层，避免门户重启后的冷查询打到用户。
@@ -154,6 +199,18 @@ class QueryCore:
                             lambda: self.portal.get_json("/statistics/api/pt-history", {"player": name}))
 
     def player_decks(self, name: str):
+        latest = 0.0
+        if self.store is not None:
+            try:
+                rows = self.store.replays_for_player(name) or []
+                latest = max((float(row.get("recorded_at") or 0) for row in rows), default=0.0)
+            except Exception:
+                latest = 0.0
+        if self.data_dir is not None:
+            from .query_precompute import MISS, read_precomputed
+            hit = read_precomputed(self.data_dir, name, latest)
+            if hit is not MISS:
+                return hit
         return self._cached(("decks", name), 300.0,
                             lambda: self.portal.get_json("/statistics/api/build", {"player": name}))
 

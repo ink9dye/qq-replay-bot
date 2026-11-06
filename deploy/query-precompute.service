@@ -1,0 +1,14 @@
+[Unit]
+Description=Precompute query build cache (top100 then subscriptions)
+After=network.target
+
+[Service]
+Type=oneshot
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+ExecStart=/usr/bin/python3 /opt/ygobot/tools/precompute_query_cache.py --config /opt/ygobot/config.json --data-dir /opt/ygobot/data --limit 60 --timeout 300
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryMax=300M

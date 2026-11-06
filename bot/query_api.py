@@ -4,7 +4,7 @@ import ipaddress
 import json
 import sqlite3
 from urllib.parse import parse_qs, unquote
-from .query_core import PortalUnavailable
+from .query_core import PortalBusy, PortalUnavailable
 
 class QueryHandlerMixin:
     ADMIN_UI_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
@@ -65,24 +65,41 @@ const unlock=k=>act('unlock',{key:k});
             raise ValueError("bad_json")
         return data
 
+    _HEAVY_PREFIXES = ("/query-api/player/", "/query-api/card/")
+
+    @classmethod
+    def _is_heavy(cls, path: str) -> bool:
+        return path.startswith(cls._HEAVY_PREFIXES) or path == "/query-api/command"
+
     def _query_dispatch(self, parts, post=False):
         self.close_connection = True
         self.connection.settimeout(10)
         if getattr(self.server, "query_auth", None) is None:
             self._send(503, dict(ok=False, error="query_auth_disabled"))
             return
-        if not self.server.query_gate.acquire(blocking=False):
-            self._send(429, dict(ok=False, error="query_busy"))
+        heavy = self._is_heavy(parts.path)
+        light_gate = getattr(self.server, "query_light_gate", None) or getattr(self.server, "query_gate", None)
+        heavy_gate = getattr(self.server, "query_heavy_gate", None) or light_gate
+        gate = heavy_gate if heavy else light_gate
+        wait = float(getattr(self.server, "query_heavy_wait" if heavy else "query_light_wait", 0.0) or 0.0)
+        if gate is None or not gate.acquire(timeout=wait):
+            retry = 3 if heavy else 1
+            self._send(429, dict(ok=False, error="query_busy", retry_after=retry),
+                       headers={"Retry-After": str(retry)})
             return
         try:
             try:
                 return self._query_post(parts) if post else self._query_get(parts)
+            except PortalBusy as exc:
+                retry = max(2, min(int(getattr(exc, "retry_after", 3) or 3), 5))
+                self._send(503, dict(ok=False, error="query_busy", retry_after=retry),
+                           headers={"Retry-After": str(retry)})
             except (ValueError, TypeError, UnicodeError):
                 self._send(400, dict(ok=False, error="invalid_query_request"))
             except (PortalUnavailable, sqlite3.Error, OSError, TimeoutError):
                 self._send(503, dict(ok=False, error="query_unavailable"))
         finally:
-            self.server.query_gate.release()
+            gate.release()
 
     def _query_identity(self):
         """校验用户 access 令牌；失败发送 401 并返回 None。"""

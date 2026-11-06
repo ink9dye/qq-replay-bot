@@ -50,7 +50,7 @@ class _Handler(QueryHandlerMixin, BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # noqa: D401 - 走自己的日志
         return
 
-    def _send(self, status: int, payload=None) -> None:
+    def _send(self, status: int, payload=None, headers=None) -> None:
         body = b""
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -58,6 +58,8 @@ class _Handler(QueryHandlerMixin, BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(str(name), str(value))
         self.end_headers()
         if body:
             self.wfile.write(body)
@@ -258,7 +260,8 @@ class WatchApiServer:
     def __init__(self, jobs, replay_root, token: str, log=print,
                  bind=("127.0.0.1", 8791), max_upload: int = MAX_UPLOAD, receipt_path=None,
                  token_store=None, query_auth=None, admin_token="", query_core=None,
-                 writes_enabled=False):
+                 writes_enabled=False, light_gate=6, heavy_gate=2,
+                 light_wait=0.5, heavy_wait=1.5):
         self.jobs = jobs
         self.replay_root = Path(replay_root)
         self.token = str(token or "")
@@ -267,6 +270,10 @@ class WatchApiServer:
         self.admin_token = str(admin_token or "")
         self.query_core = query_core
         self.writes_enabled = bool(writes_enabled)
+        self.query_light_gate = max(1, min(int(light_gate), 32))
+        self.query_heavy_gate = max(1, min(int(heavy_gate), 16))
+        self.query_light_wait = max(0.0, min(float(light_wait), 5.0))
+        self.query_heavy_wait = max(0.0, min(float(heavy_wait), 5.0))
         self.log = log
         self.bind = bind
         self.max_upload = max_upload
@@ -394,7 +401,10 @@ class WatchApiServer:
         httpd.app = self
         httpd.app_token = self.token
         httpd.token_store = self.token_store
-        httpd.query_gate = threading.BoundedSemaphore(2)
+        httpd.query_light_gate = threading.BoundedSemaphore(self.query_light_gate)
+        httpd.query_heavy_gate = threading.BoundedSemaphore(self.query_heavy_gate)
+        httpd.query_light_wait = self.query_light_wait
+        httpd.query_heavy_wait = self.query_heavy_wait
         httpd.query_auth = self.query_auth
         httpd.admin_token = self.admin_token
         httpd.query_core = self.query_core

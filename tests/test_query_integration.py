@@ -84,15 +84,16 @@ class QueryWatchBoundaryTests(unittest.TestCase):
         self.assertEqual(_get(self.port, '/watch-api/status', {'Authorization': 'Bearer ' + TOKEN})[0], 200)
 
     def test_busy_queries_fail_without_blocking_watch(self):
-        gate = self.api._httpd.query_gate
-        gate.acquire()
-        gate.acquire()
+        gate = self.api._httpd.query_light_gate
+        permits = max(1, int(self.api.query_light_gate))
+        for _ in range(permits):
+            gate.acquire()
         try:
             self.assertEqual(_get(self.port, '/query-api/top100', self.headers)[0], 429)
             self.assertEqual(_get(self.port, '/watch-api/status', {'Authorization': 'Bearer ' + TOKEN})[0], 200)
         finally:
-            gate.release()
-            gate.release()
+            for _ in range(permits):
+                gate.release()
 
     def test_forwarded_admin_rejected_even_with_correct_secret(self):
         for name in ('X-Real-IP', 'X-Forwarded-For', 'Forwarded'):

@@ -40,10 +40,14 @@ def build_query(config, data_dir, replay_root, log=print):
             raise ValueError("invalid_portal_port")
         core = QueryCore(PortalClient(f"http://127.0.0.1:{portal_port}", secret_path=data_dir / "statistics-owner.key"),
                          store=store, share=share, replay_root=replay_root,
-                         database=data_dir / "bot.sqlite3")
+                         database=data_dir / "bot.sqlite3", data_dir=data_dir)
         core._owned_store = True
         return dict(query_auth=auth, admin_token=admin, query_core=core,
-                    writes_enabled=cfg.get("writes_enabled") is True)
+                    writes_enabled=cfg.get("writes_enabled") is True,
+                    light_gate=cfg.get("light_gate", 6),
+                    heavy_gate=cfg.get("heavy_gate", 2),
+                    light_wait=cfg.get("light_wait", 0.5),
+                    heavy_wait=cfg.get("heavy_wait", 1.5))
     except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
         if store is not None:
             store.close()
