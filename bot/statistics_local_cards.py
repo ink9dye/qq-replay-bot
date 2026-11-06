@@ -293,17 +293,18 @@ def _schedule_thumb(data_dir, code, thumbs, pics=None):
         try:
             thumbs.mkdir(parents=True, exist_ok=True)
             from . import card_image_cache
-            # 普通卡先按卡号拿 !thumb2，命中就不查百鸽页。
-            for candidate in _image_codes(code):
-                if try_thumb(candidate):
+            # 普通卡先按卡号拿 !thumb2，命中就不查百鸽页；超先行没有 !thumb2，直接走原图。
+            if code < 100_000_000:
+                for candidate in _image_codes(code):
+                    if try_thumb(candidate):
+                        with _lock:
+                            _thumb_failed.pop(code, None)
+                        return
+                mapped = card_image_cache.image_id(data_dir, code)
+                if mapped and mapped not in _image_codes(code) and try_thumb(mapped):
                     with _lock:
                         _thumb_failed.pop(code, None)
                     return
-            mapped = card_image_cache.image_id(data_dir, code)
-            if mapped and mapped not in _image_codes(code) and try_thumb(mapped):
-                with _lock:
-                    _thumb_failed.pop(code, None)
-                return
             full = card_image_cache.ensure_full(data_dir, code, timeout=15)
             if full is not None:
                 derived = _derive_thumb(thumbs, full, code)

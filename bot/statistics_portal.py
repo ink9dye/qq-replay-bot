@@ -243,7 +243,12 @@ class StatisticsPortal:
                 return self._reply(400,'卡号无效。')
             image=web_thumb(self.database.parent,int(value))
             if image is None:
-                return self._reply(302,'',extra={'Location':THUMB_REMOTE % int(value)})
+                if int(value)>=100_000_000:
+                    from .card_image_cache import full_url
+                    target=full_url(self.database.parent,int(value))
+                else:
+                    target=THUMB_REMOTE % int(value)
+                return self._reply(302,'',extra={'Location':target})
             mime={'.webp':'image/webp','.jpg':'image/jpeg','.png':'image/png'}[image.suffix]
             status,kind,_,extra=self._reply(200,'',mime,{'Cache-Control':'private, max-age=86400'})
             return status,kind,image.read_bytes(),extra

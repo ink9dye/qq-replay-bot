@@ -235,8 +235,17 @@ def ensure_full(data_dir, card_id, timeout=12) -> Path | None:
             return None
     result = None
     try:
-        # 普通卡先按卡号直取，命中就不查百鸽页，保证首次也快。
-        for url in (FULL_MOMO % card_id,):
+        candidates = []
+        if card_id >= 100_000_000:
+            # 萌卡超先行：图只在 super-pre，按卡号直取，不查百鸽页。
+            candidates.extend([FULL_PRE % card_id, FULL_MOMO % card_id])
+        else:
+            candidates.append(FULL_MOMO % card_id)
+        seen = set()
+        for url in candidates:
+            if url in seen:
+                continue
+            seen.add(url)
             try:
                 blob = _download(url)
             except OSError:
@@ -244,13 +253,12 @@ def ensure_full(data_dir, card_id, timeout=12) -> Path | None:
             if _valid_image(blob) and _save_blob(full_path(data_dir, card_id), blob):
                 result = full_path(data_dir, card_id)
                 break
-        if result is None:
+        if result is None and card_id < 100_000_000:
             image = image_id(data_dir, card_id) or card_id
             candidates = []
             if image != card_id:
                 candidates.append(FULL_PRE % image)
             candidates.extend([FULL_MOMO % image, FULL_MOMO % card_id, FULL_PRE % card_id])
-            seen = set()
             for url in candidates:
                 if url in seen:
                     continue
@@ -298,6 +306,11 @@ def ensure_thumb(data_dir, card_id, timeout=8) -> Path | None:
     full = local_full(data_dir, card_id)
     if full is not None and _derive_thumb(full, thumb_path(data_dir, card_id)):
         return thumb_path(data_dir, card_id)
+    if card_id >= 100_000_000:
+        full = ensure_full(data_dir, card_id)
+        if full is not None and _derive_thumb(full, thumb_path(data_dir, card_id)):
+            return thumb_path(data_dir, card_id)
+        return None
     def take(candidate: int) -> bool:
         try:
             blob = _download(THUMB_MOMO % candidate, timeout=timeout)
@@ -355,16 +368,20 @@ def page_urls(data_dir, card_id) -> tuple[str, str]:
     """分享页用的（主图, 回退图）：普通卡先 thumb2，先行卡回退 super-pre 原图。"""
     card_id = int(card_id)
     image = image_id_cached(data_dir, card_id) or card_id
-    primary = THUMB_MOMO % image
     if image != card_id:
-        fallback = FULL_PRE % image
-    else:
-        fallback = FULL_MOMO % image
-    return primary, fallback
+        return THUMB_MOMO % image, FULL_PRE % image
+    if card_id >= 100_000_000:
+        # 萌卡超先行没有 !thumb2，直接给 super-pre 原图。
+        return FULL_PRE % card_id, FULL_MOMO % card_id
+    return THUMB_MOMO % card_id, FULL_MOMO % card_id
 
 
 def full_url(data_dir, card_id) -> str:
     """聊天兜底 URL：先行卡必须走 super-pre，否则 momobako 会 404。"""
     card_id = int(card_id)
     image = image_id_cached(data_dir, card_id) or card_id
-    return (FULL_PRE if image != card_id else FULL_MOMO) % image
+    if image != card_id:
+        return FULL_PRE % image
+    if card_id >= 100_000_000:
+        return FULL_PRE % card_id
+    return FULL_MOMO % card_id
