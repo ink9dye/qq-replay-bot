@@ -2,9 +2,8 @@
   const nav=document.querySelector('body>.main-nav');
   if(!nav)return;
   const marker=location.pathname.indexOf('/statistics');
-  if(marker<0)return;
-  const prefix=location.pathname.slice(0,marker);
-  const p=location.pathname.slice(marker);
+  const prefix=marker<0?'':location.pathname.slice(0,marker);
+  const p=marker<0?'/statistics':location.pathname.slice(marker);
   const links=[['/statistics','玩家排名'],['/statistics/cards-report','卡片统计'],
     ['/statistics/cards-extra','额外卡'],['/statistics/matrix','卡组胜率'],
     ['/statistics/recordings','录像筛选'],['/statistics/deck-naming','卡组命名'],
