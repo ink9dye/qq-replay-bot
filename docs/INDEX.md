@@ -40,7 +40,7 @@
 | [`QUERY_API.md`](QUERY_API.md) | 服务端总接口：`/query-api`、`/replay-api`、`/statistics/api/recordings` |
 | [`REPLAY_LIBRARY_20261106.md`](REPLAY_LIBRARY_20261106.md) | 录像库检索/整场下载、限速、客户端 v1.1–v1.5 |
 | [`SIDE_ANALYSIS_20261106.md`](SIDE_ANALYSIS_20261106.md) | Side 换入换出分析：入口、口径、算法候选、验收 |
-| [`WRAPUP_WEB_LATENCY_20261107.md`](../../.tmp-ops/delivery-query-perf-20261106/docs/WRAPUP_WEB_LATENCY_20261107.md) | **网页耗时优化全量记录**：措施、实测、饼图最终口径、卡图管线、回滚 |
+| [`WRAPUP_WEB_LATENCY_20261107.md`](WRAPUP_WEB_LATENCY_20261107.md) | **网页耗时优化全量记录**：措施、实测、饼图最终口径、卡图管线、回滚 |
 | [`STATISTICS_QUERY_OPTIMIZATION_PLAN_20261106.md`](STATISTICS_QUERY_OPTIMIZATION_PLAN_20261106.md) | 查询链路优化方案（P1b/P2/P3） |
 | [`STATISTICS_QUERY_FINAL_PLAN_20261106.md`](STATISTICS_QUERY_FINAL_PLAN_20261106.md) | 查询优化最终执行计划与结论 |
 | [`WEB_PERFORMANCE_NIGHT_20261106.md`](WEB_PERFORMANCE_NIGHT_20261106.md) | 2026-11-06 夜间网页性能专项（首屏/缓存/CPU 隔离） |
@@ -52,7 +52,7 @@
 | [`QQ_OBSERVATION_PERIOD_RULES.md`](QQ_OBSERVATION_PERIOD_RULES.md) | QQ 账号观察期纪律、掉线 SOP、换号判据 |
 | [`QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md`](QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md) | 发送守卫与登录证据计划 |
 | [`QQ_PROBE_DEPLOY_20261107.md`](QQ_PROBE_DEPLOY_20261107.md) | 自动探测恢复的部署与回滚（2026-11-07） |
-| [`WATCH_DEVICE_TOKENS.md`](WATCH_DEVICE_TOKENS.md) / [`WATCH_CAPACITY_20261105.md`](WATCH_CAPACITY_20261105.md) / [`SMALL_WORLD.md`](SMALL_WORLD.md) | 设备令牌、观战容量、小世界检索 |
+| `WATCH_DEVICE_TOKENS.md`（见仓库 `docs/`，含设备令牌，谨慎分发）/ [`WATCH_CAPACITY_20261105.md`](WATCH_CAPACITY_20261105.md) / [`SMALL_WORLD.md`](SMALL_WORLD.md) | 设备令牌、观战容量、小世界检索 |
 | [`SERVICE_BOUNDARIES_20261105.md`](SERVICE_BOUNDARIES_20261105.md) | 服务边界与职责划分 |
 
 ## 4. 规则与流程
