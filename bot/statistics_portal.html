@@ -408,6 +408,7 @@ window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster
     var html='<div style="margin-top:14px;border-top:1px solid #dbe2d8;padding-top:10px;columns:3 280px;column-gap:26px;font-size:12.5px;line-height:1.7">';
     html+='<div style="font-weight:700;margin-bottom:6px">每个切片包含的卡组</div>';
     html+='<div style="color:#7a8b80;font-size:11.5px;margin-bottom:10px">◆ = 外环嵌套 &gt;4%；交集 = 两个大类共同占有</div>';
+    var pieNames={};items.forEach(function(x){pieNames[x.name]=1});
     var ordered=items.slice().sort(function(x,y){return x.kind==='other'?1:(y.kind==='other'?-1:0)});
     ordered.forEach(function(s){
       var block='<div style="break-inside:avoid;margin-bottom:10px">';
@@ -417,10 +418,11 @@ window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster
       var isCat=(s.kind==='cat'||s.kind==='category'); if(isCat){
         ((data&&data.deck_pie&&data.deck_pie.outer)||[]).forEach(function(o){if(pieHit(o,'category'))block+=pieRow(o)});
         (s.bands||[]).forEach(function(b){if(b.kind==='overlap')block+='<div style="padding-left:16px;color:#7a5a24">· 交集 '+esc(b.name)+' '+b.players+'人（内环/外环各一张卡图）</div>'});
+        ((data&&data.deck_pie&&data.deck_pie.middle)||[]).forEach(function(m){var ex=m.extras||[];if(ex.length!==1||m.primary!==s.name)return;var pp=ex[0];if(!pieNames[pp]||pp==='其他')return;var cov=(s.bands||[]).some(function(b){return b.kind==='overlap'&&b.partner===pp});if(cov)return;block+='<div style="padding-left:16px;color:#7a5a24">· 交集 '+esc(s.name)+'∩'+esc(pp)+' '+m.players+'人（内环/外环各一张卡图）</div>'});
       }else if(s.kind==='deck'){
         // 独立卡组：列出所有带该字段的卡组（含混合构筑）；只有它自己时不重复列。
         var hits=[];((data&&data.deck_pie&&data.deck_pie.outer)||[]).forEach(function(o){if(o.name===s.name||(o.extras||[]).indexOf(s.name)>=0)hits.push(o)});
-        if(hits.length>1)hits.forEach(function(o){block+=pieRow(o)});
+        hits.forEach(function(o){block+=pieRow(o)});
       }else{
         (s.parts||[]).forEach(function(q){
           block+='<div data-deck="'+esc(q.name)+'" style="cursor:pointer;padding-left:16px;color:#5c6a62">· '+esc(q.name)+' '+q.players+'</div>';

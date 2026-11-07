@@ -500,6 +500,7 @@ def _render_single_payload(payload):
                 found.append(row)
         return found
 
+    slice_names = {item['name'] for item in items}
     blocks = []
     for item in items:
         lines = [f"{item['name']} {_people(item)}人 · {_pct_text(item['percent'])}%"]
@@ -510,14 +511,23 @@ def _render_single_payload(payload):
             for band in item['bands']:
                 if band.get('kind') == 'overlap':
                     lines.append(f"· 交集 {band['name']}  {band['players']}人（内环/外环各一张卡图）")
+            # 不相邻的交集没有边界可画，但也要在图例里列出（如 混沌∩三幻魔）。
+            covered = {b.get('partner') for b in item['bands'] if b.get('kind') == 'overlap'}
+            for row in middle_rows:
+                extras = row.get('extras') or []
+                if len(extras) != 1 or row.get('primary') != item['name']:
+                    continue
+                partner = extras[0]
+                if partner not in slice_names or partner == '其他' or partner in covered:
+                    continue
+                lines.append(f"· 交集 {item['name']}∩{partner}  {row['players']}人（内环/外环各一张卡图）")
         elif item.get('kind') == 'other':
             for part in item.get('parts') or []:
                 lines.append(f"· {part['name']}  {part['players']}")
         elif item.get('kind') == 'deck':
-            hits = _hits(item['name'], 'deck')
-            if len(hits) > 1:
-                for row in hits:
-                    lines.append(_deck_line(row, item['name']))
+            # 独立卡组也至少列出它自己，避免“只有纯卡组”时整块空白。
+            for row in _hits(item['name'], 'deck'):
+                lines.append(_deck_line(row, item['name']))
         blocks.append(dict(lines=lines, color=item['color'],
                            height=len(lines) * line_height + gap))
 
