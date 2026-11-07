@@ -1,8 +1,8 @@
 # 保密命令收紧 + 慢命令延迟提示 + 周报巡检（2026-11-07 上线）
 
-> **状态：已上线。** 2026-11-07 11:25:42 重启 `ygo-qq`（用户要求不再等静默窗口）；
-> 新进程 MainPID 723934，重启后 10 秒内 `online`，已正常收发群消息（retcode 0），无 Traceback。
-> 线上 `qq.py` `04481eaf…`、`service.py` `170d2be6…`；GitHub `0484b84`。
+> **状态：已上线（含 14:27 回退延迟提示）。** 2026-11-07 11:25:42 首次重启，14:27:47 因提示顺序问题再次重启；
+> 当前 MainPID 792847，`online`、`health=200`、无 Traceback。
+> 线上 `qq.py` `04481eaf…`、`service.py` `95d75c88…`；GitHub `0484b84`（许可）与后续回退提交。
 
 ## 1. 背景
 
@@ -28,15 +28,14 @@
 判定统一走 `watch_token_command.confidential_allowed`：优先 `remote.token_groups/token_users`，未配置时回退
 `statistics.allowed_groups/private_users`（当前即回退，2 群 / 3 人）。
 
-### 2.2 慢命令延迟提示
+### 2.2 慢命令提示（11:25 上线，14:27 回退）
 
-原来先发“处理中”再发结果（2 条）。现在：
+11:25 曾上线“延迟提示”：结果 3 秒内完成只发一条，超时才补“处理中”。
+实测 14:26 的 `前百饼图` 出现**先出结果、后说“生成中”**：结果消息的图片发送占用了
+`OutboundGate` 的锁约 9 秒，延迟提示排在它后面，导致顺序颠倒。
 
-- 结果在 3 秒内完成 → **只发结果（1 条）**；
-- 超过 3 秒 → 先补一句“处理中”，再发结果（2 条，但用户确实需要）。
-
-覆盖四处：`deck_build`、`player_history`、`price_quote`、`SLOW_COMMAND_HINTS`（stats_page/card_search 等）。
-实现为独立的 hint watcher 任务，不阻塞指令分发，也不拉长 `command_complete` 统计。
+14:27 已回退为**先提示再处理**（与改动前一致）：慢命令固定 2 条，但顺序正确。
+回退后 `_schedule_hint`/`_hint_tasks` 已删除，`service.py` 摘要 `95d75c88…`。
 
 ### 2.3 群内私聊失败：一次性重发许可
 
@@ -64,7 +63,7 @@ NapCat 返回 retcode 1200），机器人会在群里回一句“私聊发送失
 | 文件 | 说明 | sha256 前 8 |
 |---|---|---|
 | `bot/qq.py` | 免@路由排除 `query_enroll`/`watch_token` | `04481eaf` |
-| `bot/service.py` | 帮助过滤、名单外静默、延迟提示 | `6ba03f48` |
+| `bot/service.py` | 帮助过滤、名单外静默、慢命令提示（立即版）、一次性私聊重发许可 | `95d75c88` |
 | `tools/qq_weekly_report.py` | 周报脚本 | 随文件 |
 | `tools/qq_restart_waiter.py` | 静默 5 分钟后重启的等待器 | 随文件 |
 | `deploy/…`（服务器 `/etc/systemd/system`） | `ygobot-qq-weekly.service/.timer` | — |
@@ -104,5 +103,5 @@ systemctl restart ygo-qq
 ## 7. 未完成 / 风险
 
 - 帮助过滤改为只看 `confidential_allowed`；当前名单与统计名单同源，若以后拆分配置，需要重新确认统计命令的可见性。
-- 延迟提示的 3 秒阈值是固定值，未做成配置项；若慢命令经常在 2–4 秒完成，可再调。
+- 慢命令固定“先提示再结果”两条；若以后仍想合并，需要先解决 `OutboundGate` 长发送阻塞后续消息的排序问题（不能只靠延时）。
 - `service.py` 的两次改动（每日一卡/概率 + 保密/提示）因同文件合并为一次提交 `7bd6549`。
