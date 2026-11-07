@@ -40,12 +40,13 @@
 
 `statistics_portal.py e8d77d63`、`statistics_portal.html 5f3f642d`（UI 分支）、`statistics_dashboard.py d85c46df`（UI 分支）、`statistics_matrix.py 26de2d49`、`statistics_matrix.html 8b1d5146`、`statistics_prewarm.py 4c7a2245`、`statistics_server.py ff02e553`、`statistics_refresh.py 5935234f`、`top100.py 1288a888`、`card_series.py 6e5fe2b6`。
 
-## 4.5 系列标注缓存（2026-11-07 上午）
+## 4.5 系列标注缓存（2026-11-07 上午，最终：仅内存缓存）
 
-- **改动**：ot/card_series.py —— 按构筑缓存系列标注并**落盘** data/cache/build-series.json（按 catalog revision 剪枝，约 7.2MB/5348 条）；nnotate() 增加“全命中快路径”，已缓存的构筑不再执行 stat_build_series/stat_build_cards 查询与逐卡循环。
-- **实测**（同库同时刻，输出逐项一致）：roster 26.6s → **3.95s**（进程内二次 1.37s）；矩阵 200/200 58.6s → **6.66s**（cells 538、perspectives 1506 相同）；录像 100/100 4.26s → **2.86s**（total/samples 相同）。
-- **性质**：纯缓存/耗时优化，不改数据源、分类规则、字段、资格与 TTL。
-- **回滚**：/root/last-series-fastpath2-backup；缓存文件可直接删除（只会让下次计算变慢）。
+- **尝试**：ot/card_series.py 加“按构筑缓存 + 落盘 data/cache/build-series.json（约 7MB）+ 全命中快路径”。离线同库实测 roster 26.6s → 3.95s、矩阵 200/200 58.6s → 6.66s、录像 4.26s → 2.86s，输出逐项一致。
+- **问题**：生产部署后 web 的 memory.high（420MB）被反复触发（10 分钟内 3000+ 次），RSS 峰值约 440MB（上限 500MB），一次 roster 计算在压力下耗到 **112s**；原因是 7MB 缓存反序列化 + annotate 的逐构筑 cards 字典 + roster 行数据在 500MB 上限内叠加。
+- **最终处置**：回滚到“仅进程内缓存”的 card_series.py 6e5fe2b6，并把 uild-series.json 移到 /root/build-series.json.disabled-*（不再落盘）。当前 roster 计算 **16.9s**、web RSS **105MB**、memory.events 全 0、available 725MB。
+- **结论**：这版缓存对 CPU 有效，但内存不安全；下次要上必须先做“内存有界”版本（紧凑条目 + 分块 annotate，峰值控制在 +100MB 以内），再单独开窗口验证。
+- **回滚路径**：/root/last-series-persist-backup、/root/build-series.json.disabled-*。
 
 ## 5. QQ 机器人同步
 
