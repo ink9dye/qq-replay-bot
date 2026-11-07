@@ -34,7 +34,17 @@
 覆盖四处：`deck_build`、`player_history`、`price_quote`、`SLOW_COMMAND_HINTS`（stats_page/card_search 等）。
 实现为独立的 hint watcher 任务，不阻塞指令分发，也不拉长 `command_complete` 统计。
 
-### 2.3 周报巡检
+### 2.3 群内私聊失败：一次性重发许可
+
+保密名单内的群触发 `开通查询` / `令牌分发` 时，结果走私聊；若私聊失败（常见是双方不是好友，
+NapCat 返回 retcode 1200），机器人会在群里回一句“私聊发送失败，请私聊我重发一次。”，
+同时给该用户一个**一次性、10 分钟有效**的私聊重发许可。
+
+- 该用户随后私聊发同一类命令时，即使不在用户名单，也允许这一次；
+- 许可用一次即作废，过期作废；不改变名单本身；
+- 群里看到的那句提示仍保留（不含任何结果内容）。
+
+### 2.4 周报巡检
 
 `ygobot-qq-weekly.timer`，每周一 09:00 运行 `/opt/ygobot/tools/qq_weekly_report.py`，向
 `data/logs/qq-weekly-report.log` 追加一行：
@@ -62,8 +72,9 @@
 - 2026-11-07 11:10 文件已上传并 `py_compile` 通过；**未立即重启**。
 - 按用户要求：连续 300 秒无 `command_start`/`reply_queued`/`reply_complete` 后自动重启一次，
   等待器为 `tools/qq_restart_waiter.py`，结果写 `data/logs/qq-restart-waiter.json`。
-- 注意：`service.py` 此前还有另一会话的「每日一卡 / 概率运算」待重启改动（`97a6af02` 基线），
-  **本次重启会一并激活**。
+- 注意：`service.py` 还包含另一会话已完成的「每日一卡 / 概率运算」待重启改动，
+  **本次重启会一并激活**；对方已确认改完。
+- GitHub：`4f64c22`（qq.py + 周报/等待器 + 本文档）、`7bd6549`（每日一卡/概率 + service 合并提交）。
 
 ## 5. 验证
 
@@ -89,7 +100,6 @@ systemctl restart ygo-qq
 
 ## 7. 未完成 / 风险
 
-- `bot/service.py` 本轮未提交 GitHub：该文件包含另一会话尚未提交的 `daily_card`/`probability` 接线，
-  直接提交会引用仓库里不存在的模块。待对方连同新模块一起提交后，本轮的 service 改动会一并进入。
-- `bot/qq.py` 已提交（仅含本轮免@改动）。
 - 帮助过滤改为只看 `confidential_allowed`；当前名单与统计名单同源，若以后拆分配置，需要重新确认统计命令的可见性。
+- 延迟提示的 3 秒阈值是固定值，未做成配置项；若慢命令经常在 2–4 秒完成，可再调。
+- `service.py` 的两次改动（每日一卡/概率 + 保密/提示）因同文件合并为一次提交 `7bd6549`。

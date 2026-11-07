@@ -309,6 +309,8 @@ class BotService:
         self._deck_tasks = set()
         self._slow_tasks = set()
         self._hint_tasks = set()
+        # 群内保密命令私聊发送失败后，给该用户一次性的私聊重发许可（10 分钟）。
+        self._confidential_retry = {}
         self._known_replays_at = 0.0
         self._known_replays = set()
 
@@ -621,7 +623,9 @@ class BotService:
                     return None
                 return self._query_enroll(user)
             if not confidential_allowed(self, user, conversation):
-                return None
+                # 群内已触发过、但私聊发送失败：允许本人一次性私聊重发。
+                if not self._take_confidential_retry(user):
+                    return None
             return self._query_enroll(user)
         if op == "empty":
             return "请发送“帮助”查看用法。"
@@ -707,8 +711,11 @@ class BotService:
             return device_message(self)
         if op == "watch_token":
             from .watch_token_command import confidential_allowed
-            # 名单外静默：不回复、不提示功能存在。
-            if not confidential_allowed(self, user, conversation):
+            allowed = confidential_allowed(self, user, conversation)
+            if not allowed and not conversation.startswith("group:"):
+                # 群内私聊发送失败后的一次性私聊重发许可。
+                allowed = self._take_confidential_retry(user)
+            if not allowed:
                 return None
             from .watch_token_command import handle as handle_watch_token
             return handle_watch_token(self, user, command.get("args") or [], conversation)
@@ -1363,6 +1370,8 @@ class BotService:
                     delivered = await self.qq.send_private(user_id, private_reply)
                     if not delivered:
                         self.write_log("保密名单指令私聊发送失败，未在群内回退发送。")
+                        # 允许本人在 10 分钟内私聊重发一次，不必重新加名单。
+                        self._grant_confidential_retry(user_id)
                         await send(receiver, "私聊发送失败，请私聊我重发一次。")
                 return
         answer = str(text or '').strip()
@@ -1771,6 +1780,15 @@ class BotService:
             self._statistics_command_lock = asyncio.Lock()
         return self._statistics_command_lock
 
+
+    def _grant_confidential_retry(self, user_id):
+        """群内保密命令私聊发送失败后，给该用户一次性的私聊重发许可（10 分钟）。"""
+        self._confidential_retry[str(user_id)] = self.clock() + 600
+
+    def _take_confidential_retry(self, user_id) -> bool:
+        """取出并作废一次性许可；过期视为无效。"""
+        until = self._confidential_retry.pop(str(user_id), None)
+        return until is not None and until >= self.clock()
 
     def _schedule_hint(self, task, send, receiver, hint, delay: float = 3.0):
         """结果先到就只发一条；超过 delay 秒仍未完成才补一句“处理中”。"""
