@@ -209,111 +209,250 @@ def _draw_top_legend(draw, inner, width, font):
 
 
 def _render_single_payload(payload):
-    """单环新版：人数降序、「其他」最后；同卡图相邻小类合并；图下方附明细图例。"""
+    """直接复用网页 renderSinglePie 的几何：SVG 画环（含交集阶梯缺口），rsvg 转 PNG，再叠文字。"""
+    import base64
+    import subprocess
+
     single = payload.get('single') or {}
     total = int(single.get('total') or 0)
     if not total:
         raise ValueError('暂无卡组档案')
 
-    width, height = 1600, 1500
-    image = Image.new('RGB', (width, height), 'white')
-    draw = ImageDraw.Draw(image)
-    title_font, text_font, small_font, tiny_font = _font(28), _font(16), _font(14), _font(13)
-    draw.text((40, 30), f"前100卡组分布 · 有档案 {payload['covered']}/{payload['current']} 人 · 单环",
-              font=title_font, fill='#173529')
-    center = (800, 540)
-    radius = 320.0
-    r0, rb, r1 = radius * 0.30, radius * 0.56, radius * 0.94
-
     items = []
     for s in single.get('slices') or []:
         items.append(dict(name=s['name'], players=s['players'], percent=s['percent'],
                           color=s.get('color') or '#7A8B99', image=s.get('image'),
-                          kind=s.get('kind') or 'deck', bands=s.get('bands') or [], parts=[]))
+                          kind=s.get('kind') or 'deck', bands=s.get('bands') or [],
+                          decks=s.get('decks') or [], parts=[]))
     other = single.get('other') or {}
     if int(other.get('players') or 0) > 0:
         items.append(dict(name=other.get('name') or '其他', players=other['players'],
                           percent=other['percent'], color=other.get('color') or '#7A8B99',
-                          image=other.get('image'), kind='other', bands=[],
+                          image=other.get('image'), kind='other', bands=[], decks=[],
                           parts=other.get('parts') or []))
-    items.sort(key=lambda item: (item['kind'] == 'other', -item['players'], item['name']))
+    items = [item for item in items if item['kind'] != 'other'] + [item for item in items if item['kind'] == 'other']
 
-    labels = []
-    angle = -90.0
+    W, H = 980, 780
+    cx, cy, R = 490, 390, 300
+    r0, r1, b0 = R * 0.30, R * 0.94, R * 0.56
+    unit = 360.0 / total
+    cursor = -90.0
     for item in items:
-        span = item['players'] / total * 360.0
-        end = angle + span
-        _paste_wedge(image, center, r1, r0, angle, end, item.get('image'), item['color'], thumb=True)
-        # 相邻且卡图相同的成员小类合并成一块，只贴一次图、不画中间白线。
+        item['a0'] = cursor
+        item['a1'] = cursor + item['players'] * unit
+        cursor = item['a1']
+
+    def find_overlap(left, right):
+        for band in list(left['bands']) + list(right['bands']):
+            if band.get('kind') != 'overlap' or not band.get('players'):
+                continue
+            partner = band.get('partner')
+            if partner in (left['name'], right['name']) and left['name'] != right['name']:
+                name = band.get('name') or ''
+                if (left['name'] in name and right['name'] in name):
+                    return band
+        return None
+
+    steps = {}
+    for index in range(len(items) - 1):
+        band = find_overlap(items[index], items[index + 1])
+        if band:
+            width = band['players'] * unit
+            steps[index] = (items[index]['a1'] - width / 2, items[index]['a1'] + width / 2)
+
+    def pt(r, deg):
+        t = math.radians(deg)
+        return [cx + r * math.cos(t), cy + r * math.sin(t)]
+
+    def fmt(q):
+        return f"{q[0]:.1f} {q[1]:.1f}"
+
+    def arc(r, a0, a1, sweep):
+        large = 1 if abs(a1 - a0) > 180 else 0
+        return f"A{r:.1f} {r:.1f} 0 {large} {1 if sweep else 0} {fmt(pt(r, a1))}"
+
+    def slice_path(index):
+        s = items[index]
+        left = steps.get(index - 1)
+        right = steps.get(index)
+        oa0 = left[1] if left else s['a0']
+        oa1 = right[1] if right else s['a1']
+        ia1 = right[0] if right else s['a1']
+        ia0 = left[0] if left else s['a0']
+        d = "M" + fmt(pt(r1, oa0)) + arc(r1, oa0, oa1, True)
+        if right:
+            d += " L" + fmt(pt(b0, oa1)) + arc(b0, oa1, ia1, False)
+        d += " L" + fmt(pt(r0, ia1)) + arc(r0, ia1, ia0, False)
+        if left:
+            d += " L" + fmt(pt(b0, ia0)) + arc(b0, ia0, oa0, True)
+        return d + " Z"
+
+    def band_path(a0, a1, inner, outer):
+        return ("M" + fmt(pt(outer, a0)) + arc(outer, a0, a1, True)
+                + " L" + fmt(pt(inner, a1)) + arc(inner, a1, a0, False) + " Z")
+
+    def sample_bbox(a0, a1, radii):
+        points = []
+        for step in range(17):
+            angle = a0 + (a1 - a0) * step / 16
+            for radius in radii:
+                points.append(pt(radius, angle))
+        xs = [q[0] for q in points]
+        ys = [q[1] for q in points]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    _ART_CACHE = {}
+
+    def _art_info(code):
+        if code in _ART_CACHE:
+            return _ART_CACHE[code]
+        path = _card_file(code)
+        if path is None:
+            _ART_CACHE[code] = None
+            return None
+        try:
+            image = Image.open(path).convert('RGB')
+        except Exception:
+            _ART_CACHE[code] = None
+            return None
+        buffer = io.BytesIO()
+        image.save(buffer, format='JPEG', quality=88)
+        info = dict(data='data:image/jpeg;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii'),
+                    width=image.width, height=image.height,
+                    ax=image.width * 63 / 400.0, ay=image.height * 103 / 580.0,
+                    aw=image.width * 282 / 400.0, ah=image.height * 273 / 580.0)
+        _ART_CACHE[code] = info
+        return info
+
+    def art_markup(code, bbox, clip_id, opacity=0.18):
+        info = _art_info(code) if code else None
+        if info is None:
+            return ''
+        x0, y0, x1, y1 = bbox
+        bw = max(1.0, x1 - x0); bh = max(1.0, y1 - y0)
+        scale = max(bw / info['aw'], bh / info['ah'])
+        image_x = x0 - info['ax'] * scale
+        image_y = y0 - info['ay'] * scale
+        art_id = f"a{clip_id}"
+        clip = (f'<clipPath id="{art_id}"><rect x="{x0:.1f}" y="{y0:.1f}" '
+                f'width="{info["aw"] * scale:.1f}" height="{info["ah"] * scale:.1f}"/></clipPath>')
+        markup = (clip + f'<g clip-path="url(#{clip_id})"><g clip-path="url(#{art_id})">'
+                  f'<image href="{info["data"]}" x="{image_x:.1f}" y="{image_y:.1f}" '
+                  f'width="{info["width"] * scale:.1f}" height="{info["height"] * scale:.1f}" '
+                  f'preserveAspectRatio="none"/></g>'
+                  f'<rect x="{x0:.1f}" y="{y0:.1f}" width="{bw:.1f}" height="{bh:.1f}" '
+                  f'fill="#0a1812" opacity="{opacity}"/></g>')
+        return markup
+
+    defs, shapes = [], []
+    clip_index = 0
+    for index, item in enumerate(items):
+        path = slice_path(index)
+        bbox = sample_bbox(item['a0'], item['a1'], (r0, r1))
+        width = bbox[2] - bbox[0]; height = bbox[3] - bbox[1]
+        clip_id = f"c{clip_index}"; clip_index += 1
+        defs.append(f'<clipPath id="{clip_id}"><path d="{path}"/></clipPath>')
+        art_svg = art_markup(item.get('image'), bbox, clip_id)
+        if art_svg:
+            shapes.append(art_svg)
+        else:
+            shapes.append(f'<path d="{path}" fill="{item["color"]}"/>')
+        shapes.append(f'<path d="{path}" fill="none" stroke="#ffffff" stroke-width="1.4"/>')
+
+        # 嵌套小类：相邻同卡图合并后各自成带
         groups = []
-        for band in (b for b in item['bands'] if b.get('kind') == 'member' and b.get('players')):
+        for band in item['bands']:
+            if band.get('kind') != 'member' or not band.get('players'):
+                continue
             if groups and groups[-1]['image'] == band.get('image'):
                 groups[-1]['players'] += band['players']
-                groups[-1]['names'].append(band['name'])
             else:
-                groups.append(dict(image=band.get('image'), players=band['players'], names=[band['name']]))
-        cursor = angle
+                groups.append(dict(image=band.get('image'), players=band['players']))
+        band_cursor = item['a0']
+        span = item['a1'] - item['a0']
         for group in groups:
-            b_span = (group['players'] / max(1, item['players'])) * span
-            if group['image'] and group['image'] != item.get('image'):
-                _paste_wedge(image, center, r1, rb, cursor, cursor + b_span,
-                             group['image'], item['color'], thumb=True)
-            if cursor > angle + 1e-6:
-                a = math.radians(cursor)
-                draw.line((center[0] + math.cos(a) * rb, center[1] + math.sin(a) * rb,
-                           center[0] + math.cos(a) * r1, center[1] + math.sin(a) * r1),
-                          fill='white', width=1)
-            cursor += b_span
-        if cursor < end - 1e-6:
-            a = math.radians(cursor)
-            draw.line((center[0] + math.cos(a) * rb, center[1] + math.sin(a) * rb,
-                       center[0] + math.cos(a) * r1, center[1] + math.sin(a) * r1),
-                      fill='white', width=1)
-        mid = math.radians((angle + end) / 2)
-        labels.append((mid, f"{item['name']}  {item['percent']}%", _rgb(item['color'])))
-        angle = end
+            # 与网页一致：小类卡图与母片相同就不单独成块，整块归母片（避免时黑这种伪小类）。
+            if not group.get('image') or group.get('image') == item.get('image'):
+                continue
+            band_width = (group['players'] / max(1, item['players'])) * span
+            b_path = band_path(band_cursor, band_cursor + band_width, b0, r1)
+            b_bbox = sample_bbox(band_cursor, band_cursor + band_width, (b0, r1))
+            b_clip = f"c{clip_index}"; clip_index += 1
+            defs.append(f'<clipPath id="{b_clip}"><path d="{b_path}"/></clipPath>')
+            b_art = art_markup(group['image'], b_bbox, b_clip, opacity=0.12)
+            if b_art:
+                shapes.append(b_art)
+            shapes.append(f'<path d="{b_path}" fill="none" stroke="#ffffff" stroke-width="1.1"/>')
+            band_cursor += band_width
 
-    box = (center[0] - r1, center[1] - r1, center[0] + r1, center[1] + r1)
-    angle = -90.0
-    for item in items:
-        span = item['players'] / total * 360.0
-        a = math.radians(angle)
-        draw.line((center[0] + math.cos(a) * r0, center[1] + math.sin(a) * r0,
-                   center[0] + math.cos(a) * r1, center[1] + math.sin(a) * r1),
-                  fill='white', width=2)
-        draw.arc(box, angle, angle + span, fill='white', width=2)
-        angle += span
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">'
+           f'<rect width="{W}" height="{H}" fill="white"/><defs>{"".join(defs)}</defs>'
+           f'{"".join(shapes)}'
+           f'<circle cx="{cx}" cy="{cy}" r="{r0:.1f}" fill="white"/></svg>')
 
-    _draw_labels(draw, center, r1, labels, _font(16), width, height)
-    draw.ellipse((center[0] - r0, center[1] - r0, center[0] + r0, center[1] + r0), fill='white')
+    scale = 1.12
+    try:
+        result = subprocess.run(["rsvg-convert", "-w", str(int(W * scale)), "-h", str(int(H * scale))],
+                                input=svg.encode("utf-8"), capture_output=True, timeout=30)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.decode("utf-8", "ignore")[:200])
+        ring = Image.open(io.BytesIO(result.stdout)).convert("RGB")
+    except Exception:
+        ring = Image.new("RGB", (int(W * scale), int(H * scale)), "white")
+
+    width, height = 1600, 2000
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    title_font, text_font, small_font, tiny_font = _font(28), _font(16), _font(14), _font(13)
+    draw.text((40, 30), f"前100卡组分布 · 有档案 {payload['covered']}/{payload['current']} 人 · 单环",
+              font=title_font, fill='#173529')
+    ox = (width - ring.width) // 2
+    oy = 80
+    image.paste(ring, (ox, oy))
+    center = (ox + cx * scale, oy + cy * scale)
     _center_text(draw, center[0], center[1] - 16, str(total), _font(46), '#173529')
     _center_text(draw, center[0], center[1] + 18, '总人数 · 单环 100%', text_font, '#65776b')
-    _draw_top_legend(draw, items, width, text_font)
 
-    # 饼图下方：每个切片包含的卡组明细（三列），与网页右侧文字对应。
+    for item in items:
+        mid = math.radians((item['a0'] + item['a1']) / 2)
+        right = math.cos(mid) >= 0
+        dot_x = center[0] + math.cos(mid) * (r1 * scale + 12)
+        dot_y = center[1] + math.sin(mid) * (r1 * scale + 12)
+        draw.ellipse((dot_x - 4, dot_y - 4, dot_x + 4, dot_y + 4), fill=_rgb(item['color']))
+        x = center[0] + math.cos(mid) * (r1 * scale + 26)
+        y = center[1] + math.sin(mid) * (r1 * scale + 20)
+        draw.text((x, y), f"{item['name']}  {item['percent']}%", font=text_font,
+                  fill='#2f4138', anchor='lm' if right else 'rm')
+
     columns = [(60, 500), (560, 500), (1060, 500)]
     column_index = 0
-    y = 930
+    draw.text((60, 1010), '每个切片包含的卡组', font=_font(15), fill='#22322B')
+    draw.text((60, 1034), '◆ = 外环嵌套 >4%；交集 = 两个大类共同占有', font=tiny_font, fill='#7a8b80')
+    y = 1070
     line_height = 21
     max_y = height - 60
     for item in items:
         lines = [f"{item['name']}  {item['players']}人 · {item['percent']}%"]
-        for band in item.get('bands') or []:
-            if band.get('kind') == 'member':
-                lines.append(f"· {band['name']}  {band['players']}人")
-            elif band.get('kind') == 'overlap':
-                lines.append(f"· 交集 {band['name']}  {band['players']}人")
+        for deck in item.get('decks') or []:
+            if deck.get('name') == item['name'] and deck.get('players') == item['players']:
+                continue
+            mark = '◆' if deck['players'] / total * 100 > 4 else '·'
+            lines.append(f"{mark} {deck['name']}  {deck['players']}")
+        for band in item['bands']:
+            if band.get('kind') == 'overlap':
+                lines.append(f"· 交集 {band['name']}  {band['players']}人（内环/外环各一张卡图）")
         for part in item.get('parts') or []:
-            lines.append(f"· {part['name']}  {part['players']}人")
+            lines.append(f"· {part['name']}  {part['players']}")
         needed = len(lines) * line_height + 12
         if y + needed > max_y and column_index < len(columns) - 1:
             column_index += 1
-            y = 930
+            y = 1070
         x = columns[column_index][0]
-        draw.text((x, y), lines[0], font=small_font, fill='#22322B')
+        draw.rectangle((x, y + 3, x + 10, y + 13), fill=_rgb(item['color']))
+        draw.text((x + 16, y), lines[0], font=small_font, fill='#22322B')
         y += line_height
         for line in lines[1:]:
-            draw.text((x + 14, y), line, font=tiny_font, fill='#4a5a52')
+            draw.text((x + 16, y), line, font=tiny_font, fill='#4a5a52')
             y += line_height
         y += 12
 
@@ -485,52 +624,6 @@ def save_payload(database, now, payload):
 
 
 def render(database, replay_root, now):
-    """每次核对当前分布；同一数据/卡图版本的最终PNG落盘复用，payload 2 分钟内复用。"""
-    with _RENDER_LOCK:
-        payload = load_payload(database, now) or collect(database, replay_root, now)
-        save_payload(database, now, payload)
-        if payload.get('single'):
-            codes = set()
-            for row in payload['single'].get('slices') or []:
-                if row.get('image'):
-                    codes.add(row['image'])
-                for band in row.get('bands') or []:
-                    if band.get('image'):
-                        codes.add(band['image'])
-            other = payload['single'].get('other') or {}
-            if other.get('image'):
-                codes.add(other['image'])
-            render_payload = _render_single_payload
-        else:
-            codes = {row.get(key) for section in ('inner','middle','outer')
-                     for row in (payload.get('pie') or {}).get(section, [])
-                     for key in ('image','band_image') if row.get(key)}
-            render_payload = _render_payload
-        stamps = []
-        for code in sorted(codes):
-            file = _card_file(code)
-            try:
-                stat = file.stat() if file else None
-                stamps.append((code, str(file), stat.st_mtime_ns, stat.st_size) if stat else (code,None))
-            except OSError:
-                stamps.append((code,None))
-        key = hashlib.sha256(json.dumps([1,payload,stamps],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
-        folder = Path(database).parent / 'cache' / 'top100-pie'
-        cache = folder/'latest.cache'
-        try:
-            if 65 < cache.stat().st_size <= 8*1024*1024+65:
-                record = cache.read_bytes()
-                blob = record[65:]
-                if record[:65] == key.encode()+b'\n' and blob.startswith(b'\x89PNG\r\n\x1a\n'):
-                    return blob,payload
-        except OSError:
-            pass
-        blob,payload = render_payload(payload)
-        if len(blob) <= 8*1024*1024:
-            try:
-                folder.mkdir(parents=True,exist_ok=True)
-                cache.with_suffix('.tmp').write_bytes(key.encode()+b'\n'+blob)
-                os.replace(cache.with_suffix('.tmp'),cache)
-            except OSError:
-                pass
-        return blob,payload
+    """QQ 出图复用网站生成的缓存图片（statistics_pie_image.render）。"""
+    from .statistics_pie_image import render as render_image
+    return render_image(database, replay_root, now)

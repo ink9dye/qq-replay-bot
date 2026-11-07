@@ -139,6 +139,14 @@ enderPie() 原本只画内环（主大类）与外环（具体卡组），pie.mi
 - **顺带修复**：`card_series._compute` 的 `series_membership` 之前返回 list，`statistics_dashboard` 聚合时 `.get` 会抛错（偶发 500）；已改为 `{main_copies, extra_copies}` dict（`card_series.py d04dc012`）。
 - 回滚：`/root/last-qq-single-pie-backup`（top100_pie）、`/root/last-pie-split-backup` 等。
 
+## 4.9 网站生成饼图图片，QQ 只取图（2026-11-07 13:00）
+
+- 新增 `bot/statistics_pie_image.py`：用当前 `deck_single` 生成**整张图片**（上半饼图 + 下半图例，各占 50%），按 payload hash 缓存到 `data/cache/deck-pie/latest.png`。
+- 门户新增 `/statistics/api/deck-pie.png`：返回这张缓存图（没有则现场生成并写缓存）；网页/其他客户端可直接取。
+- QQ `top100_pie.render` 改为直接调用 `statistics_pie_image.render`，**不再自己画饼图**；首次约 5.5s，命中缓存毫秒级。
+- 图片构成：单环（0.30–0.94R、>4% 小类嵌套、相邻交集「5」字缺口、同图小类不单独成块）、彩色圆点标签、完整图例（全部卡组 ◆/·、交集行、其他 parts）。
+- 回滚：`/root/last-deck-pie-image-backup`（portal + top100_pie）。
+
 ## 5. 仍未做（按优先级）
 
 1. **卡片统计**：瓶颈已定位为“32 个分桶重建（最多 8.7s）+ 实时名次核验（约 5s）+ 存活检查（2–3s）”，不是缺索引；下一步是“资格快照单槽缓存（约 40MB）+ 名次短时效磁盘缓存（需确认 120s 语义）”；

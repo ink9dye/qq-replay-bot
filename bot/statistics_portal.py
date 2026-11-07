@@ -252,6 +252,17 @@ class StatisticsPortal:
             mime={'.webp':'image/webp','.jpg':'image/jpeg','.png':'image/png'}[image.suffix]
             status,kind,_,extra=self._reply(200,'',mime,{'Cache-Control':'private, max-age=86400'})
             return status,kind,image.read_bytes(),extra
+        if parts==['statistics','api','deck-pie.png']:
+            # 网站自己生成并缓存饼图 PNG；QQ「前百饼图」直接复用这张图。
+            from .statistics_pie_image import render as deck_pie_image
+            try:
+                blob,_=deck_pie_image(self.database,self.replay_root,float(self.clock()))
+            except ValueError:
+                return self._reply(503,'暂无卡组档案。')
+            except Exception:
+                return self._reply(500,'饼图暂时无法生成，请稍后重试。')
+            status,kind,_,extra=self._reply(200,'','image/png',{'Cache-Control':'private, max-age=60'})
+            return status,kind,blob,extra
         if len(parts)==3 and parts[:2]==['statistics','card-image']:
             from .statistics_local_cards import picture
             if not parts[2].isdigit() or len(parts[2])>10:return self._reply(400,'卡号无效。')
