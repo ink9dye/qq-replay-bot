@@ -11,7 +11,7 @@ from contextlib import closing
 from pathlib import Path
 
 _LOCK = threading.Lock()
-RENDER_VERSION = 9
+RENDER_VERSION = 13
 
 
 def _cache_path(database) -> Path:

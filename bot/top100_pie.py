@@ -411,20 +411,6 @@ def _render_single_payload(payload):
             shapes.append(f'<path d="{b_path}" fill="none" stroke="#ffffff" stroke-width="1.1"/>')
             band_cursor += band_width
 
-    # 交集「5」字白线：从内半径沿一侧到环厚一半，横拐，再沿另一侧到外半径。
-    for index, step in steps.items():
-        width = step[1] - step[0]
-        if width <= 0:
-            continue
-        left_angle = step[1] - width
-        right_angle = step[1]
-        p1 = pt(r0, left_angle)
-        p2 = pt(b0, left_angle)
-        p3 = pt(b0, right_angle)
-        p4 = pt(r1, right_angle)
-        points = " ".join(f"{q[0]:.1f},{q[1]:.1f}" for q in (p1, p2, p3, p4))
-        shapes.append(f'<polyline points="{points}" fill="none" stroke="#ffffff" stroke-width="2.2"/>')
-
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">'
            f'<rect width="{W}" height="{H}" fill="white"/><defs>{"".join(defs)}</defs>'
            f'{"".join(shapes)}'
@@ -472,7 +458,15 @@ def _render_single_payload(payload):
     line_height = 21
     max_y = height - 60
     for item in items:
-        lines = [f"{item['name']}  {item['players']}人 · {_pct_text(item['percent'])}%"]
+        # 人头按“实际参与该字段的玩家数”统计：primary 或 extras 命中都算，联动交集。
+        if item.get('kind') == 'other':
+            people = int(round(float(item['players'])))
+        else:
+            involved = sum(float(row.get('players') or 0) for row in middle_rows
+                           if row.get('primary') == item['name']
+                           or item['name'] in (row.get('extras') or []))
+            people = int(round(involved)) if involved else int(round(float(item['players'])))
+        lines = [f"{item['name']}  {people}人 · {_pct_text(item['percent'])}%"]
         for deck in item.get('decks') or []:
             if deck.get('name') == item['name'] and deck.get('players') == item['players']:
                 continue
