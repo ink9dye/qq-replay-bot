@@ -110,3 +110,63 @@ class ReplayEvidenceTests(unittest.TestCase):
         self.upload_replay();self.upload_e(winner=2)
         self.assertEqual(self.outcomes(),['draw','draw'])
 
+    def session_rows(self):
+        return [(r[1],r[2]) for r in self.store._db.execute(
+            'select replay_id,session_id,game_no from replay_sessions order by replay_id')]
+
+    def test_evidence_before_replay_records_match_number(self):
+        self.upload_e()
+        self.upload_replay()
+        self.assertEqual(self.session_rows(),[('verified-match',1)])
+
+    def test_replay_before_evidence_records_match_number(self):
+        self.upload_replay()
+        self.assertEqual(self.session_rows(),[])
+        self.upload_e()
+        self.assertEqual(self.session_rows(),[('verified-match',1)])
+
+    def test_unknown_game_number_is_not_invented(self):
+        self.upload_replay()
+        self.upload_e(game_no=0)
+        self.assertEqual(self.session_rows(),[])
+
+    def test_missing_session_is_not_invented(self):
+        self.upload_replay()
+        payload=dict(self.e);payload.pop('session_id')
+        self.api.save_upload('job','sample.yrp.evidence.json',json.dumps(payload).encode(),['甲','乙'],time.time())
+        self.assertEqual(self.session_rows(),[])
+
+    def test_existing_session_is_not_overwritten(self):
+        self.upload_replay()
+        with self.store._db:
+            self.store._db.execute('insert into replay_sessions values(?,?,?)',(self.row['id'],'server-side',2))
+        self.upload_e()
+        self.assertEqual(self.session_rows(),[('server-side',2)])
+
+    def test_shared_digest_copies_record_one_match(self):
+        self.upload_e();self.upload_replay()
+        second,_=self.store.add_replay(self.digest,'乙',self.path.relative_to(self.api.replay_root).as_posix(),
+                                       ['甲','乙'],{},time.time())
+        self.store.import_replay_facts(second,self.path,load_report(self.path))
+        self.assertEqual(self.session_rows(),[('verified-match',1),('verified-match',1)])
+
+    def test_second_client_label_merges_the_same_game(self):
+        from bot.statistics_facts import record_upload_session
+        self.upload_e();self.upload_replay()
+        second,_=self.store.add_replay(self.digest,'乙',self.path.relative_to(self.api.replay_root).as_posix(),
+                                       ['甲','乙'],{},time.time())
+        with self.store._db:
+            self.assertTrue(record_upload_session(self.store._db,second['id'],self.digest,
+                {'evidence':{'digest':self.digest,'session_id':'other-client','game_no':1}}))
+        self.assertEqual(self.session_rows(),[('verified-match',1),('verified-match',1)])
+
+    def test_same_digest_different_game_number_is_not_rewritten(self):
+        from bot.statistics_facts import record_upload_session
+        self.upload_e();self.upload_replay()
+        second,_=self.store.add_replay(self.digest,'乙',self.path.relative_to(self.api.replay_root).as_posix(),
+                                       ['甲','乙'],{},time.time())
+        with self.store._db:
+            self.assertFalse(record_upload_session(self.store._db,second['id'],self.digest,
+                {'evidence':{'digest':self.digest,'session_id':'other-client','game_no':2}}))
+        self.assertEqual(self.session_rows(),[('verified-match',1)])
+

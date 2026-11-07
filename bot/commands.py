@@ -85,6 +85,14 @@ def parse_command(text: str) -> dict:
         if rest:
             return {"op": "error", "message": f"直接发送“{head}”即可。"}
         return {"op": {"随机一卡": "random", "随机卡": "random", "猜卡": "guess_start", "揭晓猜卡": "guess_reveal"}[head]}
+    if head == "每日一卡":
+        if rest:
+            return {"op": "error", "message": "直接发送“每日一卡”即可，每个QQ号每天固定一张。"}
+        return {"op": "daily_card"}
+    if head == "概率运算":
+        if len(rest) != 4 or not all(re.fullmatch(r"\d{1,5}", value) for value in rest):
+            return {"op": "error", "message": "格式：概率运算 总数 目标数 抽取数 至少命中数，例如：概率运算 40 5 5 1。"}
+        return {"op": "probability", "values": [int(value) for value in rest]}
     if head == "猜卡答案":
         answer = " ".join(rest).strip()
         if not answer or len(answer) > 100:

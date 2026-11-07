@@ -101,6 +101,34 @@ def _index(items):
             and type(item.get('code')) is int and item['code'] > 0}
 
 
+def record_upload_session(db, replay_id, digest, report):
+    """上传旁证里明确的场次写回 replay_sessions。
+
+    server-only 拓扑下没有本地 Spectator，watch.py 的整场结束回调不再触发；
+    远端上传的 `.yrp.evidence.json` 仍带 session_id/game_no，是唯一的真实来源。
+    只在两者都明确时写入：不猜第 1 局、不改写既有场次、不把同指纹拆成两场。
+    """
+    evidence = report.get('evidence') if isinstance(report, dict) else None
+    if not isinstance(evidence, dict) or evidence.get('digest') != digest:
+        return False
+    session = evidence.get('session_id')
+    number = evidence.get('game_no')
+    if not isinstance(session, str) or not session or type(number) is not int or not 1 <= number <= 20:
+        return False
+    known = list(db.execute(
+        'SELECT s.session_id,s.game_no FROM replays r JOIN replay_sessions s ON s.replay_id=r.id '
+        'WHERE r.digest=? ORDER BY r.id', (digest,)))
+    if any(int(known_number) != number for known_session, known_number in known):
+        return False  # 同一份录像已有不同局次：保留原关联，不猜。
+    if known:
+        # 同一局可能被多台客户端各传一份，session_id 是客户端生成的；
+        # 用先入库那份的编号统一，避免同一局在两张场次表里各成一场。
+        session = known[0][0]
+    cursor = db.execute('INSERT OR IGNORE INTO replay_sessions(replay_id,session_id,game_no) VALUES(?,?,?)',
+                        (int(replay_id), session, number))
+    return cursor.rowcount > 0
+
+
 def import_replay(db, replay, path, report=None, now=None):
     """调用方持有Store锁及事务。重复来源只增加文件引用，不增加玩家/卡样本。"""
     from .watch_core import decks_from_replay
@@ -267,6 +295,7 @@ def import_replay(db, replay, path, report=None, now=None):
         kind = 'analysis:' + hashlib.sha256(encoded.encode()).hexdigest()
         db.execute('INSERT OR IGNORE INTO stat_evidence VALUES(?,?,?,?)',
                    (digest, kind, report.get('result_source') or 'unknown', encoded))
+    record_upload_session(db, replay['id'], digest, report)
     # 未变行不写事实页；revision 仍按既有契约每次真实导入推进，供报表缓存失效。
     changed = db.total_changes > start_changes
     db.execute('INSERT INTO stat_fact_revisions VALUES(?,1) ON CONFLICT(digest) '

@@ -308,8 +308,7 @@ class BotService:
         self._top100_views_cache = None
         self._deck_tasks = set()
         self._slow_tasks = set()
-        self._hint_tasks = set()
-        # 群内保密命令私聊发送失败后，给该用户一次性的私聊重发许可（10 分钟）。
+        # 群内保密命令私聊发送失败后，给该用户一次性的私聊重发允许（10 分钟有效期）
         self._confidential_retry = {}
         self._known_replays_at = 0.0
         self._known_replays = set()
@@ -1381,33 +1380,33 @@ class BotService:
                               and int(answer) in pending.get('players', {})
                               and self.clock() - pending['time'] <= 300)
         if parsed_command.get('op') in ('deck_build', 'top100_rank_build') or deck_selection:
+            await send(receiver, "构筑请求已收到，按顺序生成；完成后把结果发到这里。")
             task = asyncio.create_task(self._deck_build_job(
                 user_id, text, conversation, receiver, send))
             self._deck_tasks.add(task)
             task.add_done_callback(self._deck_tasks.discard)
-            self._schedule_hint(task, send, receiver, "构筑请求已收到，按顺序生成；完成后把结果发到这里。")
             return
         if parsed_command.get('op') == 'player_history':
+            await send(receiver, "历史查询中，完成后把结果发到这里。")
             task = asyncio.create_task(self._history_job(user_id, text, conversation, receiver, send))
             self._history_tasks.add(task)
             task.add_done_callback(self._history_tasks.discard)
-            self._schedule_hint(task, send, receiver, "历史查询中，完成后把结果发到这里。")
             return
         if parsed_command.get('op') == 'price_quote':
+            await send(receiver, "查价中，约 1 分钟；完成后把结果发到这里。")
             task = asyncio.create_task(self._price_quote_job(parsed_command, receiver, send))
             self._price_quote_tasks.add(task)
             task.add_done_callback(self._price_quote_tasks.discard)
-            self._schedule_hint(task, send, receiver, "查价中，约 1 分钟；完成后把结果发到这里。")
             return
         hint = SLOW_COMMAND_HINTS.get(parsed_command.get('op'))
         if hint and self.authorized(user_id) and (
                 parsed_command.get('op') != 'stats_page'
                 or self._statistics_allowed(user_id, conversation)):
+            await send(receiver, hint)
             task = asyncio.create_task(self._slow_text_job(
                 user_id, text, conversation, receiver, send, forward, event.get('self_id')))
             self._slow_tasks.add(task)
             task.add_done_callback(self._slow_tasks.discard)
-            self._schedule_hint(task, send, receiver, hint)
             return
         if parsed_command.get('op') == 'help':
             # 帮助是一条分组清单，直接发文字，不再走合并转发。
@@ -1791,20 +1790,6 @@ class BotService:
         until = self._confidential_retry.pop(str(user_id), None)
         return until is not None and until >= self.clock()
 
-    def _schedule_hint(self, task, send, receiver, hint, delay: float = 3.0):
-        """结果先到就只发一条；超过 delay 秒仍未完成才补一句“处理中”。"""
-        async def watch():
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=delay)
-            except asyncio.TimeoutError:
-                if not task.done():
-                    await send(receiver, hint)
-            except Exception:
-                pass
-        waiter = asyncio.create_task(watch())
-        self._hint_tasks.add(waiter)
-        waiter.add_done_callback(self._hint_tasks.discard)
-
     async def _deck_build_job(self, user_id, text, conversation, receiver, send):
         try:
             async with self._statistics_queue_lock():
@@ -2174,3 +2159,4 @@ def load_bot_config(path: Path) -> dict:
     if not isinstance(raw, dict):
         raise RuntimeError("配置文件必须是一个 JSON 对象")
     return {key: value for key, value in raw.items() if not str(key).startswith("_")}
+

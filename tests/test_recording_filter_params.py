@@ -49,6 +49,14 @@ class RecordingParamTests(unittest.TestCase):
                     self.q(args)
 
 
+    def test_player_name_filter(self):
+        base=self.q({})['total']
+        self.assertGreater(base,0)
+        result=self.q({'player':['甲']})
+        self.assertLessEqual(result['total'],base)
+        self.assertTrue(all('甲' in r['player'] for r in result['samples']))
+        self.assertEqual(self.q({'player':['不存在的玩家']})['total'],0)
+
     def test_scalar_and_list_validation(self):
         cases=({'internal':['bogus']},{'internal':['0','1']},{'mode':['drawn','used']},
                {'deck':['x'*129]},{'deck':['x']*101},{'deck':[' ']},{'opponent':['y'*129]},
