@@ -193,3 +193,43 @@ enderSinglePie）的切片顺序原本按人数降序。现改为**交集优先�
 
 `delivery/query-perf-20261106`：`ea25b2b` → `1146c23` → `29e4bf0` → `377045a` → `afbb34d` → `e55ed63` → `43099c7` → `8e86744` → `c8ccabe` → `3c08f07` → `ee62da8` → 最终快照提交。
 
+## 10. 卡图存储与调用逻辑（2026-11-07 补充）
+
+### 10.1 存储位置
+
+| 目录 | 内容 | 说明 |
+|---|---|---|
+| `ygopro/pics/<code>.jpg|.png` | 全图 | ygopro 本地卡图库；`library_root(data_dir)` 定位；含 `100xxxxxx` 异画编号变体 |
+| `data/cache/card-art/<code>.jpg` | 全图缓存 | 后端从 CDN 补下后的缓存 |
+| `data/card-thumbs/<code>.webp` | 缩略图 120×165 | 本地生成或从 CDN `!thumb2` 下载 |
+
+### 10.2 查找顺序
+
+- **全图**：`statistics_local_cards.picture(data_dir, code)` → `library_root/pics`（按 `image_id` 映射找本体号/异画号）→ 命中即返回；未命中时**后台**从 `https://cdn.233.momobako.com/ygopro/pics/<code>.jpg` 补齐（线程池，不阻塞请求）。
+- **缩略图**：`web_thumb()` → `data/card-thumbs`（同样支持异画映射）→ 无则用本地全图 `card_image_cache.local_full` 派生 webp → 仍无则后台从 `...jpg!thumb2` 下载。
+- 其他模块可直接用 `statistics_local_cards.thumb_picture()` 取缩略图路径。
+
+### 10.3 HTTP 路由
+
+| 路由 | 行为 | 缓存头 |
+|---|---|---|
+| `/statistics/card-image/<code>` | 返回本地全图；本地没有 → 404（文案“本地暂无卡图”） | `public, max-age=86400` |
+| `/statistics/card-thumb/<code>` | 返回本地缩略图；本地没有 → 302 到 CDN `!thumb2` | `private, max-age=86400` |
+| `/statistics/api/card-info?code=` | 名称/描述等文本，不含图片 | 同上接口缓存 |
+
+### 10.4 前端调用链
+
+- 饼图图例/卡图：`cardImageUrl` → `/statistics/card-thumb/<code>`；
+- 构筑页卡格 `cardTile`：本地缩略图 → 失败切 `cdntx.moecube.com` 远程 → 再失败显示“暂无卡图”；
+- 构筑页卡片弹窗 `showCard`：远程大图 `cdn.233.momobako.com/...jpg!half` → 失败 → 本地全图 `/statistics/card-image/` → 失败 → 本地缩略图 `/statistics/card-thumb/` → 再失败显示“暂无卡图”（后两级为本次新增）。
+
+### 10.5 为什么会出现“本地暂无卡图”
+
+例：`101307036`（幻之昆虫女王）本地只有缩略图 `data/card-thumbs/101307036.webp`，没有全图；而弹窗原先只请求远程大图，远程无图就显示占位文案。现在弹窗会回退到本地缩略图，所以能正常显示。
+
+### 10.6 维护提示
+
+- 两种图都由后台线程池补齐（`_thumb_pool`、`_schedule`），失败有冷却，不阻塞页面；
+- 改了 `statistics_build.js` 后浏览器可能缓存 1 小时（资源头 `max-age=3600`），需要 Ctrl+F5；
+- 新增卡图优先放 `ygopro/pics` 或 `data/cache/card-art`，缩略图会自动派生/补下。
+
