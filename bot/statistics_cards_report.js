@@ -466,11 +466,14 @@ function render(data) {
 
   const notes = (data.notes || []).slice();
   const rankScope = data.rank_scope || {};
-  const incomplete = rankScope.complete === false;
+  const rankUnknown = Number(rankScope.unknown_rank_players) || 0;
+  const rankPending = Number(rankScope.pending_rank_players) || 0;
+  const rankCandidates = Number(data.candidate_samples) || 0;
+  // 只报会明显影响结论的缺口：几十名掉榜/新玩家的名次待补属于正常抖动，不打扰阅读。
+  const incomplete = rankScope.complete === false
+    && (rankUnknown >= 50 || (rankCandidates > 0 && rankUnknown / rankCandidates >= 0.05));
   if (incomplete) {
-    const unknown = Number(rankScope.unknown_rank_players) || 0;
-    const pending = Number(rankScope.pending_rank_players) || 0;
-    notes.unshift('名次未补齐：' + unknown + ' 名玩家名次未知' + (pending ? '，另有 ' + pending + ' 名查询中' : '')
+    notes.unshift('名次未补齐：' + rankUnknown + ' 名玩家名次未知' + (rankPending ? '，另有 ' + rankPending + ' 名查询中' : '')
       + '。本次前200 只统计已确认名次的玩家，对局数与胜率会偏小。');
   }
   if (data.truncated) notes.push('结果已截断，只显示前 ' + data.shown + ' 行。');

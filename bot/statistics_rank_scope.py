@@ -148,10 +148,13 @@ def filter_rows(db,rows,state,now):
     stored=_stored_ranks(data_dir,wall) if candidates else {}
     if stored:
         # 已有名次先喂内存缓存，只有真正缺的才排进官方接口队列。
+        # 已存在但已过期的条目必须刷新时间戳，否则会被 ranks_for 清掉后整轮变成未知。
         with _LOCK:
             for name in candidates:
                 hit=stored.get(name.strip())
-                if hit is not None and 0<hit[0] and name not in _CACHE:_CACHE[name]=(hit[0],wall)
+                if hit is None or 0>=hit[0]:continue
+                current=_CACHE.get(name)
+                if current is None or wall-current[1]>=120:_CACHE[name]=(hit[0],wall)
     extra=ranks_for(candidates,now) if candidates else {}
     if extra and data_dir is not None:
         # 新查到的名次写回磁盘，下一次请求就不必再查。
