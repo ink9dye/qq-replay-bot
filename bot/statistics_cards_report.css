@@ -55,6 +55,7 @@
 #result .panel{overflow:hidden}
 #result .summary-line{font-weight:600;margin:6px 0}
 #result .notes{margin:8px 0 0;padding-left:20px;color:var(--p10-muted);font-size:13px;line-height:1.7}
+#result .notes li.warn{color:#8c2f1a}
 #result .empty{color:var(--p10-muted);margin:12px 0}
 #result .error{border-color:#e0b4a4;background:#fff7f4}
 #result .error h2{color:#8c2f1a}

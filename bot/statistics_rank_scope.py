@@ -3,8 +3,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor, wait
 from threading import Lock
+from pathlib import Path
+import json
 import time
 from .arena_profile import fetch_profile,parse_profile
+from .statistics_rank_cache import load as rank_cache_load,update as rank_cache_update
 
 _CURRENT=ContextVar('card_side_population',default=None)
 _POOL=ThreadPoolExecutor(max_workers=4,thread_name_prefix='statistics-rank')
@@ -27,6 +30,29 @@ def parse_ranges(args):
 
 
 def current():return _CURRENT.get()
+
+
+def _data_dir(db):
+    database=db.execute('PRAGMA database_list').fetchone()[2]
+    return Path(database).parent if database else None
+
+
+def _stored_ranks(data_dir,now):
+    """两处名次快照，只读：
+    1) statistics-rank-cache.json（dashboard/命名/采集都在写，可能被迟到的请求整份改写）；
+    2) rank-scope-index.json（tools/backfill_rank_cache.py 一次性落盘，只有它写，不会被改写）。
+    """
+    if data_dir is None:return {}
+    try:result=dict(rank_cache_load(data_dir,now))
+    except (OSError,ValueError,TypeError):result={}
+    try:payload=json.loads((Path(data_dir)/'rank-scope-index.json').read_text(encoding='utf-8'))
+    except (OSError,ValueError,TypeError):payload=None
+    if isinstance(payload,dict) and isinstance(payload.get('players'),dict):
+        saved=payload.get('saved_at')
+        saved=float(saved) if isinstance(saved,(int,float)) else 0.0
+        for name,rank in payload['players'].items():
+            if isinstance(rank,int) and rank>0:result.setdefault(str(name).strip(),(rank,saved))
+    return result
 
 
 @contextmanager
@@ -114,7 +140,23 @@ def filter_rows(db,rows,state,now):
         if scope['own']=='200':candidates.add(row['player'])
         if scope['opponent']=='200':candidates.update(opponents.get(row['digest'],set())-{row['player']})
     candidates-=known.keys()
+    data_dir=_data_dir(db)
+    # 磁盘缓存的新鲜度按实际时钟算：查询的 now 可能是排队前的旧时刻。
+    wall=time.time()
+    stored=_stored_ranks(data_dir,wall) if candidates else {}
+    if stored:
+        # 已有名次先喂内存缓存，只有真正缺的才排进官方接口队列。
+        with _LOCK:
+            for name in candidates:
+                hit=stored.get(name.strip())
+                if hit is not None and 0<hit[0] and name not in _CACHE:_CACHE[name]=(hit[0],wall)
     extra=ranks_for(candidates,now) if candidates else {}
+    if extra and data_dir is not None:
+        # 新查到的名次写回磁盘，下一次请求就不必再查。
+        fresh={name:rank for name,rank in extra.items() if 0<rank and name.strip() not in stored}
+        if fresh:
+            try:rank_cache_update(data_dir,fresh,wall)
+            except (OSError,TypeError):pass
     scope['unknown'].update(candidates-extra.keys())
     with _LOCK:scope['pending'].update(candidates&_PENDING.keys())
     def accept(name,choice):
