@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -69,16 +67,16 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** 观战机器人设置 / 账号表单：设置页与首次登录引导页共用（不含滚动，由外层容器决定）。 */
 @Composable
-fun SettingsTab(vm: MainViewModel) {
+fun WatchSettingsSection(vm: MainViewModel, modifier: Modifier = Modifier) {
     val cfg by vm.config.collectAsStateWithLifecycle()
     val running by vm.isRunning.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     var accName by remember { mutableStateOf("") }
     var accPwd by remember { mutableStateOf("") }
-    val scroll = rememberScrollState()
 
-    Column(modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp)) {
+    Column(modifier = modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         OutlinedTextField(value = cfg.server, onValueChange = vm::setServer,
             label = { Text("服务器地址") }, modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("例如 http://101.201.108.188:8787") })
@@ -92,6 +90,11 @@ fun SettingsTab(vm: MainViewModel) {
 
         Spacer(Modifier.height(16.dp))
         Text("萌卡账号（每个账号同时观战一间房，账号数 = 并发路数）", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "注意：第三方自动观战存在封号风险，建议只使用小号，不要用主账号。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+        )
         Spacer(Modifier.height(8.dp))
         cfg.accounts.forEachIndexed { i, a ->
             Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),

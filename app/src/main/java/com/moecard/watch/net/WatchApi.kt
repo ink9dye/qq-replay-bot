@@ -1,6 +1,8 @@
 package com.moecard.watch.net
 
 import com.moecard.watch.model.ConnectionInfo
+import com.moecard.watch.model.WatchStatus
+import com.moecard.watch.model.parseWatchStatus
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -78,18 +80,20 @@ class WatchApi(private val server: String, private val token: String) {
     }
 
     fun status(): ConnectionInfo {
+        val detail = statusDetail()
+        return ConnectionInfo(
+            onlineWorkers = detail.onlineDevices.size,
+            pending = detail.pending,
+            claimed = detail.claimed,
+        )
+    }
+
+    /** 完整状态：在线终端列表 + 任务板计数（在线设备页用）。 */
+    fun statusDetail(): WatchStatus {
         val (status, raw) = request("GET", "/watch-api/status")
         if (status == 401 || status == 403) throw AuthException("令牌无效或已过期")
         if (status != 200) throw RuntimeException("服务器状态错误（HTTP $status）")
-        val json = asJson(raw)
-        val workers = json.optJSONObject("workers") ?: JSONObject()
-        var online = 0
-        workers.keys().forEach { if (workers.optJSONObject(it)?.optBoolean("online") == true) online++ }
-        return ConnectionInfo(
-            onlineWorkers = online,
-            pending = json.optInt("pending", 0),
-            claimed = json.optInt("claimed", 0),
-        )
+        return parseWatchStatus(asJson(raw))
     }
 
     /**

@@ -27,11 +27,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.moecard.watch.query.net.QuerySession
+import com.moecard.watch.ui.MainViewModel
+import com.moecard.watch.ui.WatchSettingsSection
 
 /**
- * 设置：查询服务器地址 / 自签信任开关 / 会话信息 / 登出。
- * 观战相关的服务器、令牌、账号在「观战机器人」里配置，两边互不影响。
+ * 设置：查询服务器地址 / 自签信任开关 / 观战机器人（服务器、令牌、账号） / 会话信息 / 登出。
  */
 @Composable
 fun SettingsScreen(onLoggedOut: () -> Unit) {
@@ -39,6 +41,7 @@ fun SettingsScreen(onLoggedOut: () -> Unit) {
     var server by remember(QuerySession.server) { mutableStateOf(QuerySession.server) }
     var trust by remember(QuerySession.trustSelfSigned) { mutableStateOf(QuerySession.trustSelfSigned) }
     val scroll = rememberScrollState()
+    val watchVm: MainViewModel = viewModel()
 
     Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp)) {
         Text("查询服务器", style = MaterialTheme.typography.titleMedium)
@@ -72,6 +75,15 @@ fun SettingsScreen(onLoggedOut: () -> Unit) {
                 },
             )
         }
+
+        Spacer(Modifier.height(20.dp))
+        Text("观战机器人", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "服务器地址、接口令牌与萌卡账号；与上方查询服务器相互独立。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        WatchSettingsSection(watchVm)
 
         Spacer(Modifier.height(16.dp))
         Text("当前会话", style = MaterialTheme.typography.titleMedium)
@@ -125,7 +137,7 @@ fun SettingsScreen(onLoggedOut: () -> Unit) {
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "观战机器人的服务器与账号设置在抽屉「观战机器人」页内，与查询服务器相互独立。",
+                    "观战机器人的服务器与账号已移到本页上方「观战机器人」中，与查询服务器相互独立。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline,
                 )

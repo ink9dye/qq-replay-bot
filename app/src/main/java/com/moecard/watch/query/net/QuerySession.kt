@@ -27,11 +27,29 @@ object QuerySession {
     var trustSelfSigned: Boolean = true
         private set
 
+    /** 录像库（/replay-api，独立端口 + wt_ 令牌）。 */
+    @Volatile
+    var replayServer: String = ""
+        private set
+
+    @Volatile
+    var replayToken: String = ""
+        private set
+
     fun init(context: Context) {
         if (::store.isInitialized) return
         store = AuthStore(context.applicationContext)
         server = store.loadServer()
         trustSelfSigned = store.loadTrustSelfSigned()
+        replayServer = store.loadReplayServer()
+        replayToken = store.loadReplayToken().ifBlank {
+            // 未单独填录像库令牌时，若观战配置里恰好是 wt_ 令牌则复用（同一身份）
+            runCatching { com.moecard.watch.data.ConfigStore(context.applicationContext).load().token }
+                .getOrDefault("")
+                .trim()
+                .takeIf { it.startsWith("wt_") }
+                .orEmpty()
+        }
         _session.value = store.loadSession()
     }
 
@@ -77,6 +95,20 @@ object QuerySession {
     }
 
     fun api(): QueryApi = QueryApi(server, trustSelfSigned)
+
+    fun replayApi(): ReplayApi = ReplayApi(replayServer, replayToken)
+
+    fun setReplayServer(v: String) {
+        val s = v.trim().removeSuffix("/")
+        if (s.isBlank()) return
+        replayServer = s
+        if (::store.isInitialized) store.saveReplayServer(s)
+    }
+
+    fun setReplayToken(v: String) {
+        replayToken = v.trim()
+        if (::store.isInitialized) store.saveReplayToken(v)
+    }
 
     fun setServer(v: String) {
         val s = v.trim().removeSuffix("/")

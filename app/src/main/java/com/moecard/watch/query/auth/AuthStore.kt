@@ -78,8 +78,39 @@ class AuthStore(context: Context) {
         prefs.edit().putBoolean("trust_self_signed", v).apply()
     }
 
+    // 录像库 /replay-api 是独立端口 + 独立 wt_ 令牌，单独存
+    fun loadReplayServer(): String =
+        prefs.getString("replay_server", "")?.takeIf { it.isNotBlank() }
+            ?: defaultReplayServer(loadServer())
+
+    fun saveReplayServer(server: String) {
+        prefs.edit().putString("replay_server", server.trim()).apply()
+    }
+
+    fun loadReplayToken(): String = prefs.getString("replay_token", "") ?: ""
+
+    fun saveReplayToken(token: String) {
+        prefs.edit().putString("replay_token", token.trim()).apply()
+    }
+
+    // 首次登录的助战机器人引导：按登录身份记录，退出登录不清除（同一玩家只问一次）
+    fun isWatchOnboarded(identity: String): Boolean =
+        prefs.getBoolean("watch_onboarded_$identity", false)
+
+    fun setWatchOnboarded(identity: String, value: Boolean) {
+        prefs.edit().putBoolean("watch_onboarded_$identity", value).apply()
+    }
+
     companion object {
         /** 部署约定：nginx 8443 TLS 入口（自签证书）。 */
         const val DEFAULT_SERVER = "https://101.201.108.188:8443"
+
+        /** 录像库和查询服务同机，默认 http://<查询服务器主机>:8787。 */
+        fun defaultReplayServer(queryServer: String): String = try {
+            val host = java.net.URI(queryServer.trim()).host
+            if (host.isNullOrBlank()) "http://101.201.108.188:8787" else "http://$host:8787"
+        } catch (_: Exception) {
+            "http://101.201.108.188:8787"
+        }
     }
 }

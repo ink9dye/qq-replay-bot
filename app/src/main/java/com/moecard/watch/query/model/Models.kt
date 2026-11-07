@@ -132,8 +132,11 @@ fun parseArenaHistory(payload: Any?, username: String): List<ArenaMatch> {
         val b = row.optString("usernameb", "")
         val isSideA = a == me
         if (!isSideA && b != me) continue // 不在本局双方里，跳过
-        val start = row.optLong("start_time", 0L)
-        val end = row.optLong("end_time", start)
+        // 官方现网是 ISO-8601 字符串（"2026-11-06T09:08:40.000Z"），optLong 会得到 0，
+        // 所有行挤成同一个去重键、只剩一条——这就是「对战历史只能加载一局」的原因。
+        val start = parseArenaTime(row.opt("start_time"))
+        if (start <= 0) continue
+        val end = parseArenaTime(row.opt("end_time")).takeIf { it > 0 } ?: start
         if (!seen.add(start * 1000_003L + end)) continue
         val winner = row.optString("winner", "")
         val won: Boolean? = when {
@@ -161,6 +164,20 @@ fun parseArenaHistory(payload: Any?, username: String): List<ArenaMatch> {
     return out
 }
 
+/**
+ * 官方 history 的时间字段：现网是 ISO-8601（"2026-11-06T09:08:40.000Z"），
+ * 老数据/测试里也可能是 epoch 秒。解析不了返回 0。
+ */
+private fun parseArenaTime(v: Any?): Long = when (v) {
+    is Number -> v.toLong()
+    is String -> v.trim().let { s ->
+        s.toLongOrNull() ?: runCatching { java.time.Instant.parse(s).epochSecond }
+            .recoverCatching { java.time.OffsetDateTime.parse(s).toInstant().epochSecond }
+            .getOrDefault(0L)
+    }
+    else -> 0L
+}
+
 /** DP 曲线：首局赛前分 + 每局赛后分（对齐服务端 player_history.py 的算法）。 */
 fun dpCurve(matches: List<ArenaMatch>): List<Double> {
     if (matches.isEmpty()) return emptyList()
@@ -176,7 +193,8 @@ data class RosterPerson(
     val points: Double,
     val observed: Boolean,
     val deckType: String?,
-    val series: String?,
+    /** 服务端是数组（如 ["三幻魔","混沌",…]），老版本可能是逗号分隔字符串。 */
+    val series: List<String>,
     val raw: JSONObject,
 )
 
@@ -201,9 +219,21 @@ private fun parsePerson(o: JSONObject): RosterPerson? {
         points = o.optDouble("points", 0.0),
         observed = o.optBoolean("observed", false),
         deckType = o.optString("deck_type").takeIf { it.isNotBlank() },
-        series = o.optString("series").takeIf { it.isNotBlank() },
+        series = parseSeries(o.opt("series")),
         raw = o,
     )
+}
+
+/**
+ * series 兼容三种形状：数组（现行服务端）、逗号/顿号分隔字符串（老版本）、
+ * 缺省。只做展示与卡组缩略图匹配用，解析失败不致命。
+ */
+private fun parseSeries(value: Any?): List<String> = when (value) {
+    is JSONArray -> (0 until value.length()).mapNotNull { i ->
+        value.optString(i, "").trim().takeIf { it.isNotBlank() }
+    }
+    is String -> value.split(',', '，', '、').map { it.trim() }.filter { it.isNotBlank() }
+    else -> emptyList()
 }
 
 fun parseRoster(payload: Any?): RosterData {
@@ -247,7 +277,13 @@ private fun parsePeopleList(payload: Any?): List<RosterPerson> =
 
 // ---------- 构筑 ----------
 
-data class BuildCard(val partition: String, val code: Long, val copies: Int)
+data class BuildCard(
+    val partition: String,
+    val code: Long,
+    val copies: Int,
+    /** 服务端随卡号返回的卡名；老版本服务端可能没有。 */
+    val name: String? = null,
+)
 
 data class BuildData(
     val person: RosterPerson?,
@@ -269,6 +305,7 @@ fun parseBuild(payload: Any?): BuildData? {
                     partition = o.optString("partition", ""),
                     code = o.optLong("code", 0L),
                     copies = o.optInt("copies", 0),
+                    name = o.optString("name").takeIf { it.isNotBlank() },
                 )
             )
         }
@@ -337,15 +374,149 @@ fun parseReplays(payload: Any?): ReplayData {
 
 data class PieSlice(val name: String, val count: Int)
 
+/** 内环：主大类。image/bandImage 是服务端选好的代表卡（组内代表卡的卡号）。 */
+data class PieCategory(
+    val name: String,
+    val players: Int,
+    val percent: Double,
+    val color: String,
+    val image: Long?,
+    val bandImage: Long?,
+)
+
+/** 中环：主大类交集细分（独占 / ∩其他大类），只用于图例，不单独成环。 */
+data class PieMiddle(
+    val primary: String,
+    val label: String,
+    val extras: List<String>,
+    val players: Int,
+    val percent: Double,
+    val color: String,
+    val accent: String?,
+    val image: Long?,
+    val mixed: String?,
+)
+
+/** 外环：精确卡组名。color 是同色系按排名明度递进的色值，image 是该卡组的代表卡。 */
+data class PieDeck(
+    val name: String,
+    val players: Int,
+    val percent: Double,
+    val primary: String,
+    val extras: List<String>,
+    val shared: Boolean,
+    val color: String,
+    val accent: String?,
+    val image: Long?,
+)
+
+/**
+ * 服务端 `pie` 三层数据（bot/deck_pie.py 的输出，口径与统计网页一致）：
+ * 内环主大类合计 100%，中环是交集细分，外环为具体卡组名合计 100%。
+ */
+data class PieLayers(
+    val total: Int,
+    val threshold: Int,
+    val inner: List<PieCategory>,
+    val middle: List<PieMiddle>,
+    val outer: List<PieDeck>,
+    val innerPercent: Double,
+    val middlePercent: Double,
+    val outerPercent: Double,
+    val qualified: List<String>,
+    val note: String,
+)
+
 data class PieData(
     val items: List<PieSlice>,
     val covered: Int,
     val current: Int,
     val unidentified: Int,
+    val pie: PieLayers? = null,
 )
 
+private fun JSONObject.optImage(key: String): Long? =
+    optLong(key, 0L).takeIf { it > 0 }
+
+private fun JSONObject.optStrings(key: String): List<String> {
+    val arr = optJSONArray(key) ?: return emptyList()
+    return (0 until arr.length()).mapNotNull { arr.optString(it, "").takeIf { s -> s.isNotBlank() } }
+}
+
+private fun parsePieLayers(o: JSONObject?): PieLayers? {
+    if (o == null) return null
+    val total = o.optInt("total", 0)
+    if (total <= 0) return null
+    val inner = ArrayList<PieCategory>()
+    o.optJSONArray("inner")?.let { arr ->
+        for (i in 0 until arr.length()) {
+            val row = arr.optJSONObject(i) ?: continue
+            inner.add(
+                PieCategory(
+                    name = row.optString("name", "?"),
+                    players = row.optInt("players", 0),
+                    percent = row.optDouble("percent", 0.0),
+                    color = row.optString("color", "#C9D2DA"),
+                    image = row.optImage("image"),
+                    bandImage = row.optImage("band_image"),
+                )
+            )
+        }
+    }
+    val middle = ArrayList<PieMiddle>()
+    o.optJSONArray("middle")?.let { arr ->
+        for (i in 0 until arr.length()) {
+            val row = arr.optJSONObject(i) ?: continue
+            middle.add(
+                PieMiddle(
+                    primary = row.optString("primary", ""),
+                    label = row.optString("label", ""),
+                    extras = row.optStrings("extras"),
+                    players = row.optInt("players", 0),
+                    percent = row.optDouble("percent", 0.0),
+                    color = row.optString("color", "#C9D2DA"),
+                    accent = row.optString("accent", "").takeIf { it.isNotBlank() },
+                    image = row.optImage("image"),
+                    mixed = row.optString("mixed", "").takeIf { it.isNotBlank() },
+                )
+            )
+        }
+    }
+    val outer = ArrayList<PieDeck>()
+    o.optJSONArray("outer")?.let { arr ->
+        for (i in 0 until arr.length()) {
+            val row = arr.optJSONObject(i) ?: continue
+            outer.add(
+                PieDeck(
+                    name = row.optString("name", "?"),
+                    players = row.optInt("players", 0),
+                    percent = row.optDouble("percent", 0.0),
+                    primary = row.optString("primary", "其他"),
+                    extras = row.optStrings("extras"),
+                    shared = row.optBoolean("shared", false),
+                    color = row.optString("color", "#8C9FB0"),
+                    accent = row.optString("accent", "").takeIf { it.isNotBlank() },
+                    image = row.optImage("image"),
+                )
+            )
+        }
+    }
+    return PieLayers(
+        total = total,
+        threshold = o.optInt("threshold", 3),
+        inner = inner,
+        middle = middle,
+        outer = outer,
+        innerPercent = o.optDouble("inner_percent", 0.0),
+        middlePercent = o.optDouble("middle_percent", 0.0),
+        outerPercent = o.optDouble("outer_percent", 0.0),
+        qualified = o.optStrings("qualified"),
+        note = o.optString("note", ""),
+    )
+}
+
 fun parsePie(payload: Any?): PieData {
-    val root = if (payload is JSONObject) payload else return PieData(emptyList(), 0, 0, 0)
+    val root = if (payload is JSONObject) payload else return PieData(emptyList(), 0, 0, 0, null)
     val items = ArrayList<PieSlice>()
     val arr = root.optJSONArray("items")
     if (arr != null) {
@@ -359,6 +530,7 @@ fun parsePie(payload: Any?): PieData {
         covered = root.optInt("covered", 0),
         current = root.optInt("current", 0),
         unidentified = root.optInt("unidentified", 0),
+        pie = parsePieLayers(root.optJSONObject("pie")),
     )
 }
 
@@ -395,20 +567,27 @@ fun parseSearch(type: String, payload: Any?): SearchResults {
             SearchResults(emptyList(), emptyList(), decks, limited)
         }
         else -> {
-            // 卡片搜索是门户透传，按 ygocdb 形状解析：{result:[{id, cn_name, text:{types,...}}]}
+            // 卡片搜索是门户透传：服务端返回 {cards:[{code, name}]}；
+            // 兼容 ygocdb 的 {result:[{id, cn_name, text:{types}}]} 形状。
             val cards = ArrayList<CardSearchHit>()
-            val arr = root.optJSONArray("result") ?: root.optJSONArray("items") ?: root.optJSONArray("data")
+            val arr = root.optJSONArray("cards")
+                ?: root.optJSONArray("result")
+                ?: root.optJSONArray("items")
+                ?: root.optJSONArray("data")
             if (arr != null) {
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
-                    val id = o.optLong("id", 0L)
+                    val id = o.optLong("code", o.optLong("id", 0L))
                     if (id <= 0) continue
                     val text = o.optJSONObject("text")
+                    val name = o.optString("name", "")
+                        .ifBlank { o.optString("cn_name", id.toString()) }
                     cards.add(
                         CardSearchHit(
                             id = id,
-                            name = o.optString("cn_name", o.optString("name", id.toString())),
-                            types = text?.optString("types")?.takeIf { it.isNotBlank() },
+                            name = name,
+                            types = (o.optString("types", "").ifBlank { text?.optString("types") })
+                                ?.takeIf { it.isNotBlank() },
                         )
                     )
                 }
@@ -435,16 +614,19 @@ fun parseCard(code: Long, detailsPayload: Any?, metricsPayload: Any?): CardDetai
     val details = if (detailsPayload is JSONObject) detailsPayload else null
     val text = details?.optJSONObject("text")
     val metrics = if (metricsPayload is JSONObject) metricsPayload else null
+
+    // 现行服务端 /query-api/card/<code> 返回 details.{code,name,description,…}；
+    // 老版本/门户透传是 details.text.{name,desc,types}。两种都兼容。
+    fun str(obj: JSONObject?, key: String): String? =
+        obj?.optString(key)?.takeIf { it.isNotBlank() }
+
     return CardDetail(
         code = code,
-        name = details?.optString("cn_name")
-            ?: text?.optString("name")
-            ?: details?.optString("name"),
-        types = text?.optString("types") ?: details?.optString("types"),
-        desc = text?.optString("desc") ?: details?.optString("desc"),
-        pdesc = text?.optString("pdesc") ?: details?.optString("pdesc"),
-        imageUrl = details?.optString("image_url")?.takeIf { it.isNotBlank() }
-            ?: text?.optString("image_url")?.takeIf { it.isNotBlank() },
+        name = str(details, "cn_name") ?: str(text, "name") ?: str(details, "name"),
+        types = str(text, "types") ?: str(details, "types"),
+        desc = str(text, "desc") ?: str(details, "description") ?: str(details, "desc"),
+        pdesc = str(text, "pdesc") ?: str(details, "pdesc"),
+        imageUrl = str(details, "image_url") ?: str(text, "image_url"),
         details = details,
         metrics = metrics,
     )
@@ -475,4 +657,145 @@ fun parseSubscriptions(payload: Any?): List<Subscription> {
         )
     }
     return out
+}
+
+// ---------- 录像库 /replay-api（v2 按对局检索） ----------
+
+data class ReplayView(
+    val player: String,
+    val outcome: String, // win / loss / draw
+    val deck: String,
+)
+
+data class ReplayGame(
+    val id: Long,
+    val gameNo: Int,
+    val name: String,
+    val size: Long,
+    val views: List<ReplayView>,
+    val download: String,
+)
+
+/** 一场对局 = 同 session 的 1~3 局录像。 */
+data class ReplayMatch(
+    val key: String,
+    val session: String,
+    val players: List<String>,
+    val decks: Map<String, String>,
+    val score: String,
+    val winner: String,
+    val decided: Int,
+    val start: Long,
+    val end: Long,
+    val gameCount: Int,
+    val bytes: Long,
+    val available: Boolean,
+    val folder: String,
+    val download: String,
+    val games: List<ReplayGame>,
+)
+
+data class ReplaySearch(
+    val page: Int,
+    val pageSize: Int,
+    val total: Int,
+    val totalBytes: Long,
+    val items: List<ReplayMatch>,
+)
+
+fun parseReplaySearch(root: JSONObject): ReplaySearch {
+    val items = ArrayList<ReplayMatch>()
+    val arr = root.optJSONArray("items")
+    if (arr != null) {
+        for (i in 0 until arr.length()) {
+            val m = parseReplayMatch(arr.optJSONObject(i)) ?: continue
+            items.add(m)
+        }
+    }
+    return ReplaySearch(
+        page = root.optInt("page", 1),
+        pageSize = root.optInt("page_size", 30),
+        total = root.optInt("total", 0),
+        totalBytes = root.optLong("total_bytes", 0L),
+        items = items,
+    )
+}
+
+private fun parseReplayMatch(o: JSONObject?): ReplayMatch? {
+    if (o == null) return null
+    val key = o.optString("key", "")
+    if (key.isBlank()) return null
+    val players = ArrayList<String>()
+    o.optJSONArray("players")?.let { a ->
+        for (i in 0 until a.length()) {
+            a.optString(i, "").trim().takeIf { it.isNotBlank() }?.let { players.add(it) }
+        }
+    }
+    val decks = LinkedHashMap<String, String>()
+    o.optJSONObject("decks")?.let { d ->
+        d.keys().forEach { k -> decks[k] = d.optString(k, "") }
+    }
+    val games = ArrayList<ReplayGame>()
+    o.optJSONArray("games")?.let { a ->
+        for (i in 0 until a.length()) {
+            val g = a.optJSONObject(i) ?: continue
+            val id = g.optLong("id", 0L)
+            if (id <= 0L) continue
+            val views = ArrayList<ReplayView>()
+            g.optJSONArray("views")?.let { vs ->
+                for (j in 0 until vs.length()) {
+                    val v = vs.optJSONObject(j) ?: continue
+                    val p = v.optString("player", "").trim()
+                    if (p.isBlank()) continue
+                    views.add(
+                        ReplayView(
+                            player = p,
+                            outcome = v.optString("outcome", ""),
+                            deck = v.optString("deck", ""),
+                        )
+                    )
+                }
+            }
+            games.add(
+                ReplayGame(
+                    id = id,
+                    gameNo = g.optInt("game_no", i + 1),
+                    name = g.optString("name", ""),
+                    size = g.optLong("size", 0L),
+                    views = views,
+                    download = g.optString("download", "/replay-api/download?id=$id"),
+                )
+            )
+        }
+    }
+    return ReplayMatch(
+        key = key,
+        session = o.optString("session", ""),
+        players = players,
+        decks = decks,
+        score = o.optString("score", ""),
+        winner = o.optString("winner", ""),
+        decided = o.optInt("decided", 0),
+        start = parseArenaTime(o.opt("start")),
+        end = parseArenaTime(o.opt("end")),
+        gameCount = o.optInt("game_count", games.size),
+        bytes = o.optLong("bytes", 0L),
+        available = o.optBoolean("available", true),
+        folder = o.optString("folder", ""),
+        download = o.optString("download", ""),
+        games = games,
+    )
+}
+
+/** 我方在这场的视角胜负：win / loss / draw，未知返回 null。 */
+fun ReplayMatch.outcomeFor(player: String): String? {
+    games.asSequence().flatMap { it.views.asSequence() }
+        .firstOrNull { it.player == player }?.let { return it.outcome }
+    return null
+}
+
+/** 整场胜负（winner 优先，未分胜负退回逐局视角）：win / loss / null。 */
+fun ReplayMatch.resultFor(player: String): String? = when {
+    winner.isNotBlank() -> if (winner == player) "win" else "loss"
+    else -> outcomeFor(player)?.takeIf { it == "win" || it == "loss" }
 }

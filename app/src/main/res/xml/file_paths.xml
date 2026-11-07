@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- YGOMobile 导入用的临时 .ydk -->
+    <cache-path name="export" path="export/" />
+</paths>

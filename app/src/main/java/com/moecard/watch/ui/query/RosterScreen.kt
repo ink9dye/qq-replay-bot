@@ -26,7 +26,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -35,7 +34,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
 import com.moecard.watch.net.AuthException
 import com.moecard.watch.query.model.DeckThumbs
 import com.moecard.watch.query.model.RosterData
@@ -52,7 +50,8 @@ class RosterViewModel : ViewModel() {
 
     sealed interface UiState {
         object Loading : UiState
-        data class Ready(val data: RosterData) : UiState
+        /** deckImages：卡组名 → 饼图选定的代表卡卡号（与「前百统计」饼图完全一致）。 */
+        data class Ready(val data: RosterData, val deckImages: Map<String, Long>) : UiState
         data class Failed(val message: String) : UiState
     }
 
@@ -65,7 +64,15 @@ class RosterViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 val data = withContext(Dispatchers.IO) { QuerySession.api().top100() }
-                state.value = UiState.Ready(data)
+                // 与饼图共用同一份代表卡选择；取不到时回退到本地映射
+                val pie = withContext(Dispatchers.IO) {
+                    runCatching { QuerySession.api().pie() }.getOrNull()
+                }
+                val deckImages = pie?.pie?.outer
+                    ?.mapNotNull { d -> d.image?.let { d.name to it } }
+                    ?.toMap()
+                    .orEmpty()
+                state.value = UiState.Ready(data, deckImages)
             } catch (e: AuthException) {
                 QuerySession.expire()
             } catch (e: Exception) {
@@ -103,7 +110,7 @@ fun RosterScreen(onOpenPlayer: (String) -> Unit) {
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         items(data.people, key = { it.player }) { p ->
-                            RosterTile(p, onOpenPlayer)
+                            RosterTile(p, s.deckImages, onOpenPlayer)
                         }
                     }
                 }
@@ -113,10 +120,15 @@ fun RosterScreen(onOpenPlayer: (String) -> Unit) {
 }
 
 @Composable
-private fun RosterTile(p: RosterPerson, onOpenPlayer: (String) -> Unit) {
+private fun RosterTile(
+    p: RosterPerson,
+    deckImages: Map<String, Long>,
+    onOpenPlayer: (String) -> Unit,
+) {
     val ctx = LocalContext.current
     val deckName = p.deckType
-    val thumbUrl = deckName?.let { DeckThumbs.thumbUrl(ctx, it) }
+    // 优先用饼图同款代表卡（服务端 image），没有再走本地映射
+    val thumbCode = deckName?.let { deckImages[it] } ?: DeckThumbs.codeFor(ctx, deckName, p.series)
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -124,11 +136,9 @@ private fun RosterTile(p: RosterPerson, onOpenPlayer: (String) -> Unit) {
     ) {
         Column {
             Box {
-                if (thumbUrl != null) {
-                    AsyncImage(
-                        model = thumbUrl,
-                        contentDescription = deckName,
-                        contentScale = ContentScale.Crop,
+                if (thumbCode != null) {
+                    ArtworkImage(
+                        code = thumbCode,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(96.dp),

@@ -28,6 +28,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val stats = WatchManager.stats
     val isRunning = WatchManager.isRunning
 
+    /** 在线设备页的数据源；不进后台服务，只在页面打开时拉取。 */
+    sealed interface DeviceState {
+        object Idle : DeviceState
+        object Loading : DeviceState
+        data class Ready(val status: com.moecard.watch.model.WatchStatus, val at: Long) : DeviceState
+        data class Failed(val message: String) : DeviceState
+    }
+
+    private val _devices = MutableStateFlow<DeviceState>(DeviceState.Idle)
+    val devices: StateFlow<DeviceState> = _devices.asStateFlow()
+
+    fun refreshDevices() {
+        if (_devices.value is DeviceState.Loading) return
+        val cfg = _config.value
+        if (cfg.token.isBlank()) {
+            _devices.value = DeviceState.Failed("尚未配置观战令牌")
+            return
+        }
+        viewModelScope.launch {
+            _devices.value = DeviceState.Loading
+            try {
+                val status = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    com.moecard.watch.net.WatchApi(cfg.server, cfg.token).statusDetail()
+                }
+                _devices.value = DeviceState.Ready(status, System.currentTimeMillis())
+            } catch (e: Exception) {
+                _devices.value = DeviceState.Failed(e.message ?: "设备列表加载失败")
+            }
+        }
+    }
+
     fun update(cfg: AppConfig) {
         _config.value = cfg
         configStore.save(cfg)

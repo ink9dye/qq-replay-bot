@@ -31,7 +31,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
 import com.moecard.watch.net.AuthException
 import com.moecard.watch.query.model.BuildData
 import com.moecard.watch.query.model.DeckThumbs
@@ -142,14 +141,15 @@ fun DeckDetailScreen(deckName: String, usageHint: Int, onOpenPlayer: (String) ->
             ) {
                 // 头部：代表卡图 + 名称 + 使用人数
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    val thumb = DeckThumbs.thumbUrl(ctx, deckName)
-                    if (thumb != null) {
-                        AsyncImage(
-                            model = thumb,
-                            contentDescription = deckName,
+                    val series = s.players.firstOrNull()?.series ?: emptyList()
+                    val thumbCode = DeckThumbs.codeFor(ctx, deckName, series)
+                    if (thumbCode != null) {
+                        CardImage(
+                            code = thumbCode,
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .height(120.dp)
+                                .width(86.dp)
                                 .clip(RoundedCornerShape(8.dp)),
                         )
                         Spacer(Modifier.width(12.dp))
@@ -234,7 +234,7 @@ fun DeckDetailScreen(deckName: String, usageHint: Int, onOpenPlayer: (String) ->
                                 color = MaterialTheme.colorScheme.outline,
                             )
                         } else {
-                            DeckCardsList(r.build)
+                            DeckCardsList(r.build, deckLabel = deckName)
                         }
                     }
                 }

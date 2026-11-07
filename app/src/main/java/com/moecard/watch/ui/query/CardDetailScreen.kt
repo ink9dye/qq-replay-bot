@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -26,7 +27,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
 import com.moecard.watch.net.AuthException
 import com.moecard.watch.query.model.CardDetail
 import com.moecard.watch.query.net.QuerySession
@@ -81,18 +81,16 @@ fun CardDetailScreen(code: Long, presetName: String?) {
             val c = s.card
             Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp)) {
                 Row {
-                    if (c.imageUrl != null) {
-                        AsyncImage(
-                            model = c.imageUrl,
-                            contentDescription = c.name,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .height(170.dp)
-                                .clip(RoundedCornerShape(8.dp)),
-                        )
-                        Spacer(Modifier.padding(8.dp))
-                    }
-                    Column(Modifier.padding(start = if (c.imageUrl != null) 8.dp else 0.dp)) {
+                    CardImage(
+                        code = code,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .height(170.dp)
+                            .width(117.dp)
+                            .clip(RoundedCornerShape(8.dp)),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.padding(start = 8.dp)) {
                         Text(
                             c.name ?: presetName ?: "未知卡片",
                             style = MaterialTheme.typography.titleLarge,
