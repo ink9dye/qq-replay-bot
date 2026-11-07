@@ -465,10 +465,22 @@ function render(data) {
   for (const line of summary(data)) panel.append(line);
 
   const notes = (data.notes || []).slice();
+  const rankScope = data.rank_scope || {};
+  const incomplete = rankScope.complete === false;
+  if (incomplete) {
+    const unknown = Number(rankScope.unknown_rank_players) || 0;
+    const pending = Number(rankScope.pending_rank_players) || 0;
+    notes.unshift('名次未补齐：' + unknown + ' 名玩家名次未知' + (pending ? '，另有 ' + pending + ' 名查询中' : '')
+      + '。本次前200 只统计已确认名次的玩家，对局数与胜率会偏小。');
+  }
   if (data.truncated) notes.push('结果已截断，只显示前 ' + data.shown + ' 行。');
   if (notes.length) {
     const ul = el('ul', undefined, 'notes');
-    for (const note of notes) ul.append(el('li', note));
+    for (const [index, note] of notes.entries()) {
+      const li = el('li', note);
+      if (incomplete && index === 0) li.className = 'warn';
+      ul.append(li);
+    }
     panel.append(ul);
   }
 

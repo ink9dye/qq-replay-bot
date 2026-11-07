@@ -1,0 +1,16 @@
+[Unit]
+Description=Refresh per-player arena ranks for 前200 statistics
+Documentation=file:/opt/ygobot/docs/INDEX.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+ExecStart=/usr/bin/python3 /opt/ygobot/tools/backfill_rank_cache.py --root /opt/ygobot --workers 4 --max-age-hours 20
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=1800
+MemoryMax=256M

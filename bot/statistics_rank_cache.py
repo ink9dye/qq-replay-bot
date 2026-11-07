@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 TTL = 7 * 86400
+FUTURE_SKEW = 3600
 MAX = 5000
 _LOCK = threading.Lock()
 
@@ -30,8 +31,10 @@ def load(data_dir, now):
             continue
         rank = entry.get('rank')
         checked = entry.get('checked_at')
-        if (isinstance(rank, int) and rank > 0 and isinstance(checked, (int, float))
-                and 0 <= float(now) - float(checked) <= TTL):
+        age = float(now) - float(checked) if isinstance(checked, (int, float)) else TTL + 1
+        # 查询的 now 可能比写入时刻早几分钟（排队后才计算），未来时间戳不能当过期：
+        # 否则一次迟到的请求会把整份缓存改写成本次刚查到的那几条。
+        if isinstance(rank, int) and rank > 0 and -FUTURE_SKEW <= age <= TTL:
             result[str(name).strip()] = (rank, float(checked))
     return result
 

@@ -1,4 +1,4 @@
-﻿# 文档索引（唯一导航入口）
+# 文档索引（唯一导航入口）
 
 > 更新时间：2026-11-07 10:30。**新对话先读本页**，再按顺序读核心文档；历史报告只作证据，不作为现状依据。
 
@@ -38,6 +38,7 @@
 | 文档 | 内容 |
 |---|---|
 | [`QUERY_API.md`](QUERY_API.md) | 服务端总接口：`/query-api`、`/replay-api`、`/statistics/api/recordings` |
+| [`RANK_SCOPE_200_20261107.md`](RANK_SCOPE_200_20261107.md) | **前200 口径修复**：名次来源、快照、`ygo-rank-refresh.timer` 每 6 小时刷新、回滚 |
 | [`REPLAY_LIBRARY_20261106.md`](REPLAY_LIBRARY_20261106.md) | 录像库检索/整场下载、限速、客户端 v1.1–v1.5 |
 | [`SIDE_ANALYSIS_20261106.md`](SIDE_ANALYSIS_20261106.md) | Side 换入换出分析：入口、口径、算法候选、验收 |
 | [`WRAPUP_WEB_LATENCY_20261107.md`](WRAPUP_WEB_LATENCY_20261107.md) | **网页耗时优化全量记录**：措施、实测、饼图最终口径、卡图管线、回滚 |
