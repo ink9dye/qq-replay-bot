@@ -7,6 +7,7 @@ import asyncio
 import base64
 import hashlib
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -39,6 +40,24 @@ from .watch_core import (
     safe_filename_part,
     serve,
 )
+
+
+_UPLOAD_FOLDER_UNSAFE = re.compile(r"[^0-9A-Za-z._\-()\u4e00-\u9fff ]+")
+
+
+def upload_folder_part(text: str, fallback: str = "unknown") -> str:
+    """上传接口（bot/watch_api.py 的 _safe_part）写录像目录时的同名口径。
+
+    上传端会把 @、引号、假名等替换成 "_" 并按 80 字截断，与本地保存用的
+    watch.safe_filename_part 不同；查找已存在的录像目录时两种口径都要认。
+    """
+    cleaned = _UPLOAD_FOLDER_UNSAFE.sub("_", str(text or "")).strip(" .")
+    return cleaned[:80] or fallback
+
+
+def player_folders(name: str) -> tuple[str, ...]:
+    """同一玩家可能出现的录像目录名：本地保存口径与上传接口口径。"""
+    return tuple(dict.fromkeys((safe_filename_part(name), upload_folder_part(name))))
 
 
 def system_clock() -> float:
@@ -289,6 +308,7 @@ class BotService:
         self._top100_views_cache = None
         self._deck_tasks = set()
         self._slow_tasks = set()
+        self._hint_tasks = set()
         self._known_replays_at = 0.0
         self._known_replays = set()
 
@@ -311,15 +331,13 @@ class BotService:
         return str(user_id) in owners
 
     def help_text(self, user_id, conversation: str = "") -> str:
-        """帮助清单：保密名单功能只对名单内、且已有使用权限的人显示。"""
+        """帮助清单：保密功能只对名单内的群/人显示（与令牌分发同一份名单）。"""
         from .watch_token_command import confidential_allowed
         text = HELP
-        if not self._statistics_allowed(user_id, conversation):
+        if not confidential_allowed(self, user_id, conversation):
             text = "\n".join(line for line in text.splitlines()
-                             if not line.startswith(("统计：", "观战设备：", "统计对局：")))
-        if not (self.authorized(user_id) and confidential_allowed(self, user_id, conversation)):
-            text = "\n".join(line for line in text.splitlines()
-                             if not line.startswith("开通查询："))
+                             if not line.startswith(("统计：", "观战设备：", "统计对局：",
+                                                     "开通查询：", "令牌分发：")))
         return text
 
     def default_query_rule_line(self) -> str:
@@ -598,12 +616,12 @@ class BotService:
         if op == "query_enroll":
             from .watch_token_command import confidential_allowed
             if conversation.startswith("group:"):
-                # 群聊不暴露该功能：名单内群只提示私聊，名单外群静默（同「观战设备」）。
+                # 保密名单内的群：结果由 on_qq_event 私聊发给指令发送者；名单外群静默。
                 if not confidential_allowed(self, user, conversation):
                     return None
-                return "请私聊我发送“开通查询”，激活码只在私聊中发放。"
+                return self._query_enroll(user)
             if not confidential_allowed(self, user, conversation):
-                return "开通查询只对保密名单开放；如需使用请联系管理员。"
+                return None
             return self._query_enroll(user)
         if op == "empty":
             return "请发送“帮助”查看用法。"
@@ -611,6 +629,15 @@ class BotService:
             return command["message"]
         if op == "player_history":
             return self.player_history.handle(command["player"])
+        if op == "daily_card":
+            # 绑定 QQ 号（user），不是群/会话：同一人换群或私聊都是当天同一张。
+            return self.card_extras.handle(user, op)
+        if op == "probability":
+            from .probability import probability_message
+            try:
+                return probability_message(command["values"])
+            except ValueError as exc:
+                return str(exc)
         if op in ("random", "guess_start", "guess_answer", "guess_reveal", "limits_card", "limits_table"):
             return self.card_extras.handle(conversation or user, op, command.get("value", ""))
         if op in ("card_select", "card_next"):
@@ -679,6 +706,10 @@ class BotService:
             from .watch_devices import device_message
             return device_message(self)
         if op == "watch_token":
+            from .watch_token_command import confidential_allowed
+            # 名单外静默：不回复、不提示功能存在。
+            if not confidential_allowed(self, user, conversation):
+                return None
             from .watch_token_command import handle as handle_watch_token
             return handle_watch_token(self, user, command.get("args") or [], conversation)
         if op == "stats_page":
@@ -983,21 +1014,25 @@ class BotService:
         if len(relative.parts) < 2:
             return ""
         folder = relative.parts[0]
-        for sub in self.store.list_subscriptions():
-            if safe_filename_part(sub["player"]) == folder:
-                return sub["player"]
+        subscribed = list(dict.fromkeys(
+            sub["player"] for sub in self.store.list_subscriptions()
+            if folder in player_folders(sub["player"])))
+        if len(subscribed) == 1:
+            return subscribed[0]
         # 独立名单及未来前100采集不要求QQ订阅；用录像内真实玩家校验目录。
         # 这里只建立事实索引，查询授权仍由订阅/分享范围独立判断。
         try:
             if path.stat().st_size <= 2 * 1024 * 1024:
-                for name, _main, _extra in decks_from_replay(path.read_bytes()):
-                    if name and name != '[Server]' and safe_filename_part(name) == folder:
-                        return name
+                matches = [name for name, _main, _extra in decks_from_replay(path.read_bytes())
+                           if name and name != '[Server]' and folder in player_folders(name)]
+                # 上传端会把假名等压成 "_"，多个玩家可能共用一个目录；此时不猜。
+                if len(matches) == 1:
+                    return matches[0]
         except (OSError, ValueError):
             pass
         return ""
 
-    def _index_replay_file(self, path: Path, focus: str) -> bool:
+    def _index_replay_file(self, path: Path, focus: str, *, require_player: bool = False) -> bool:
         """把一个录像文件加入索引，返回是否新增。"""
         try:
             relative = path.resolve().relative_to(self.replay_root.resolve())
@@ -1011,6 +1046,8 @@ class BotService:
         decks = decks_from_replay(blob)
         players = [name for name, _, _ in decks if name and name != "[Server]"]
         if not players:
+            return False
+        if require_player and focus not in players:
             return False
         mtime = path.stat().st_mtime
         when = replay_recorded_time(blob)
@@ -1028,9 +1065,17 @@ class BotService:
         return True
 
     def index_player_replays(self, player: str) -> int:
-        """查询时按目录补齐某玩家目录里的录像索引，让列表直接反映磁盘内容。"""
-        directory = self.replay_root / safe_filename_part(player)
-        if not directory.is_dir():
+        """查询时按目录补齐某玩家目录里的录像索引，让列表直接反映磁盘内容。
+
+        本地保存与上传接口的目录名口径不同（@、引号、假名等），两种目录都要查；
+        目录也可能被多个玩家共用（例如都压成 "_"），只收该玩家确实在场的文件。
+        """
+        directories = []
+        for part in player_folders(player):
+            directory = self.replay_root / part
+            if directory.is_dir() and directory not in directories:
+                directories.append(directory)
+        if not directories:
             return 0
         now = time.monotonic()
         if now - self._known_replays_at > 5:
@@ -1038,16 +1083,17 @@ class BotService:
             self._known_replays_at = now
         known = self._known_replays
         indexed = 0
-        for path in sorted(directory.glob("*.yrp")):
-            try:
-                relative = path.resolve().relative_to(self.replay_root.resolve())
-            except ValueError:
-                continue
-            if str(relative) in known:
-                continue
-            if self._index_replay_file(path, player):
-                indexed += 1
-                known.add(str(relative))
+        for directory in directories:
+            for path in sorted(directory.glob("*.yrp")):
+                try:
+                    relative = path.resolve().relative_to(self.replay_root.resolve())
+                except ValueError:
+                    continue
+                if str(relative) in known:
+                    continue
+                if self._index_replay_file(path, player, require_player=True):
+                    indexed += 1
+                    known.add(str(relative))
         return indexed
 
     def index_collector_data(self) -> None:
@@ -1308,6 +1354,17 @@ class BotService:
         forward = self.qq.send_group_forward if is_group else self.qq.send_private_forward
         conversation = "group:" + str(receiver) if is_group else ""
         parsed_command = parse_command(text)
+        # 保密名单群里的「开通查询」「令牌分发」：结果只私聊发给指令发送者，群里不回显。
+        if is_group and parsed_command.get("op") in ("query_enroll", "watch_token"):
+            from .watch_token_command import confidential_allowed
+            if confidential_allowed(self, user_id, conversation):
+                private_reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+                if private_reply:
+                    delivered = await self.qq.send_private(user_id, private_reply)
+                    if not delivered:
+                        self.write_log("保密名单指令私聊发送失败，未在群内回退发送。")
+                        await send(receiver, "私聊发送失败，请私聊我重发一次。")
+                return
         answer = str(text or '').strip()
         pending_key = conversation + ':' + str(user_id) if conversation else str(user_id)
         pending = self._top100_deck_candidates.get(pending_key)
@@ -1315,33 +1372,33 @@ class BotService:
                               and int(answer) in pending.get('players', {})
                               and self.clock() - pending['time'] <= 300)
         if parsed_command.get('op') in ('deck_build', 'top100_rank_build') or deck_selection:
-            await send(receiver, "构筑请求已收到，按顺序生成；完成后把结果发到这里。")
             task = asyncio.create_task(self._deck_build_job(
                 user_id, text, conversation, receiver, send))
             self._deck_tasks.add(task)
             task.add_done_callback(self._deck_tasks.discard)
+            self._schedule_hint(task, send, receiver, "构筑请求已收到，按顺序生成；完成后把结果发到这里。")
             return
         if parsed_command.get('op') == 'player_history':
-            await send(receiver, "历史查询中，完成后把结果发到这里。")
             task = asyncio.create_task(self._history_job(user_id, text, conversation, receiver, send))
             self._history_tasks.add(task)
             task.add_done_callback(self._history_tasks.discard)
+            self._schedule_hint(task, send, receiver, "历史查询中，完成后把结果发到这里。")
             return
         if parsed_command.get('op') == 'price_quote':
-            await send(receiver, "查价中，约 1 分钟；完成后把结果发到这里。")
             task = asyncio.create_task(self._price_quote_job(parsed_command, receiver, send))
             self._price_quote_tasks.add(task)
             task.add_done_callback(self._price_quote_tasks.discard)
+            self._schedule_hint(task, send, receiver, "查价中，约 1 分钟；完成后把结果发到这里。")
             return
         hint = SLOW_COMMAND_HINTS.get(parsed_command.get('op'))
         if hint and self.authorized(user_id) and (
                 parsed_command.get('op') != 'stats_page'
                 or self._statistics_allowed(user_id, conversation)):
-            await send(receiver, hint)
             task = asyncio.create_task(self._slow_text_job(
                 user_id, text, conversation, receiver, send, forward, event.get('self_id')))
             self._slow_tasks.add(task)
             task.add_done_callback(self._slow_tasks.discard)
+            self._schedule_hint(task, send, receiver, hint)
             return
         if parsed_command.get('op') == 'help':
             # 帮助是一条分组清单，直接发文字，不再走合并转发。
@@ -1714,6 +1771,20 @@ class BotService:
             self._statistics_command_lock = asyncio.Lock()
         return self._statistics_command_lock
 
+
+    def _schedule_hint(self, task, send, receiver, hint, delay: float = 3.0):
+        """结果先到就只发一条；超过 delay 秒仍未完成才补一句“处理中”。"""
+        async def watch():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=delay)
+            except asyncio.TimeoutError:
+                if not task.done():
+                    await send(receiver, hint)
+            except Exception:
+                pass
+        waiter = asyncio.create_task(watch())
+        self._hint_tasks.add(waiter)
+        waiter.add_done_callback(self._hint_tasks.discard)
 
     async def _deck_build_job(self, user_id, text, conversation, receiver, send):
         try:

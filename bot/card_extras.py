@@ -5,6 +5,7 @@ import hashlib
 import json
 import random
 import re
+import sqlite3
 import threading
 import time
 from collections import OrderedDict
@@ -15,6 +16,7 @@ from urllib.request import Request, urlopen
 from zipfile import ZipFile, BadZipFile
 
 from .card_search import CardReply, card_name, normalize
+from .daily_card import DailyCards
 
 
 class PagedReply(str):
@@ -88,6 +90,7 @@ class CardCatalog:
 class CardExtras:
     def __init__(self, data_dir, search, catalog=None, clock=None, today=None, choose=None):
         self.search = search
+        self.daily_cards = DailyCards(data_dir)
         self.catalog = catalog or CardCatalog(data_dir)
         self.clock = clock or time.monotonic
         self.today = today or (lambda: datetime.now(timezone(timedelta(hours=8))).date())
@@ -136,7 +139,9 @@ class CardExtras:
         with self.lock:
             try:
                 return self._handle(str(user), action, value)
-            except (OSError, ValueError, KeyError, TypeError, BadZipFile):
+            except (OSError, ValueError, KeyError, TypeError, BadZipFile, sqlite3.Error):
+                if action == 'daily_card':
+                    return '每日一卡暂时无法获取，请稍后重试；今天已经抽到的卡片不会改变。'
                 return '卡片功能暂时无法获取有效数据，请稍后重试。未将缺失数据当作“无限制”。'
 
     def _random_card(self):
@@ -159,6 +164,12 @@ class CardExtras:
     def _handle(self, user, action, value):
         now = self.clock()
         self._expire_games()
+        if action == 'daily_card':
+            # 按 QQ 号绑定（不是群/会话）：群聊、私聊、换群、重启都是同一张。
+            day = self.today()
+            card = self.daily_cards.get(user, day, self._random_card)
+            detail = self.search._reply_detail(card)
+            return CardReply(f'每日一卡｜{day.isoformat()}（北京时间）\n\n' + detail, detail.image_url)
         if action == 'random':
             # 与“查卡”命中单张时走同一条详情格式（含卡包与发售日期）。
             return self.search._reply_detail(self._random_card())
