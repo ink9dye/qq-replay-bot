@@ -50,8 +50,10 @@ def _stored_ranks(data_dir,now):
     if isinstance(payload,dict) and isinstance(payload.get('players'),dict):
         saved=payload.get('saved_at')
         saved=float(saved) if isinstance(saved,(int,float)) else 0.0
-        for name,rank in payload['players'].items():
-            if isinstance(rank,int) and rank>0:result.setdefault(str(name).strip(),(rank,saved))
+        # 快照超过 7 天就当没有：定时器停摆时宁可回到“只认共享缓存”，也不用旧名次冒充。
+        if 0<=now-saved<=7*86400:
+            for name,rank in payload['players'].items():
+                if isinstance(rank,int) and rank>0:result.setdefault(str(name).strip(),(rank,saved))
     return result
 
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh arena ranks every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:17:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=ygo-rank-refresh.service
+
+[Install]
+WantedBy=timers.target
