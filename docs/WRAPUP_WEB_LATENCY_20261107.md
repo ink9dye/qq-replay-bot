@@ -1,0 +1,120 @@
+# 网页耗时优化全量记录（2026-11-06 晚 – 11-07 上午）
+
+本文按“措施 → 做法 → 实测 → 状态”汇总这段时间对网页（`/statistics` 系列页面）做过的全部耗时优化，供后续排查和复用。**未上线或已回滚的尝试也如实列出。**
+
+## 0. 目标与环境
+
+- 服务器：Ubuntu 24.04，2 vCPU / 1.7GB，web 进程内存上限 500MB（`MemoryHigh=420M`）。
+- 约束：不卡顿、不影响 QQ/采集；共享文件（UI 分支的 `statistics_portal.html`、`statistics_dashboard.py`、`statistics_portal.py`）不擅自覆盖。
+- 观测：`/opt/ygobot/data/logs/statistics-query-timings.jsonl`（每次后台计算耗时）、`/health`、`memory.events`。
+
+## 1. 措施清单
+
+### 1.1 资源隔离（系统层）
+- web：`CPUWeight=200`；collector：`CPUQuota=120%`（未重启 collector，仅设属性）。
+- 效果：load 2.3–3.5 → 0.9–1.5；白天峰值不再把 web 挤到卡死。
+- 文件：`/etc/systemd/system/ygo-web.service.d/cpu-budget.conf`。
+
+### 1.2 请求缓存层（QueryRefresh + last-success）
+- 单 worker 串行计算；结果写 `last-success` 磁盘缓存（跨重启可读 30 分钟）。
+- 缓存预算：`MAX_KEYS 16→256`，`MAX_BYTES 8MB→64MB`（避免构建/名册结果被挤掉）。
+- 失效：`snapshot_version`（DB 版本）变化即失效；前台命中直接返回，带 `X-Statistics-State: fresh/stale/refreshing`。
+- 效果：warm 命中 5–50ms；用户感知的“卡”主要来自首次/换参数。
+
+### 1.3 前百卡组图（deck images）持久化
+- 原：每次 roster 计算对 `stat_build_cards` 全表聚合（8.8–15s）。
+- 改：按卡组缓存代表卡 30 分钟，落盘 `data/cache/deck-images.json`（ygo 可写），启动加载。
+- 效果：roster 冷算 22–50s → 5–8s；命中 6–9ms。
+
+### 1.4 构筑页单玩家化
+- 原：每个构筑页都算完整 100 人名册（2–18s）。
+- 改：`population(player=...)` 只算该玩家视角（资格/展示规则不变）；`deck-detail` 走 QueryRefresh 持久化。
+- 效果：构筑页 3–18s → 0.45–2.3s。
+
+### 1.5 构筑页绕开全局计算锁
+- 问题：`deck-detail` 排在全局 `_query_compute_lock` 后面，被 roster/matrix 的 10–60s 计算堵到 8 秒超时（503）。
+- 改：`deck-detail` 单独走 `_query_reply`（不抢全局锁），等待 4 秒。
+- 效果：冷构筑 0.45–2.3s 直接 200，不再 503。
+
+### 1.6 矩阵页瘦身
+- 页面版请求 `samples=0`，不再传逐局样本；载荷 460KB → 94KB（100/100）。
+- 预热：`prewarm` 轮转加入 matrix 100/100 与 200/200；构筑每 5s 一个。
+- 效果：矩阵命中 0.03s；200/200 冷算 25s（旧）→ 6.6s（系列缓存后）。
+
+### 1.7 静态资源缓存
+- `/statistics/assets/*` 由 `no-store` 改为 `private, max-age=3600`（页面本身仍 `no-store`）。
+- 效果：浏览器不再每次重下 JS/CSS。
+
+### 1.8 系列标注缓存（本阶段重点）
+- 问题：`eligible_views → card_series.annotate` 对每个构筑逐卡计算系列标签，单次 10–25s，roster/matrix/录像/卡片统计都要付。
+- 改法（最终线上版 `card_series.py 7a09fe28`）：
+  1. 按 `(catalog revision, build, 分类来源, 主/额外完整度, series_status)` 缓存标注结果；
+  2. **落盘** `data/cache/build-series.json`（紧凑元组格式，约 3.9–12.7MB，按 revision 剪枝，上限 8000 条）；
+  3. 分块计算（每块 250 个构筑），逐块写回行并释放 cards 字典，峰值内存有界；
+  4. 全命中时跳过 `stat_build_series`/`stat_build_cards` 查询与逐卡循环（快路径）。
+- 效果（同库同时刻，输出逐项一致）：
+  - roster：26.6s → **10.7s**（进程内二次 1.2–4.3s）；
+  - 矩阵 200/200：58.6s → **6.6s**；
+  - 录像 100/100：6.8s → **2.7s**；
+  - 卡片统计默认 200/200：18s → **5.7s**；
+  - 峰值内存：fresh 进程 96–119MB；线上 RSS 196–256MB，无 OOM。
+- **失败/回滚记录（重要）**：
+  - 第一版“嵌套 dict + 全量落盘”上线后，`memory.high` 10 分钟触发 3000+ 次、RSS 440MB、一次 roster 计算 112s → 回滚；
+  - 第二版改紧凑元组仍偏大（12.7MB 文件）→ 再回滚；
+  - 最终版用“字符串拼接 + 分块 + 8000 条上限”，RSS 稳定在 196–256MB，`memory.high` 仍偶发（2572 次累计）但无 OOM，roster 10.7s。
+
+### 1.9 存活检查批量快路径（已改，未上线）
+- 现状：线上 `top100.eligible_views` 逐文件 `safe_replay_file`（每次 2–3s）。
+- 改法：恢复 `replay_alive.alive_map`（每父目录列一次，等价判定）。
+- 实测：卡片统计 14.7→13.9s（**无明显收益**），未部署，避免无谓改动。
+
+### 1.10 其它
+- WAL 128MB、快照 DDL（P1b）；
+- 查询计时日志（`statistics-query-timings.jsonl`）用于归因；
+- 回滚脚本与备份目录（见第 4 节）。
+
+## 2. 当前线上版本（2026-11-07 09:45）
+
+| 文件 | sha256 前16 | 说明 |
+|---|---|---|
+| `statistics_portal.py` | `e8d77d63` | UI 分支 19:56 版 + 资源缓存/绕锁 |
+| `statistics_dashboard.py` | `d85c46df` | UI 分支版本（未改） |
+| `statistics_portal.html` | `5f3f642d` | UI 分支版本（未改） |
+| `statistics_matrix.py` | `26de2d49` | 我的瘦身版 |
+| `statistics_matrix.html` | `8b1d5146` | samples=0 |
+| `card_series.py` | `7a09fe28` | 系列缓存（紧凑 + 分块） |
+| `top100_pie.py` | `ad6e752d` | QQ 饼图 payload 缓存（待 QQ 重启生效） |
+
+## 3. 实测汇总（2026-11-07 09:40 前后）
+
+| 场景 | 现在 | 优化前 |
+|---|---:|---:|
+| `/statistics` 页面 | 5–6ms | 5–6ms |
+| roster API（命中） | 6–9ms | 6–9ms |
+| roster 后台计算 | 10.7s | 26.6s |
+| 矩阵 100/100 / 200/200 计算 | 6.6s | 25 / 58.6s |
+| 构筑页（冷） | 0.45–2.3s | 3–18s（常 503） |
+| 录像 100/100 计算 | 2.7s | 6.8s |
+| 卡片统计 200/200 计算 | 5.7s | 18s |
+| web RSS | 196–256MB | 200MB |
+| load | 0.8–1.4 | 2.3–3.5 |
+
+## 4. 回滚入口
+
+- 系统：`/root/ygo-web-cpu-budget.conf.bak-*`；`systemctl set-property ygo-collector CPUQuota=infinity`。
+- 系列缓存：`/root/last-series-bounded-backup`（回滚到 6e5fe2b6 仅内存版）、`/root/build-series.json.disabled-*`（删缓存）。
+- 门户：`/root/last-portal-merge-backup`、`/root/statistics_portal.before-wait.py`。
+- 饼图（QQ）：`/root/top100_pie.before-cache.py`。
+
+## 5. 仍未做（按优先级）
+
+1. **卡片统计**：瓶颈已定位为“32 个分桶重建（最多 8.7s）+ 实时名次核验（约 5s）+ 存活检查（2–3s）”，不是缺索引；下一步是“资格快照单槽缓存（约 40MB）+ 名次短时效磁盘缓存（需确认 120s 语义）”；
+2. roster/记录的名称与证据缓存（约 1–2s）；
+3. 前端骨架屏/并行请求（UI 分支负责）；
+4. gzip/HTTP 压缩（当前载荷已缩小，收益有限）。
+
+## 6. 经验
+
+- 先量化再动手：`timings` 日志 + cProfile 能直接指出 annotate/alive/rank 谁在耗时。
+- 共享文件先 diff 再覆盖；本次饼图/侧分析路由被覆盖的教训见 `PROJECT_HANDOFF.md` 事故条目。
+- 缓存要按“内存上限”设计：紧凑格式 + 分块 + 条目上限，否则 500MB 上限下必然触发 `memory.high`。
