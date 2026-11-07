@@ -140,7 +140,11 @@ def group_command_text(event: dict, allow_commands: bool = False, extra_accept=N
         # 卡价预定只在被@时出现，不参与免@指令，也不在帮助里列出。
         if head in ('预定', '我的预定', '取消预定'):
             return None
-        if parse_command(text).get('op') not in ('empty', 'unknown'):
+        parsed = parse_command(text)
+        # 保密名单命令必须 @ 工具号：裸发不触发、不回复，避免暴露命令存在。
+        if parsed.get('op') in ('query_enroll', 'watch_token') or head == '开通查询':
+            return None
+        if parsed.get('op') not in ('empty', 'unknown'):
             return text
         if extra_accept and extra_accept(event, text):
             return text
