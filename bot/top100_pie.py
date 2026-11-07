@@ -209,32 +209,33 @@ def _draw_top_legend(draw, inner, width, font):
 
 
 def _render_single_payload(payload):
-    """单环新版：切片按人数降序、「其他」最后；大类内 >4% 的小类嵌套在外圈。"""
+    """单环新版：人数降序、「其他」最后；同卡图相邻小类合并；图下方附明细图例。"""
     single = payload.get('single') or {}
     total = int(single.get('total') or 0)
     if not total:
         raise ValueError('暂无卡组档案')
 
-    width, height = 1600, 1100
+    width, height = 1600, 1500
     image = Image.new('RGB', (width, height), 'white')
     draw = ImageDraw.Draw(image)
-    title_font, text_font, small_font = _font(28), _font(16), _font(14)
+    title_font, text_font, small_font, tiny_font = _font(28), _font(16), _font(14), _font(13)
     draw.text((40, 30), f"前100卡组分布 · 有档案 {payload['covered']}/{payload['current']} 人 · 单环",
               font=title_font, fill='#173529')
-    center = (800, 560)
-    radius = 330.0
+    center = (800, 540)
+    radius = 320.0
     r0, rb, r1 = radius * 0.30, radius * 0.56, radius * 0.94
 
     items = []
     for s in single.get('slices') or []:
         items.append(dict(name=s['name'], players=s['players'], percent=s['percent'],
                           color=s.get('color') or '#7A8B99', image=s.get('image'),
-                          kind=s.get('kind') or 'deck', bands=s.get('bands') or []))
+                          kind=s.get('kind') or 'deck', bands=s.get('bands') or [], parts=[]))
     other = single.get('other') or {}
     if int(other.get('players') or 0) > 0:
         items.append(dict(name=other.get('name') or '其他', players=other['players'],
                           percent=other['percent'], color=other.get('color') or '#7A8B99',
-                          image=other.get('image'), kind='other', bands=[]))
+                          image=other.get('image'), kind='other', bands=[],
+                          parts=other.get('parts') or []))
     items.sort(key=lambda item: (item['kind'] == 'other', -item['players'], item['name']))
 
     labels = []
@@ -243,16 +244,31 @@ def _render_single_payload(payload):
         span = item['players'] / total * 360.0
         end = angle + span
         _paste_wedge(image, center, r1, r0, angle, end, item.get('image'), item['color'], thumb=True)
-        cursor = angle
+        # 相邻且卡图相同的成员小类合并成一块，只贴一次图、不画中间白线。
+        groups = []
         for band in (b for b in item['bands'] if b.get('kind') == 'member' and b.get('players')):
-            b_span = (band['players'] / max(1, item['players'])) * span
-            band_image = band.get('image')
-            if band_image and band_image != item.get('image'):
+            if groups and groups[-1]['image'] == band.get('image'):
+                groups[-1]['players'] += band['players']
+                groups[-1]['names'].append(band['name'])
+            else:
+                groups.append(dict(image=band.get('image'), players=band['players'], names=[band['name']]))
+        cursor = angle
+        for group in groups:
+            b_span = (group['players'] / max(1, item['players'])) * span
+            if group['image'] and group['image'] != item.get('image'):
                 _paste_wedge(image, center, r1, rb, cursor, cursor + b_span,
-                             band_image, item['color'], thumb=True)
-            draw.arc((center[0] - rb, center[1] - rb, center[0] + rb, center[1] + rb),
-                     cursor, cursor + b_span, fill='white', width=1)
+                             group['image'], item['color'], thumb=True)
+            if cursor > angle + 1e-6:
+                a = math.radians(cursor)
+                draw.line((center[0] + math.cos(a) * rb, center[1] + math.sin(a) * rb,
+                           center[0] + math.cos(a) * r1, center[1] + math.sin(a) * r1),
+                          fill='white', width=1)
             cursor += b_span
+        if cursor < end - 1e-6:
+            a = math.radians(cursor)
+            draw.line((center[0] + math.cos(a) * rb, center[1] + math.sin(a) * rb,
+                       center[0] + math.cos(a) * r1, center[1] + math.sin(a) * r1),
+                      fill='white', width=1)
         mid = math.radians((angle + end) / 2)
         labels.append((mid, f"{item['name']}  {item['percent']}%", _rgb(item['color'])))
         angle = end
@@ -273,7 +289,35 @@ def _render_single_payload(payload):
     _center_text(draw, center[0], center[1] - 16, str(total), _font(46), '#173529')
     _center_text(draw, center[0], center[1] + 18, '总人数 · 单环 100%', text_font, '#65776b')
     _draw_top_legend(draw, items, width, text_font)
-    draw.text((40, height - 38), single.get('note') or '', font=small_font, fill='#65776b')
+
+    # 饼图下方：每个切片包含的卡组明细（三列），与网页右侧文字对应。
+    columns = [(60, 500), (560, 500), (1060, 500)]
+    column_index = 0
+    y = 930
+    line_height = 21
+    max_y = height - 60
+    for item in items:
+        lines = [f"{item['name']}  {item['players']}人 · {item['percent']}%"]
+        for band in item.get('bands') or []:
+            if band.get('kind') == 'member':
+                lines.append(f"· {band['name']}  {band['players']}人")
+            elif band.get('kind') == 'overlap':
+                lines.append(f"· 交集 {band['name']}  {band['players']}人")
+        for part in item.get('parts') or []:
+            lines.append(f"· {part['name']}  {part['players']}人")
+        needed = len(lines) * line_height + 12
+        if y + needed > max_y and column_index < len(columns) - 1:
+            column_index += 1
+            y = 930
+        x = columns[column_index][0]
+        draw.text((x, y), lines[0], font=small_font, fill='#22322B')
+        y += line_height
+        for line in lines[1:]:
+            draw.text((x + 14, y), line, font=tiny_font, fill='#4a5a52')
+            y += line_height
+        y += 12
+
+    draw.text((40, height - 40), single.get('note') or '', font=small_font, fill='#65776b')
     output = io.BytesIO()
     image.save(output, format='PNG', optimize=True)
     return output.getvalue(), payload

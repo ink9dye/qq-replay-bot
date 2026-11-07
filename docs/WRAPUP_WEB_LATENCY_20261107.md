@@ -134,7 +134,7 @@ enderPie() 原本只画内环（主大类）与外环（具体卡组），pie.mi
 ## 4.8 QQ「前百饼图」改为单环（2026-11-07 12:30）
 
 - `top100_pie.py` 新增 `_render_single_payload`：优先用 `deck_single` 数据出单环图，与网页同口径（人数降序、其他最后、交集均摊后的百分比、大类内 >4% 小类嵌套）。
-- 渲染细节：外圈整块卡图 + 嵌套小类图/白线；`其他` 用莫忘天魔女；标签/图例/中心“总人数 · 单环 100%”；`deck_single` 缺失时回退旧双环渲染。
+- 渲染细节：外圈整块卡图 + 嵌套小类图；**相邻同卡图的小类合并**（只贴一次图、不画中间白线）；`其他` 用莫忘天魔女；标签/顶部图例/中心“总人数 · 单环 100%”；**饼图下方附三列明细图例**（每个切片的成员卡组/交集/其他 parts，与网页右侧文字对应）；`deck_single` 缺失时回退旧双环渲染。
 - payload 缓存和 PNG 缓存仍生效；改完已清 `data/cache/top100-pie/*`，`ygo-qq` 已重启（PID 745274，online）。
 - **顺带修复**：`card_series._compute` 的 `series_membership` 之前返回 list，`statistics_dashboard` 聚合时 `.get` 会抛错（偶发 500）；已改为 `{main_copies, extra_copies}` dict（`card_series.py d04dc012`）。
 - 回滚：`/root/last-qq-single-pie-backup`（top100_pie）、`/root/last-pie-split-backup` 等。
