@@ -11,7 +11,7 @@ from contextlib import closing
 from pathlib import Path
 
 _LOCK = threading.Lock()
-RENDER_VERSION = 15
+RENDER_VERSION = 20
 
 
 def _cache_path(database) -> Path:
@@ -20,6 +20,11 @@ def _cache_path(database) -> Path:
 
 def _meta_path(database) -> Path:
     return Path(database).parent / 'cache' / 'deck-pie' / 'latest.json'
+
+
+def _parts_paths(database):
+    root = Path(database).parent / 'cache' / 'deck-pie'
+    return root / 'latest-pie.png', root / 'latest-legend.png'
 
 
 def _record_from_roster(data) -> dict:
@@ -109,7 +114,10 @@ def render_from_roster(database, data) -> bytes:
     key = _key(record)
     with _LOCK:
         cached = _load(path, key)
-        return cached if cached is not None else _render(record, database)
+        blob = cached if cached is not None else _render(record, database)
+        # 网页生成后同时保存饼图/图例两张图，机器人直接取用。
+        _store_parts(database, blob)
+        return blob
 
 
 def render(database, replay_root, now) -> bytes:
@@ -178,17 +186,75 @@ def _parts(blob: bytes):
     return {'pie': pie_buffer.getvalue(), 'legend': legend_buffer.getvalue()}
 
 
+def _store_parts(database, blob) -> None:
+    """把整图拆成「饼图」「图例」两张 PNG 存盘，供机器人直接取用。"""
+    try:
+        parts = _parts(blob)
+        pie_path, legend_path = _parts_paths(database)
+        pie_path.parent.mkdir(parents=True, exist_ok=True)
+        pie_path.write_bytes(parts['pie'])
+        legend_path.write_bytes(parts['legend'])
+    except Exception:
+        pass
+
+
+def _load_parts(database, max_age: float = 600.0):
+    """读取网站保存的饼图/图例；过期或缺失返回 None。"""
+    pie_path, legend_path = _parts_paths(database)
+    try:
+        if not pie_path.is_file() or not legend_path.is_file():
+            return None
+        stamp = min(pie_path.stat().st_mtime, legend_path.stat().st_mtime)
+        if time.time() - stamp > max_age:
+            return None
+        pie = pie_path.read_bytes()
+        legend = legend_path.read_bytes()
+    except OSError:
+        return None
+    if not (pie.startswith(b'\x89PNG\r\n\x1a\n') and legend.startswith(b'\x89PNG\r\n\x1a\n')):
+        return None
+    return {'pie': pie, 'legend': legend}
+
+
+def _refresh_from_site(database) -> bool:
+    """本机请统计网页（8788）重算并保存一份；成功返回 True。"""
+    import http.cookiejar
+    import urllib.request
+
+    try:
+        from .statistics_portal import owner_secret
+        secret = owner_secret(Path(database).parent / 'statistics-owner.key')
+    except Exception:
+        return False
+    base = 'http://127.0.0.1:8788'
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    try:
+        opener.open(base + '/statistics/access/' + secret, timeout=8).read()
+        with opener.open(base + '/statistics/api/deck-pie.png', timeout=120) as response:
+            response.read()
+        return True
+    except Exception:
+        return False
+
+
 def render_parts(database, replay_root, now, roster_data=None):
     from . import statistics_dashboard
 
     if roster_data is not None:
-        data = roster_data
-        blob = render_from_roster(database, data)
-    else:
+        blob = render_from_roster(database, roster_data)
+        payload = _payload_from_meta_or_data(database, roster_data)
+        return _load_parts(database) or _parts(blob), payload
+
+    # 机器人只取网站保存的那份；过期就请网站重算，网站不可用才本地兜底。
+    parts = _load_parts(database)
+    if parts is None:
+        if _refresh_from_site(database):
+            parts = _load_parts(database)
+    if parts is None:
         cached = _load_any(_cache_path(database))
         if cached is not None:
-            blob = cached
-            data = None
+            parts = _parts(cached)
         else:
             import sqlite3
             uri = Path(database).resolve().as_uri() + '?mode=ro'
@@ -197,5 +263,6 @@ def render_parts(database, replay_root, now, roster_data=None):
                 db.execute('BEGIN')
                 data = statistics_dashboard.query(db, Path(replay_root), float(now))
             blob = render_from_roster(database, data)
-    payload = _payload_from_meta_or_data(database, data)
-    return _parts(blob), payload
+            parts = _load_parts(database) or _parts(blob)
+    payload = _payload_from_meta_or_data(database, None)
+    return parts, payload

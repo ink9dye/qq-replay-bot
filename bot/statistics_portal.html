@@ -225,7 +225,7 @@ function renderPie(data){const box=$('deckPie');if(!box)return;window.__piePaylo
  box.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="前100卡组分布：内环主大类，外环具体卡组">'+'<defs>'+defs.join('')+'</defs>'+shapes.join('')+'</svg>';
  const legend=$('deckPieLegend');if(legend){const nodes=[];
   for(const cat of pie.inner){const details=el('details',undefined,'pie-cat');details.open=nodes.length<3;
-   const summary=el('summary');const dot=el('i');dot.style.background=cat.color;summary.append(dot);summary.append(el('b',cat.name));summary.append(el('span',(cat.headcount!=null?cat.headcount:cat.players)+'人 · '+cat.percent+'%','pie-cat-count'));summary.title='点击筛选：包含「'+cat.name+'」的卡组';summary.addEventListener('click',()=>onPieCategory(cat.name));details.append(summary);
+   const summary=el('summary');const dot=el('i');dot.style.background=cat.color;summary.append(dot);summary.append(el('b',cat.name));summary.append(el('span',(function(){var t=0,rows=((window.__pieData||{}).deck_pie||{}).middle||[];for(var i=0;i<rows.length;i++){var r=rows[i];if(r.primary===cat.name||(r.extras||[]).indexOf(cat.name)>=0)t+=r.players}return t||cat.players})()+'人 · '+cat.percent+'%','pie-cat-count'));summary.title='点击筛选：包含「'+cat.name+'」的卡组';summary.addEventListener('click',()=>onPieCategory(cat.name));details.append(summary);
    const body=el('div',undefined,'pie-sub');let number=0;
    for(const m of (pie.middle||[]).filter(x=>x.primary===cat.name)){const row=el('div',undefined,'pie-sub-row');const dot2=el('i');dot2.style.background=m.mixed||m.color;row.append(dot2);row.append(el('span',m.label+'  '+m.players+'人 · '+m.percent+'%','pie-sub-mid'));body.append(row)}
    const names=outerByPrimary.get(cat.name)||[];if(names.length){const namesBox=el('div',undefined,'pie-sub-names');for(const o of names){number+=1;const line=el('div',number+'. '+o.name+'  '+o.players+'人 · '+o.percent+'%','pie-sub-name');line.title='点击筛选：'+o.name;line.onclick=()=>onPieClick(o.name);namesBox.append(line)}body.append(namesBox)}
@@ -350,7 +350,7 @@ window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster
       var grp=[];
       grp.push(art(s.frames,cid,bb));
       grp.push('<rect x="0" y="0" width="'+W+'" height="'+H+'" fill="#0a1812" opacity="0.22" clip-path="url(#'+cid+')" pointer-events="none"/>');
-      grp.push('<path d="'+d+'" fill="none" stroke="'+(isSel?'none':'#fff')+'" stroke-width="1.4" pointer-events="all" data-deck="'+esc(s.name)+'" style="cursor:pointer"><title>'+esc(s.name)+' · '+s.players+'人 · '+s.percent+'%</title></path>');
+      grp.push('<path d="'+d+'" fill="none" stroke="'+(isSel?'none':'#fff')+'" stroke-width="1.4" pointer-events="all" data-deck="'+esc(s.name)+'" style="cursor:pointer"><title>'+esc(s.name)+' · '+(function(){var t=0,rows=((window.__pieData||{}).deck_pie||{}).middle||[];for(var i=0;i<rows.length;i++){var r=rows[i];if(r.primary===s.name||(r.extras||[]).indexOf(s.name)>=0)t+=r.players}return t||s.players})()+'人 · '+s.percent+'%</title></path>');
       // 嵌套：连续同卡图合并
       var members=(s.bands||[]).filter(function(b){return b.kind==='member'}).slice();
       var groups=[], mcursor=s.a0;
@@ -411,15 +411,16 @@ window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster
     var ordered=items.slice().sort(function(x,y){return x.kind==='other'?1:(y.kind==='other'?-1:0)});
     ordered.forEach(function(s){
       var block='<div style="break-inside:avoid;margin-bottom:10px">';
-      block+='<div style="margin:0 0 2px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+s.color+';margin-right:6px"></span><b>'+esc(s.name)+'</b> '+s.players+'人 · '+s.percent+'%</div>';
+      block+='<div style="margin:0 0 2px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+s.color+';margin-right:6px"></span><b>'+esc(s.name)+'</b> '+((s.kind==='other')?s.players:(function(){var t=0,rows=((window.__pieData||{}).deck_pie||{}).middle||[];for(var i=0;i<rows.length;i++){var r=rows[i];if(r.primary===s.name||(r.extras||[]).indexOf(s.name)>=0)t+=r.players}return t||s.players})())+'人 · '+s.percent+'%</div>';
+      var pieHit=function(o,kind){if(kind==='deck'){if(o.name===s.name)return true}else if(o.primary===s.name)return true;return (o.extras||[]).indexOf(s.name)>=0};
+      var pieRow=function(o){var nested=(o.players*100/total)>4;var ex=(o.name!==s.name&&o.primary&&o.primary!==s.name)?' <span style="color:#8a6a2a">∩'+esc(o.primary)+'</span>':'';return '<div data-deck="'+esc(o.name)+'" style="cursor:pointer;padding-left:16px;color:'+(nested?'#4a5a52':'#6b7a70')+'">'+(nested?'◆ ':'· ')+esc(o.name)+' '+o.players+ex+'</div>'};
       var isCat=(s.kind==='cat'||s.kind==='category'); if(isCat){
-        (s.decks||[]).forEach(function(d){
-          var nested=(d.players*100/total)>4;
-          block+='<div data-deck="'+esc(d.name)+'" style="cursor:pointer;padding-left:16px;color:'+(nested?'#4a5a52':'#6b7a70')+'">'+(nested?'◆ ':'· ')+esc(d.name)+' '+d.players+'</div>';
-        });
+        ((data&&data.deck_pie&&data.deck_pie.outer)||[]).forEach(function(o){if(pieHit(o,'category'))block+=pieRow(o)});
         (s.bands||[]).forEach(function(b){if(b.kind==='overlap')block+='<div style="padding-left:16px;color:#7a5a24">· 交集 '+esc(b.name)+' '+b.players+'人（内环/外环各一张卡图）</div>'});
       }else if(s.kind==='deck'){
-        /* 独立卡组：标题即全部，不再列子卡组 */
+        // 独立卡组：列出所有带该字段的卡组（含混合构筑）；只有它自己时不重复列。
+        var hits=[];((data&&data.deck_pie&&data.deck_pie.outer)||[]).forEach(function(o){if(o.name===s.name||(o.extras||[]).indexOf(s.name)>=0)hits.push(o)});
+        if(hits.length>1)hits.forEach(function(o){block+=pieRow(o)});
       }else{
         (s.parts||[]).forEach(function(q){
           block+='<div data-deck="'+esc(q.name)+'" style="cursor:pointer;padding-left:16px;color:#5c6a62">· '+esc(q.name)+' '+q.players+'</div>';
@@ -438,7 +439,7 @@ window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster
         bd+='</div>';
         return;
       }
-      bd+='<div style="break-inside:avoid;margin-bottom:10px"><b style="color:#173529;cursor:pointer" data-deck="'+esc(s.name)+'">'+esc(s.name)+'</b> <span style="color:#65776b">'+s.players+'人 · '+s.percent+'%</span>';
+      bd+='<div style="break-inside:avoid;margin-bottom:10px"><b style="color:#173529;cursor:pointer" data-deck="'+esc(s.name)+'">'+esc(s.name)+'</b> <span style="color:#65776b">'+(function(){var t=0,rows=((window.__pieData||{}).deck_pie||{}).middle||[];for(var i=0;i<rows.length;i++){var r=rows[i];if(r.primary===s.name||(r.extras||[]).indexOf(s.name)>=0)t+=r.players}return t||s.players})()+'人 · '+s.percent+'%</span>';
       if(s.kind!=='deck'){
         (s.decks||[]).forEach(function(d){
           var ex=(d.extras&&d.extras.length)?' <span style="color:#8a6a2a">∩'+d.extras.map(esc).join('、')+'</span>':'';
