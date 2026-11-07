@@ -144,3 +144,52 @@ enderSinglePie）的切片顺序原本按人数降序。现改为**交集优先�
 - 先量化再动手：`timings` 日志 + cProfile 能直接指出 annotate/alive/rank 谁在耗时。
 - 共享文件先 diff 再覆盖；本次饼图/侧分析路由被覆盖的教训见 `PROJECT_HANDOFF.md` 事故条目。
 - 缓存要按“内存上限”设计：紧凑格式 + 分块 + 条目上限，否则 500MB 上限下必然触发 `memory.high`。
+
+
+## 9. 最终状态（2026-11-07 10:20）
+
+### 9.1 线上文件
+
+| 文件 | sha256 前16 | 来源 |
+|---|---|---|
+| `statistics_portal.py` | `e8d77d63` | UI 分支 19:56 版 + 资源缓存/绕锁 |
+| `statistics_portal.html` | `906d8f6d` | UI 分支 23:51 版 + 中环交集/相邻排序 |
+| `statistics_dashboard.py` | `51e600ae` | UI 分支版 + 每卡组字段卡数 |
+| `deck_pie.py` | `420a547f` | 小类代表卡排除大类字段 |
+| `card_series.py` | `7a09fe28` | 紧凑字符串缓存 + 分块 annotate |
+| `statistics_matrix.py` / `.html` | `26de2d49` / `8b1d5146` | 矩阵瘦身 |
+| `top100.py` | `1288a888` | 线上原版（资格快照缓存因内存回滚） |
+| `statistics_prewarm.py` | `4c7a2245` | 预热轮转 |
+| `top100_pie.py` | `ad6e752d` | QQ 饼图 payload 缓存（待 QQ 重启生效） |
+
+### 9.2 饼图最终口径
+
+- 单环：大类 = 命名组字段；小类 = 大类内 >4% 的具体卡组，嵌套在 0.56–0.94R；
+- 小类代表卡 = 该构筑内 **卡数最多且 ≠ 本大类字段** 的字段代表卡（无垢大艺术两个小类都取耀圣 5559570 → 同图合并、无白线）；
+- 交集 = 相邻切片边界小缺口 + 图例（用户确认够用），排序优先让有交集切片相邻；单片交集 >3 时只保留权重最大的 2 个相邻；
+- 中环交集弧（双环渲染器）保留但单环优先显示。
+
+### 9.3 实测（10:19）
+
+| 项 | 数值 |
+|---|---|
+| roster 计算 | 10.7s（命中 6–17ms） |
+| 矩阵 200/200 | 6.6s |
+| 录像 100/100 | 2.7s |
+| 卡片统计 200/200 | 5.7–14s（宽口径不缓存） |
+| 构筑页 | 0.45–2.3s |
+| web RSS | 195MB，`memory.events` 全 0 |
+| health | 200（web/qq/collector active） |
+
+### 9.4 回滚入口
+
+- 饼图代表卡：`/root/last-pie-fieldrep2-*`、`/root/last-pie-fieldrep-backup`；
+- 饼图渲染：`/root/last-pie-middle-backup`；
+- 系列缓存：`/root/last-series-bounded-backup`、`/root/build-series.json.disabled-*`；
+- 门户：`/root/last-portal-merge-backup`；
+- 缓存：roster 的 `data/query-cache/last-success/*.json` 可删（会触发重算）。
+
+### 9.5 GitHub
+
+`delivery/query-perf-20261106`：`ea25b2b` → `1146c23` → `29e4bf0` → `377045a` → `afbb34d` → `e55ed63` → `43099c7` → `8e86744` → `c8ccabe` → `3c08f07` → `ee62da8` → 最终快照提交。
+

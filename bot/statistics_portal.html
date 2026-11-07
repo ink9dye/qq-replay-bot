@@ -204,6 +204,17 @@ function renderPie(data){const box=$('deckPie');if(!box)return;window.__piePaylo
    shapes.push('<path d="'+oPath+'" fill="none" stroke="#fff" stroke-width="1" data-deck="'+pieEsc(o.name)+'" style="cursor:pointer" pointer-events="all"><title>'+pieEsc(o.name)+' · '+o.players+'人 · '+o.percent+'%</title></path>');
    labels.push({a:oMid,text:o.name+'  '+o.percent+'%',deck:o.name});
    c=oEnd}
+  // 中环交集：与外环卡组同样有可见弧段和引导线，至少 3 人的交集才画，避免过密。
+  {
+   let mStart=angle;
+   for(const m of (pie.middle||[]).filter(x=>x.primary===cat.name&&x.primary!=='其他'&&(x.extras||[]).length&&x.extras.every(e=>cat.name===e||(pie.inner||[]).some(c=>c.name===e))&&x.players>0)){
+    const mSpan=(m.players/Math.max(1,cat.players))*span,mEnd=mStart+mSpan,mMid=(mStart+mEnd)/2;
+    const mColor=m.mixed||m.color||m.color_mixed||cat.color;
+    shapes.push('<path d="'+annulusPath(cx,cy,R*0.555,R*0.605,mStart,mEnd)+'" fill="'+pieEsc(mColor)+'" stroke="#fff" stroke-width="1" pointer-events="none"><title>'+pieEsc(m.label)+' '+m.players+'人 · '+m.percent+'%</title></path>');
+    labels.push({a:mMid,text:cat.name+m.label+'  '+m.players+'人',deck:''});
+    mStart=mEnd;
+   }
+  }
   angle=end}
  const cols={left:[],right:[]};
  for(const item of labels){const side=Math.cos(item.a)>=0?'right':'left';cols[side].push({a:item.a,text:item.text,deck:item.deck,side:side})}
@@ -248,6 +259,52 @@ window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster
     var items=(p.slices||[]).map(function(s){return{name:s.name,players:s.players,percent:s.percent,color:s.color,image:s.image,frames:s.image,kind:s.kind,bands:s.bands||[],decks:s.decks||[]}});
     if(p.other&&p.other.players>0){items.push({name:p.other.name,players:p.other.players,percent:p.other.percent,color:p.other.color,image:p.other.image,frames:p.other.image,kind:'other',bands:[],parts:p.other.parts||[]})}
     items.sort(function(a,b){return b.players-a.players||(a.name<b.name?-1:1)});
+    // 有交集的两片优先相邻：按 deck_pie.middle 的权重建图；单片交集超过 3 个时只保留权重最大的两个。
+    (function orderByIntersections(){
+      var names={},byName={};items.forEach(function(s){names[s.name]=1;byName[s.name]=s});
+      var mids=(data&&data.deck_pie&&data.deck_pie.middle)||[],edges={};
+      mids.forEach(function(m){
+        if(!m.extras||m.extras.length!==1)return;
+        var a=m.primary,b=m.extras[0];
+        if(a==='其他'||b==='其他'||!names[a]||!names[b])return;
+        var key=a<b?a+'|'+b:b+'|'+a,e=edges[key]||(edges[key]={a:a,b:b,players:0});
+        e.players+=m.players||0;
+      });
+      var adj={};
+      Object.keys(edges).forEach(function(k){var e=edges[k];(adj[e.a]=adj[e.a]||[]).push(e);(adj[e.b]=adj[e.b]||[]).push(e)});
+      var kept={};
+      Object.keys(adj).forEach(function(n){
+        var list=adj[n].slice().sort(function(x,y){return y.players-x.players});
+        (list.length>3?list.slice(0,2):list).forEach(function(e){kept[e.a+'|'+e.b]=kept[e.b+'|'+e.a]=1});
+      });
+      var all=Object.keys(edges).filter(function(k){return kept[k]&&edges[k].a<edges[k].b})
+        .sort(function(x,y){return edges[y].players-edges[x].players});
+      if(!all.length)return;
+      var seen={},order=[];
+      function extend(chain){
+        var moved=true;
+        while(moved){
+          moved=false;
+          var left=chain[0],right=chain[chain.length-1];
+          var ln=null,rn=null;
+          (adj[left]||[]).forEach(function(e){var o=e.a===left?e.b:e.a;if(kept[left+'|'+o]&&!seen[o]&&(!ln||e.players>ln.players))ln={name:o,players:e.players}});
+          (adj[right]||[]).forEach(function(e){var o=e.a===right?e.b:e.a;if(kept[right+'|'+o]&&!seen[o]&&(!rn||e.players>rn.players))rn={name:o,players:e.players}});
+          if(ln){chain.unshift(ln.name);seen[ln.name]=1;moved=true;continue}
+          if(rn){chain.push(rn.name);seen[rn.name]=1;moved=true}
+        }
+        return chain;
+      }
+      all.forEach(function(e){
+        if(seen[e.a]||seen[e.b])return;
+        seen[e.a]=seen[e.b]=1;
+        order=order.concat(extend([e.a,e.b]));
+      });
+      var rest=items.map(function(s){return s.name}).filter(function(n){return !seen[n]});
+      rest.sort(function(x,y){return byName[y].players-byName[x].players});
+      var rank={};
+      order.concat(rest).forEach(function(n,i){rank[n]=i});
+      items.sort(function(x,y){return rank[x.name]-rank[y.name]});
+    })();
     var a=-90; items.forEach(function(s){s.a0=a;s.a1=a+s.players*unit;a=s.a1});
     items.forEach(function(s){
       s.sel=!!sel&&(sel===s.name||(s.kind==='other'&&(s.parts||[]).some(function(q){return q.name===sel})));
@@ -259,6 +316,30 @@ window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster
       (Rn.bands||[]).forEach(function(b){if(b.kind==='overlap'&&b.partner===L.name)ov=b});
       if(ov){var w=ov.players*unit;steps[i]={th1:L.a1-w/2,th2:L.a1+w/2,span:w}}
     }
+    // 交集：以 deck_pie.middle 为准，只补“两侧都是本图切片（非「其他」）”的相邻交集。
+    // 三幻魔等是单环切片时会被补上；魔女术等落在「其他」里的组不会出现。
+    (function(){
+      var names={};items.forEach(function(s){names[s.name]=1});
+      var mids=(data&&data.deck_pie&&data.deck_pie.middle)||[];
+      for(var i=0;i<items.length-1;i++){
+        var L=items[i],Rn=items[i+1];
+        if(steps[i]||!names[L.name]||!names[Rn.name]||L.name==='其他'||Rn.name==='其他')continue;
+        var hit=null;
+        mids.forEach(function(m){
+          if(hit||!m.extras||m.primary!==L.name||m.extras.length!==1||m.extras[0]!==Rn.name)return;
+          hit=m;
+        });
+        if(!hit)mids.forEach(function(m){
+          if(hit||!m.extras||m.primary!==Rn.name||m.extras.length!==1||m.extras[0]!==L.name)return;
+          hit=m;
+        });
+        if(!hit)continue;
+        var w=hit.players*unit;
+        steps[i]={th1:L.a1-w/2,th2:L.a1+w/2,span:w};
+        L.bands.push({kind:'overlap',side:'left',name:L.name+'∩'+Rn.name,partner:Rn.name,
+                      players:hit.players,percent:hit.players,images:[],image:null});
+      }
+    })();
     function pt(r,deg){var t=deg*Math.PI/180;return[cx+r*Math.cos(t),cy+r*Math.sin(t)]}
     function f(q){return q[0].toFixed(1)+' '+q[1].toFixed(1)}
     function ar(r,a0,a1,sw){var lg=Math.abs(a1-a0)>180?1:0;return 'A'+r.toFixed(1)+' '+r.toFixed(1)+' 0 '+lg+' '+sw+' '+f(pt(r,a1))}
