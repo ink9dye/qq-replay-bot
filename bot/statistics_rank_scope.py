@@ -153,8 +153,8 @@ def filter_rows(db,rows,state,now):
             for name in candidates:
                 hit=stored.get(name.strip())
                 if hit is None or 0>=hit[0]:continue
-                current=_CACHE.get(name)
-                if current is None or wall-current[1]>=120:_CACHE[name]=(hit[0],wall)
+                cached=_CACHE.get(name)
+                if cached is None or wall-cached[1]>=120:_CACHE[name]=(hit[0],wall)
     extra=ranks_for(candidates,now) if candidates else {}
     if extra and data_dir is not None:
         # 新查到的名次写回磁盘，下一次请求就不必再查。
