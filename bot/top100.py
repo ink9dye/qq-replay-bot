@@ -109,6 +109,10 @@ def snapshot(db,now):
     return state
 
 
+_VIEW_CACHE={}
+_VIEW_CACHE_LOCK=None
+
+
 def eligible_views(db,replay_root,now,internal_only=False,scope='default',series_catalog=None,player=None,check_files=True,annotate_series=True):
     """不聚合的动态有效视角：掉榜立即无效，重回恢复未到期事实。"""
     from .share import safe_replay_file
@@ -118,6 +122,23 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
     state=snapshot(db,now)
     from .statistics_rank_scope import current,filter_rows
     population_scope=current()
+    # 资格快照单槽缓存：同一数据库版本 + 同一 30 秒时间桶 + 同一范围/参数时复用，
+    # 省去重复的 SQL/存活/身份计算；不改变任何资格规则。
+    cache_key=None
+    global _VIEW_CACHE
+    try:
+        from .statistics_roster_version import snapshot_version
+        from . import statistics_quality
+        cache_key=(snapshot_version(db),int(float(now)//30),
+                   None if population_scope is None else (population_scope.get('own'),population_scope.get('opponent')),
+                   internal_only,player,check_files,annotate_series,statistics_quality.enabled(),
+                   series_catalog.get('revision') if isinstance(series_catalog,dict) else None)
+        cached=_VIEW_CACHE.get('entry')
+        if cached is not None and cached[0]==cache_key:
+            result=cached[1]
+            return dict(result,views=list(result['views']))
+    except Exception:
+        cache_key=None
     wide_population=population_scope is not None and population_scope['own']!='100'
     revision=db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
     population=('FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
@@ -154,16 +175,10 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
         diagnostics['quality_filter']=dict(enabled=True,excluded_digests=len(excluded),
             excluded_views=before_quality-len(rows))
     if check_files:
-        file_paths={}
-        for file_row in db.execute('SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
-            file_paths.setdefault(file_row['digest'],[]).append(file_row['rel_path'])
-        alive={}
-        root_resolved=replay_root.resolve();dir_cache={}
-        for row in rows:
-            digest=row['digest']
-            if digest not in alive:
-                alive[digest]=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
-                                  for rel_path in file_paths.get(digest,()))
+        # 存活判定仍以 safe_replay_file 为准；快路径只把“逐文件 stat”换成“每父目录列一次”，
+        # 结论逐条等价（见 replay_alive）；只为本次候选视角判定。
+        from .replay_alive import alive_map
+        alive=alive_map(db,replay_root,{row['digest'] for row in rows})
     else:
         alive={row['digest']: True for row in rows}
     if annotate_series:
@@ -177,7 +192,11 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
         rows=filter_rows(db,rows,state,now)
         diagnostics.update(population='selected_self_and_opponent_rank_ranges',before_rank_range_views=before_range,rank_range_excluded_views=before_range-len(rows))
     diagnostics.update(after_scope_and_internal_views=len(rows),missing_source_views=sum(not alive[r['digest']] for r in rows))
-    return dict(roster=state,classification_revision=revision,views=[r for r in rows if alive[r['digest']]],diagnostics=diagnostics,series_reference=series_reference)
+    result=dict(roster=state,classification_revision=revision,views=[r for r in rows if alive[r['digest']]],diagnostics=diagnostics,series_reference=series_reference)
+    if cache_key is not None and len(result['views'])<=8000:
+        try:_VIEW_CACHE['entry']=(cache_key,result)
+        except Exception:pass
+    return result
 
 
 def main():

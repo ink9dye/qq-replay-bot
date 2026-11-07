@@ -106,6 +106,14 @@
 - 门户：`/root/last-portal-merge-backup`、`/root/statistics_portal.before-wait.py`。
 - 饼图（QQ）：`/root/top100_pie.before-cache.py`。
 
+## 4.5 饼图中环交集 + 资格快照单槽缓存（2026-11-07 上午）
+
+- **饼图中环**：statistics_portal.html 的 
+enderPie() 原本只画内环（主大类）与外环（具体卡组），pie.middle 只用于图例和取图。已补一段“中环交集”绘制：按所属大类的角度，把 middle 中 **≥3 人且带 extras** 的交集画成 0.555R–0.605R 的细弧（颜色取 mixed/color），并推入标签列表走原有引导线，文本为「大类+∩交集 人数」（如「混沌∩三幻魔 3人」）。这是纯展示增补，不改统计口径。
+- **资格快照单槽缓存**：	op100.eligible_views 增加单槽缓存，键为 (snapshot_version, 30 秒时间桶, 范围 own/opponent, internal_only, player, check_files, annotate_series, quality, series revision)，命中原样返回（views 列表复制一层，避免调用方改写共享 dict）；**只缓存 ≤8000 行的结果**，200/200 宽口径不缓存，避免 40–60MB 级内存。
+- **实测**：卡片统计 100/100 冷算由 17.5s 降到 **7.8s/6.3s**（生产 timings 09:54）；复测 200/200 约 10–18s（宽口径不缓存）；web RSS 173MB、memory.events 全 0。
+- **回滚**：/root/last-pie-middle-backup（饼图 html + top100 原文件）。
+
 ## 5. 仍未做（按优先级）
 
 1. **卡片统计**：瓶颈已定位为“32 个分桶重建（最多 8.7s）+ 实时名次核验（约 5s）+ 存活检查（2–3s）”，不是缺索引；下一步是“资格快照单槽缓存（约 40MB）+ 名次短时效磁盘缓存（需确认 120s 语义）”；
