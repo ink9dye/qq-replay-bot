@@ -149,7 +149,7 @@ def _distribution_rows(distribution):
     return rows
 
 
-def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck_images=None):
+def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck_images=None, deck_fields=None):
     """计算三层饼图数据；groups 由 group_names() 提供，representatives 为组→代表卡号。"""
     rows = _distribution_rows(distribution)
     total = sum(players for _name, players in rows)
@@ -185,8 +185,15 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck
     preliminary = Counter()
     for name, players in rows:
         preliminary[primaries[name]] += players
+    deck_count = Counter(primaries.values())
     for name in list(primaries):
-        if primaries[name] not in ('其他', '未识别') and preliminary[primaries[name]] < 3:
+        primary = primaries[name]
+        if primary in ('其他', '未识别'):
+            continue
+        if preliminary[primary] < 3:
+            primaries[name] = '其他'
+        elif deck_count[primary] < 3 and preliminary[primary] < 10:
+            # 只有 2 个卡组、人数又不到 10 的字段，不算大类
             primaries[name] = '其他'
     for name, players in rows:
         primary = primaries[name]
@@ -236,10 +243,18 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck
         lightness = 62 - min(rank, 5) * 7
         color = color_map[primary]
         image = None
-        for field in ordered_fields + [primary] + matches[name]:
-            image = (representatives or {}).get(field)
-            if image:
-                break
+        # 嵌套卡组自己的代表卡：优先取“这套构筑里卡数最多的字段”的代表卡。
+        field_copies = (deck_fields or {}).get(name) or {}
+        if field_copies:
+            best = max(((field, copies) for field, copies in field_copies.items()
+                        if field in matches[name]), key=lambda pair: (pair[1], len(pair[0])), default=None)
+            if best:
+                image = (representatives or {}).get(best[0])
+        if not image:
+            for field in ordered_fields + [primary] + matches[name]:
+                image = (representatives or {}).get(field)
+                if image:
+                    break
         if not image:
             image = (deck_images or {}).get(name)
         outer.append(dict(name=name, players=players, percent=round(100 * players / total, 1),
@@ -261,7 +276,150 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck
                 note='内环按主大类各算一次、合计100%；中环是内环的交集细分；外环为具体卡组名。')
 
 
-def from_data_dir(distribution, data_dir, threshold=THRESHOLD, representatives=None, deck_images=None):
+def from_data_dir(distribution, data_dir, threshold=THRESHOLD, representatives=None, deck_images=None, deck_fields=None):
     return layers(distribution, group_names(data_dir), threshold,
                   representatives if representatives is not None else first_cards(data_dir),
-                  deck_images)
+                  deck_images, deck_fields)
+
+
+MIN_SLICE_PERCENT = 5.0
+MIN_MEMBER_PERCENT = 4.0
+OTHER_IMAGE = 54550967  # 莫忘天魔女：用户指定的「其他」固定卡图
+UNKNOWN_NAME = '未识别'
+OTHER_NAME = '其他'
+
+
+def _pct(players, total):
+    return round(100.0 * players / total, 1) if total else 0.0
+
+
+def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
+                deck_images=None, deck_fields=None, min_slice=MIN_SLICE_PERCENT,
+                min_member=MIN_MEMBER_PERCENT, other_image=OTHER_IMAGE,
+                merge_unknown=True):
+    """单环（2026-11-06 用户新口径）。
+
+    - 主大类（内环口径）或未归入任何大类的具体卡组，占比严格 > min_slice 才单独成片；
+    - 其余（含未识别，merge_unknown 时）并入「其他」，卡图固定 other_image；
+    - 外环 0.56-0.94R 内嵌套：大类里 > min_member 的具体卡组，以及与相邻大类 >0 的交集带
+      （交集带画在两部分界处，卡图左右各半由调用方拼接）。
+    """
+    base = layers(distribution, groups, threshold, representatives, deck_images, deck_fields)
+    total = base['total']
+    if not total:
+        return dict(total=0, min_slice=min_slice, min_member=min_member, slices=[],
+                    other=dict(name=OTHER_NAME, players=0, percent=0.0, color=OTHER_COLOR,
+                               image=other_image, parts=[]),
+                    note='暂无可统计的卡组档案。')
+
+    outer = base['outer']
+    by_primary = defaultdict(list)
+    for row in outer:
+        by_primary[row['primary']].append(row)
+
+    slices = []
+    for cat in base['inner']:
+        if cat['name'] in (OTHER_NAME, UNKNOWN_NAME):
+            continue
+        if _pct(cat['players'], total) > min_slice:
+            slices.append(dict(name=cat['name'], players=cat['players'],
+                               percent=_pct(cat['players'], total), color=cat['color'],
+                               image=cat.get('image'), kind='category'))
+    used = {item['color'] for item in slices}
+    spare = [color for color in PALETTE if color not in used]
+    remaining = [(row['name'], row['players'], row.get('image')) for row in outer
+                 if row['primary'] == OTHER_NAME]
+    remaining.sort(key=lambda item: (-item[1], item[0]))
+    consumed = set()
+    for name, players, image in remaining:
+        if name in consumed or _pct(players, total) <= min_slice:
+            continue
+        group = [(name, players)]
+        group_names = {item[0] for item in group}
+        consumed |= group_names
+        group_players = sum(item[1] for item in group)
+        color = spare.pop(0) if spare else '#7A8B99'
+        slices.append(dict(name=name, players=group_players,
+                           percent=_pct(group_players, total), color=color, image=image,
+                           kind='deck',
+                           group=[dict(name=n, players=p) for n, p in group]))
+    slices.sort(key=lambda item: (-item['players'], item['name']))
+    for item in slices:
+        if item['kind'] == 'category':
+            item['decks'] = [dict(name=row['name'], players=row['players'],
+                                  extras=list(row.get('extras') or []))
+                             for row in sorted(by_primary.get(item['name'], []),
+                                               key=lambda row: (-row['players'], row['name']))]
+        elif item['kind'] == 'deck':
+            item['decks'] = [dict(name=g['name'], players=g['players'], extras=[])
+                             for g in (item.get('group') or [dict(name=item['name'], players=item['players'])])]
+        else:
+            item['decks'] = []
+
+    for index, item in enumerate(slices):
+        item['bands'] = []
+        if item['kind'] != 'category':
+            continue
+        rows = by_primary.get(item['name'], [])
+        overlap_names = set()
+        for side, offset in (('left', -1), ('right', 1)):
+            neighbor = index + offset
+            if neighbor < 0 or neighbor >= len(slices):
+                continue
+            partner = slices[neighbor]
+            if partner['kind'] != 'category':
+                continue
+            shared = [row for row in rows if partner['name'] in (row.get('extras') or [])]
+            if not shared:
+                continue
+            overlap_names.update(row['name'] for row in shared)
+            players = sum(row['players'] for row in shared)
+            item['bands'].append(dict(
+                kind='overlap', side=side, name=f"{item['name']}∩{partner['name']}",
+                partner=partner['name'], players=players, percent=_pct(players, total),
+                images=[item.get('image'), partner.get('image')], image=None))
+        for row in sorted(rows, key=lambda row: (-row['players'], row['name'])):
+            if row['name'] in overlap_names:
+                continue
+            if _pct(row['players'], total) <= min_member:
+                continue
+            item['bands'].append(dict(
+                kind='member', side=None, name=row['name'], partner=None,
+                players=row['players'], percent=_pct(row['players'], total),
+                images=[item.get('image'), row.get('image')], image=row.get('image')))
+        order = {'left': 0, None: 1, 'right': 2}
+        item['bands'].sort(key=lambda band: order[band['side']])
+
+    shown = sum(item['players'] for item in slices)
+    parts = []
+    for cat in base['inner']:
+        if cat['name'] == OTHER_NAME:
+            continue
+        if cat['name'] == UNKNOWN_NAME:
+            if not merge_unknown:
+                continue
+        elif _pct(cat['players'], total) > min_slice:
+            continue
+        parts.append((cat['name'], cat['players']))
+    for row in outer:
+        if row['primary'] != OTHER_NAME:
+            continue
+        if row['name'] in consumed:
+            continue
+        parts.append((row['name'], row['players']))
+    parts.sort(key=lambda item: (-item[1], item[0]))
+    other_players = total - shown
+    return dict(total=total, min_slice=min_slice, min_member=min_member, slices=slices,
+                other=dict(name=OTHER_NAME, players=other_players,
+                           percent=_pct(other_players, total), color=OTHER_COLOR,
+                           image=other_image,
+                           parts=[dict(name=name, players=players) for name, players in parts]),
+                note='单环：主大类或未归类卡组严格 >{0}% 单独成片，其余并入「其他」；'
+                     '外环嵌套 >{1}% 的组内卡组与相邻大类交集。'.format(min_slice, min_member))
+
+
+def single_from_data_dir(distribution, data_dir, threshold=THRESHOLD, representatives=None,
+                         deck_images=None, **kwargs):
+    return single_ring(distribution, group_names(data_dir), threshold,
+                       representatives if representatives is not None else first_cards(data_dir),
+                       deck_images, **kwargs)

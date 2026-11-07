@@ -192,11 +192,18 @@ def query(db, replay_root, now, player=None):
             name=person['deck_type'] or '未识别'
             types[name]=types.get(name,0)+1
     distribution = [dict(name=k, players=v) for k, v in sorted(types.items(), key=lambda kv: (-kv[1], kv[0]))]
+    # 每个卡组名里各字段实际投入的卡数（主卡+额外）：嵌套小类的代表卡按“卡数最多的字段”取。
+    deck_fields = {}
+    for row in latest.values():
+        deck = row.get('deck_type') or '未识别'
+        counts = deck_fields.setdefault(deck, {})
+        for field, item in (row.get('series_membership') or {}).items():
+            counts[field] = counts.get(field, 0) + int(item.get('main_copies') or 0) + int(item.get('extra_copies') or 0)
     try:
         from .deck_pie import from_data_dir, single_from_data_dir
         images = deck_images(db, types)
-        deck_pie = from_data_dir(distribution, _data_dir(db), deck_images=images)
-        deck_single = single_from_data_dir(distribution, _data_dir(db), deck_images=images)
+        deck_pie = from_data_dir(distribution, _data_dir(db), deck_images=images, deck_fields=deck_fields)
+        deck_single = single_from_data_dir(distribution, _data_dir(db), deck_images=images, deck_fields=deck_fields)
     except Exception:
         deck_pie = None
         deck_single = None
