@@ -1,5 +1,9 @@
 # 保密命令收紧 + 慢命令延迟提示 + 周报巡检（2026-11-07 上线）
 
+> **状态：已上线。** 2026-11-07 11:25:42 重启 `ygo-qq`（用户要求不再等静默窗口）；
+> 新进程 MainPID 723934，重启后 10 秒内 `online`，已正常收发群消息（retcode 0），无 Traceback。
+> 线上 `qq.py` `04481eaf…`、`service.py` `170d2be6…`；GitHub `0484b84`。
+
 ## 1. 背景
 
 用户反馈两件事：
@@ -69,12 +73,11 @@ NapCat 返回 retcode 1200），机器人会在群里回一句“私聊发送失
 
 ## 4. 部署与重启
 
-- 2026-11-07 11:10 文件已上传并 `py_compile` 通过；**未立即重启**。
-- 按用户要求：连续 300 秒无 `command_start`/`reply_queued`/`reply_complete` 后自动重启一次，
-  等待器为 `tools/qq_restart_waiter.py`，结果写 `data/logs/qq-restart-waiter.json`。
-- 注意：`service.py` 还包含另一会话已完成的「每日一卡 / 概率运算」待重启改动，
-  **本次重启会一并激活**；对方已确认改完。
-- GitHub：`4f64c22`（qq.py + 周报/等待器 + 本文档）、`7bd6549`（每日一卡/概率 + service 合并提交）。
+- 2026-11-07 11:25:42 按用户要求直接重启（不再等待静默窗口）；重启前已停止 `qq_restart_waiter`。
+- 重启后验证：`active`、`MainPID 723934`、`state=online`、`health=200`、探测环境变量仍在、
+  重启后已有群消息发送成功（`retcode=0`）、journal 无 Traceback；周报 timer 仍 active（下次周一 09:00）。
+- `service.py` 还包含另一会话已完成的「每日一卡 / 概率运算」改动，**本次重启已一并激活**。
+- GitHub：`4f64c22`（qq.py + 周报/等待器 + 文档）、`7bd6549`（每日一卡/概率 + service 合并提交）、`0484b84`（一次性私聊重发许可）。
 
 ## 5. 验证
 
