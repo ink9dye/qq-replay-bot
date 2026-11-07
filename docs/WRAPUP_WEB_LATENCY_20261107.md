@@ -143,7 +143,7 @@ enderPie() 原本只画内环（主大类）与外环（具体卡组），pie.mi
 
 - 新增 `bot/statistics_pie_image.py`：用当前 `deck_single` 生成**整张图片**（上半饼图 + 下半图例，各占 50%），按 payload hash 缓存到 `data/cache/deck-pie/latest.png`。
 - 门户新增 `/statistics/api/deck-pie.png`：返回这张缓存图（没有则现场生成并写缓存）；网页/其他客户端可直接取。
-- QQ `top100_pie.render` 改为直接调用 `statistics_pie_image.render`，**不再自己画饼图**；首次约 5.5s，命中缓存毫秒级。
+- QQ `top100_pie.render` 改为直接调用 `statistics_pie_image.render_parts`，**不再自己画饼图**；返回两张图：`pie`（放大后的饼图，1600×1600）与 `legend`（图例，宽 1600），QQ 在一条消息里发两张图；首次约 5.5s，命中缓存毫秒级。
 - 图片构成：单环（0.30–0.94R、>4% 小类嵌套、相邻交集「5」字缺口、同图小类不单独成块）、彩色圆点标签、完整图例（全部卡组 ◆/·、交集行、其他 parts）。
 - 回滚：`/root/last-deck-pie-image-backup`（portal + top100_pie）。
 

@@ -148,9 +148,10 @@ def card_image_payload(code, data_dir):
 
 
 class CardReply(str):
-    def __new__(cls, text, image_url):
+    def __new__(cls, text, image_url=None, image_urls=None):
         result = super().__new__(cls, text)
         result.image_url = image_url
+        result.image_urls = list(image_urls) if image_urls else ([image_url] if image_url else [])
         return result
 
 

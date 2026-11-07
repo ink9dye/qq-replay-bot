@@ -308,6 +308,9 @@ class BotService:
         self._top100_views_cache = None
         self._deck_tasks = set()
         self._slow_tasks = set()
+        self._hint_tasks = set()
+        # 群内保密命令私聊发送失败后，给该用户一次性的私聊重发许可（10 分钟）。
+        self._confidential_retry = {}
         self._known_replays_at = 0.0
         self._known_replays = set()
 
@@ -330,15 +333,13 @@ class BotService:
         return str(user_id) in owners
 
     def help_text(self, user_id, conversation: str = "") -> str:
-        """帮助清单：保密名单功能只对名单内、且已有使用权限的人显示。"""
+        """帮助清单：保密功能只对名单内的群/人显示（与令牌分发同一份名单）。"""
         from .watch_token_command import confidential_allowed
         text = HELP
-        if not self._statistics_allowed(user_id, conversation):
+        if not confidential_allowed(self, user_id, conversation):
             text = "\n".join(line for line in text.splitlines()
-                             if not line.startswith(("统计：", "观战设备：", "统计对局：")))
-        if not (self.authorized(user_id) and confidential_allowed(self, user_id, conversation)):
-            text = "\n".join(line for line in text.splitlines()
-                             if not line.startswith("开通查询："))
+                             if not line.startswith(("统计：", "观战设备：", "统计对局：",
+                                                     "开通查询：", "令牌分发：")))
         return text
 
     def default_query_rule_line(self) -> str:
@@ -622,7 +623,9 @@ class BotService:
                     return None
                 return self._query_enroll(user)
             if not confidential_allowed(self, user, conversation):
-                return "开通查询只对保密名单开放；如需使用请联系管理员。"
+                # 群内已触发过、但私聊发送失败：允许本人一次性私聊重发。
+                if not self._take_confidential_retry(user):
+                    return None
             return self._query_enroll(user)
         if op == "empty":
             return "请发送“帮助”查看用法。"
@@ -630,6 +633,15 @@ class BotService:
             return command["message"]
         if op == "player_history":
             return self.player_history.handle(command["player"])
+        if op == "daily_card":
+            # 绑定 QQ 号（user），不是群/会话：同一人换群或私聊都是当天同一张。
+            return self.card_extras.handle(user, op)
+        if op == "probability":
+            from .probability import probability_message
+            try:
+                return probability_message(command["values"])
+            except ValueError as exc:
+                return str(exc)
         if op in ("random", "guess_start", "guess_answer", "guess_reveal", "limits_card", "limits_table"):
             return self.card_extras.handle(conversation or user, op, command.get("value", ""))
         if op in ("card_select", "card_next"):
@@ -698,6 +710,13 @@ class BotService:
             from .watch_devices import device_message
             return device_message(self)
         if op == "watch_token":
+            from .watch_token_command import confidential_allowed
+            allowed = confidential_allowed(self, user, conversation)
+            if not allowed and not conversation.startswith("group:"):
+                # 群内私聊发送失败后的一次性私聊重发许可。
+                allowed = self._take_confidential_retry(user)
+            if not allowed:
+                return None
             from .watch_token_command import handle as handle_watch_token
             return handle_watch_token(self, user, command.get("args") or [], conversation)
         if op == "stats_page":
@@ -1351,6 +1370,8 @@ class BotService:
                     delivered = await self.qq.send_private(user_id, private_reply)
                     if not delivered:
                         self.write_log("保密名单指令私聊发送失败，未在群内回退发送。")
+                        # 允许本人在 10 分钟内私聊重发一次，不必重新加名单。
+                        self._grant_confidential_retry(user_id)
                         await send(receiver, "私聊发送失败，请私聊我重发一次。")
                 return
         answer = str(text or '').strip()
@@ -1360,33 +1381,33 @@ class BotService:
                               and int(answer) in pending.get('players', {})
                               and self.clock() - pending['time'] <= 300)
         if parsed_command.get('op') in ('deck_build', 'top100_rank_build') or deck_selection:
-            await send(receiver, "构筑请求已收到，按顺序生成；完成后把结果发到这里。")
             task = asyncio.create_task(self._deck_build_job(
                 user_id, text, conversation, receiver, send))
             self._deck_tasks.add(task)
             task.add_done_callback(self._deck_tasks.discard)
+            self._schedule_hint(task, send, receiver, "构筑请求已收到，按顺序生成；完成后把结果发到这里。")
             return
         if parsed_command.get('op') == 'player_history':
-            await send(receiver, "历史查询中，完成后把结果发到这里。")
             task = asyncio.create_task(self._history_job(user_id, text, conversation, receiver, send))
             self._history_tasks.add(task)
             task.add_done_callback(self._history_tasks.discard)
+            self._schedule_hint(task, send, receiver, "历史查询中，完成后把结果发到这里。")
             return
         if parsed_command.get('op') == 'price_quote':
-            await send(receiver, "查价中，约 1 分钟；完成后把结果发到这里。")
             task = asyncio.create_task(self._price_quote_job(parsed_command, receiver, send))
             self._price_quote_tasks.add(task)
             task.add_done_callback(self._price_quote_tasks.discard)
+            self._schedule_hint(task, send, receiver, "查价中，约 1 分钟；完成后把结果发到这里。")
             return
         hint = SLOW_COMMAND_HINTS.get(parsed_command.get('op'))
         if hint and self.authorized(user_id) and (
                 parsed_command.get('op') != 'stats_page'
                 or self._statistics_allowed(user_id, conversation)):
-            await send(receiver, hint)
             task = asyncio.create_task(self._slow_text_job(
                 user_id, text, conversation, receiver, send, forward, event.get('self_id')))
             self._slow_tasks.add(task)
             task.add_done_callback(self._slow_tasks.discard)
+            self._schedule_hint(task, send, receiver, hint)
             return
         if parsed_command.get('op') == 'help':
             # 帮助是一条分组清单，直接发文字，不再走合并转发。
@@ -1653,11 +1674,12 @@ class BotService:
 
     def _top100_pie_reply(self):
         from .top100_pie import render
-        blob, data = render(self.store.path, self.replay_root, self.clock())
-        image_url = "base64://" + base64.b64encode(blob).decode("ascii")
+        parts, data = render(self.store.path, self.replay_root, self.clock())
+        urls = ["base64://" + base64.b64encode(parts[name]).decode("ascii")
+                for name in ("pie", "legend") if parts.get(name)]
         text = (f"前100卡组分布（有档案 {data['covered']}/{data['current']} 人，"
                 f"已识别 {len(data['items'])} 类）")
-        return CardReply(text, image_url)
+        return CardReply(text, image_urls=urls)
 
     def _top100_latest_views(self):
         from . import deck_naming
@@ -1759,6 +1781,29 @@ class BotService:
             self._statistics_command_lock = asyncio.Lock()
         return self._statistics_command_lock
 
+
+    def _grant_confidential_retry(self, user_id):
+        """群内保密命令私聊发送失败后，给该用户一次性的私聊重发许可（10 分钟）。"""
+        self._confidential_retry[str(user_id)] = self.clock() + 600
+
+    def _take_confidential_retry(self, user_id) -> bool:
+        """取出并作废一次性许可；过期视为无效。"""
+        until = self._confidential_retry.pop(str(user_id), None)
+        return until is not None and until >= self.clock()
+
+    def _schedule_hint(self, task, send, receiver, hint, delay: float = 3.0):
+        """结果先到就只发一条；超过 delay 秒仍未完成才补一句“处理中”。"""
+        async def watch():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=delay)
+            except asyncio.TimeoutError:
+                if not task.done():
+                    await send(receiver, hint)
+            except Exception:
+                pass
+        waiter = asyncio.create_task(watch())
+        self._hint_tasks.add(waiter)
+        waiter.add_done_callback(self._hint_tasks.discard)
 
     async def _deck_build_job(self, user_id, text, conversation, receiver, send):
         try:
