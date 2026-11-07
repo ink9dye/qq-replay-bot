@@ -59,6 +59,7 @@
 
 | 文档 | 要点 |
 |---|---|
+| [`AGENTS.md`](../AGENTS.md) | 新对话 / 协作者须知：接手顺序、硬性规则、部署与协作约定 |
 | [`LOGIC_FREEZE.md`](LOGIC_FREEZE.md) | 冻结项：取源、卡图、构筑推断、Side 筛选、命名算法/参数 |
 | [`DECK_BUILD_SIDE.md`](DECK_BUILD_SIDE.md) | 构筑 Side 口径与展示约定 |
 | [`WEB_CHECKLIST.md`](WEB_CHECKLIST.md) | 网页改动验收清单（一次只改一个功能） |
