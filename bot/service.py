@@ -1673,11 +1673,12 @@ class BotService:
 
     def _top100_pie_reply(self):
         from .top100_pie import render
-        blob, data = render(self.store.path, self.replay_root, self.clock())
-        image_url = "base64://" + base64.b64encode(blob).decode("ascii")
+        parts, data = render(self.store.path, self.replay_root, self.clock())
+        urls = ["base64://" + base64.b64encode(parts[name]).decode("ascii")
+                for name in ("pie", "legend") if parts.get(name)]
         text = (f"前100卡组分布（有档案 {data['covered']}/{data['current']} 人，"
                 f"已识别 {len(data['items'])} 类）")
-        return CardReply(text, image_url)
+        return CardReply(text, image_urls=urls)
 
     def _top100_latest_views(self):
         from . import deck_naming

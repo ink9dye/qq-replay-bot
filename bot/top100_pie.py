@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import hashlib
+import itertools
 import json
 import os
 import threading
@@ -28,21 +29,22 @@ def collect(database, replay_root, now):
         data = query(db, Path(replay_root), float(now))
     items = [dict(name=str(row['name']), count=int(row['players']))
              for row in data.get('deck_distribution') or [] if int(row.get('players') or 0) > 0]
-    items.sort(key=lambda row: (-row['count'], row['name']))
     pie = data.get('deck_pie')
     if not pie or not pie.get('total'):
         from .deck_pie import from_data_dir
         pie = from_data_dir([dict(name=item['name'], players=item['count']) for item in items],
                             Path(database).parent)
-    return dict(items=items, pie=pie, covered=int(data.get('covered_players') or 0),
+    return dict(items=items, pie=pie, single=data.get('deck_single'),
+                covered=int(data.get('covered_players') or 0),
                 current=int(data.get('current_players') or 0),
                 unidentified=int(data.get('unidentified_players') or 0))
 
 
-def _font(size):
+def _font(size, bold=False):
     candidates = (
-        Path('C:/Windows/Fonts/msyh.ttc'),
-        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
+        Path('C:/Windows/Fonts/msyhbd.ttc' if bold else 'C:/Windows/Fonts/msyh.ttc'),
+        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc' if bold
+             else '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
         Path('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'),
         Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'),
     )
@@ -149,6 +151,7 @@ def _paste_wedge(image, center, out_r, in_r, start, end, code, color, thumb=Fals
         mid = math.radians((start + end) / 2)
         r_mid = (out_r + in_r) / 2
         side = max(out_r * span, out_r - in_r) * 1.02
+        side = min(side, out_r * 2 * 0.60)
         width = side * 1.526
         height = side
         card = _card_art_rect(code, width, height)
@@ -206,6 +209,357 @@ def _draw_top_legend(draw, inner, width, font):
         x += text_width + 50
 
 
+def _pct_text(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    text = ('%.1f' % number)
+    return text.rstrip('0').rstrip('.') if '.' in text else text
+
+
+def _render_single_payload(payload):
+    """与网页 renderSinglePie 逐项对齐：单环卡图 + 交集阶梯边界 + 图例（顺序/人头/分栏一致）。"""
+    import base64
+    import subprocess
+
+    single = payload.get('single') or {}
+    total = int(single.get('total') or 0)
+    if not total:
+        raise ValueError('暂无卡组档案')
+
+    items = []
+    for s in single.get('slices') or []:
+        items.append(dict(name=s['name'], players=s['players'], percent=s['percent'],
+                          color=s.get('color') or '#7A8B99', image=s.get('image'),
+                          kind=s.get('kind') or 'deck', bands=s.get('bands') or [],
+                          decks=s.get('decks') or [], parts=[]))
+    other = single.get('other') or {}
+    if int(other.get('players') or 0) > 0:
+        items.append(dict(name=other.get('name') or '其他', players=other['players'],
+                          percent=other['percent'], color=other.get('color') or '#7A8B99',
+                          image=other.get('image'), kind='other', bands=[], decks=[],
+                          parts=other.get('parts') or []))
+    # 与网页一致：按人数（百分比）降序、同人数按名称；「其他」固定最后。
+    items.sort(key=lambda item: (item['kind'] == 'other', -float(item['players']), item['name']))
+
+    W, H = 980, 780
+    cx, cy, R = 490, 390, 300
+    r0, r1, b0 = R * 0.30, R * 0.94, R * 0.56
+    unit = 360.0 / total
+    cursor = -90.0
+    for item in items:
+        item['a0'] = cursor
+        item['a1'] = cursor + item['players'] * unit
+        cursor = item['a1']
+
+    def find_overlap(left, right):
+        # 与网页一致：先看左片 partner=右片，再看右片 partner=左片（后者覆盖前者）。
+        found = None
+        for band in left['bands']:
+            if band.get('kind') == 'overlap' and band.get('partner') == right['name'] and band.get('players'):
+                found = band
+        for band in right['bands']:
+            if band.get('kind') == 'overlap' and band.get('partner') == left['name'] and band.get('players'):
+                found = band
+        return found
+
+    steps = {}
+    middle_rows = (payload.get('pie') or {}).get('middle') or []
+    for index in range(len(items) - 1):
+        left, right = items[index], items[index + 1]
+        band = find_overlap(left, right)
+        players = band.get('players') if band else None
+        from_middle = False
+        if not players and left['name'] != '其他' and right['name'] != '其他':
+            # 与网页一致：只认“primary + 恰好一个 extras”的相邻交集，「其他」不参与。
+            for row in middle_rows:
+                extras = row.get('extras') or []
+                if len(extras) != 1:
+                    continue
+                if row.get('primary') == left['name'] and extras[0] == right['name']:
+                    players = row.get('players'); from_middle = True; break
+                if row.get('primary') == right['name'] and extras[0] == left['name']:
+                    players = row.get('players'); from_middle = True; break
+        if not players:
+            continue
+        width = float(players) * unit
+        steps[index] = (left['a1'] - width / 2, left['a1'] + width / 2)
+        if from_middle and not any(b.get('kind') == 'overlap' and b.get('partner') == right['name']
+                                   for b in left['bands']):
+            # 网页只把补出来的交集记到左侧切片（图例只出现在左块）。
+            left['bands'].append(dict(kind='overlap', name=f"{left['name']}∩{right['name']}",
+                                      players=players, partner=right['name'], side='left'))
+
+    def pt(r, deg):
+        t = math.radians(deg)
+        return [cx + r * math.cos(t), cy + r * math.sin(t)]
+
+    def fmt(q):
+        return f"{q[0]:.1f} {q[1]:.1f}"
+
+    def arc(r, a0, a1, sweep):
+        large = 1 if abs(a1 - a0) > 180 else 0
+        return f"A{r:.1f} {r:.1f} 0 {large} {1 if sweep else 0} {fmt(pt(r, a1))}"
+
+    def slice_path(index):
+        s = items[index]
+        left_step = steps.get(index - 1)
+        right_step = steps.get(index)
+        # 与网页一致：交集边界是“阶梯”——外段/内段角度错开半个交集宽度，在 b0 处横拐。
+        oa0 = left_step[1] if left_step else s['a0']
+        oa1 = right_step[1] if right_step else s['a1']
+        ia1 = right_step[0] if right_step else s['a1']
+        ia0 = left_step[0] if left_step else s['a0']
+        d = "M" + fmt(pt(r1, oa0)) + arc(r1, oa0, oa1, True)
+        if right_step:
+            d += " L" + fmt(pt(b0, oa1)) + arc(b0, oa1, ia1, False)
+        d += " L" + fmt(pt(r0, ia1)) + arc(r0, ia1, ia0, False)
+        if left_step:
+            d += " L" + fmt(pt(b0, ia0)) + arc(b0, ia0, oa0, True)
+        return d + " Z"
+
+    def band_path(a0, a1, inner, outer):
+        return ("M" + fmt(pt(outer, a0)) + arc(outer, a0, a1, True)
+                + " L" + fmt(pt(inner, a1)) + arc(inner, a1, a0, False) + " Z")
+
+    def sample_bbox(a0, a1, radii):
+        points = []
+        for step in range(17):
+            angle = a0 + (a1 - a0) * step / 16
+            for radius in radii:
+                points.append(pt(radius, angle))
+        xs = [q[0] for q in points]
+        ys = [q[1] for q in points]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    _ART_CACHE = {}
+
+    def _art_info(code):
+        if code in _ART_CACHE:
+            return _ART_CACHE[code]
+        path = _card_file(code)
+        if path is None:
+            _ART_CACHE[code] = None
+            return None
+        try:
+            image = Image.open(path).convert('RGB')
+        except Exception:
+            _ART_CACHE[code] = None
+            return None
+        buffer = io.BytesIO()
+        image.save(buffer, format='JPEG', quality=88)
+        info = dict(data='data:image/jpeg;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii'),
+                    width=image.width, height=image.height,
+                    ax=image.width * 63 / 400.0, ay=image.height * 103 / 580.0,
+                    aw=image.width * 282 / 400.0, ah=image.height * 273 / 580.0)
+        _ART_CACHE[code] = info
+        return info
+
+    def art_markup(code, bbox, clip_id, opacity=0.22):
+        info = _art_info(code) if code else None
+        if info is None:
+            return ''
+        x0, y0, x1, y1 = bbox
+        bw = max(1.0, x1 - x0); bh = max(1.0, y1 - y0)
+        scale = max(bw / info['aw'], bh / info['ah'])
+        image_x = x0 - info['ax'] * scale
+        image_y = y0 - info['ay'] * scale
+        art_id = f"a{clip_id}"
+        clip = (f'<clipPath id="{art_id}"><rect x="{x0:.1f}" y="{y0:.1f}" '
+                f'width="{info["aw"] * scale:.1f}" height="{info["ah"] * scale:.1f}"/></clipPath>')
+        markup = (clip + f'<g clip-path="url(#{clip_id})"><g clip-path="url(#{art_id})">'
+                  f'<image href="{info["data"]}" x="{image_x:.1f}" y="{image_y:.1f}" '
+                  f'width="{info["width"] * scale:.1f}" height="{info["height"] * scale:.1f}" '
+                  f'preserveAspectRatio="none"/></g>'
+                  f'<rect x="{x0:.1f}" y="{y0:.1f}" width="{bw:.1f}" height="{bh:.1f}" '
+                  f'fill="#0a1812" opacity="{opacity}"/></g>')
+        return markup
+
+    defs, shapes = [], []
+    clip_index = 0
+    for index, item in enumerate(items):
+        path = slice_path(index)
+        lo, hi = item['a0'], item['a1']
+        if steps.get(index - 1):
+            lo = min(lo, steps[index - 1][0])
+        if steps.get(index):
+            hi = max(hi, steps[index][1])
+        bbox = sample_bbox(lo, hi, (r0, r1))
+        width = bbox[2] - bbox[0]; height = bbox[3] - bbox[1]
+        clip_id = f"c{clip_index}"; clip_index += 1
+        defs.append(f'<clipPath id="{clip_id}"><path d="{path}"/></clipPath>')
+        art_svg = art_markup(item.get('image'), bbox, clip_id)
+        if art_svg:
+            shapes.append(art_svg)
+        else:
+            shapes.append(f'<path d="{path}" fill="{item["color"]}"/>')
+        shapes.append(f'<path d="{path}" fill="none" stroke="#ffffff" stroke-width="1.4"/>')
+
+        # 嵌套小类：相邻同卡图合并后各自成带
+        groups = []
+        for band in item['bands']:
+            if band.get('kind') != 'member' or not band.get('players'):
+                continue
+            if groups and groups[-1]['image'] == band.get('image'):
+                groups[-1]['players'] += band['players']
+            else:
+                groups.append(dict(image=band.get('image'), players=band['players']))
+        band_cursor = item['a0']
+        span = item['a1'] - item['a0']
+        for group in groups:
+            # 与网页一致：小类卡图与母片相同就不单独成块，整块归母片（避免时黑这种伪小类）。
+            if not group.get('image') or group.get('image') == item.get('image'):
+                continue
+            band_width = (group['players'] / max(1, item['players'])) * span
+            b_path = band_path(band_cursor, band_cursor + band_width, b0, r1)
+            b_bbox = sample_bbox(band_cursor, band_cursor + band_width, (b0, r1))
+            b_clip = f"c{clip_index}"; clip_index += 1
+            defs.append(f'<clipPath id="{b_clip}"><path d="{b_path}"/></clipPath>')
+            b_art = art_markup(group['image'], b_bbox, b_clip, opacity=0.22)
+            if b_art:
+                shapes.append(b_art)
+            shapes.append(f'<path d="{b_path}" fill="none" stroke="#ffffff" stroke-width="1.2"/>')
+            band_cursor += band_width
+
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">'
+           f'<rect width="{W}" height="{H}" fill="white"/><defs>{"".join(defs)}</defs>'
+           f'{"".join(shapes)}'
+           f'<circle cx="{cx}" cy="{cy}" r="{r0:.1f}" fill="white"/></svg>')
+
+    scale = 1.12
+    try:
+        result = subprocess.run(["rsvg-convert", "-w", str(int(W * scale)), "-h", str(int(H * scale))],
+                                input=svg.encode("utf-8"), capture_output=True, timeout=30)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.decode("utf-8", "ignore")[:200])
+        ring = Image.open(io.BytesIO(result.stdout)).convert("RGB")
+    except Exception:
+        ring = Image.new("RGB", (int(W * scale), int(H * scale)), "white")
+
+    width, height = 1600, 2000
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    title_font, text_font, small_font, tiny_font = _font(28), _font(16), _font(14), _font(13)
+    draw.text((40, 30), f"前100卡组分布 · 有档案 {payload['covered']}/{payload['current']} 人 · 单环",
+              font=title_font, fill='#173529')
+    ox = (width - ring.width) // 2
+    oy = 80
+    image.paste(ring, (ox, oy))
+    center = (ox + cx * scale, oy + cy * scale)
+    _center_text(draw, center[0], center[1] - 24, str(total), _font(42), '#173529')
+    _center_text(draw, center[0], center[1] + 24, '总人数 · 单环 100%', _font(15), '#65776b')
+
+    label_font = _font(max(12, int(round(14 * scale))), bold=True)
+    for item in items:
+        mid = math.radians((item['a0'] + item['a1']) / 2)
+        right = math.cos(mid) >= 0
+        # 与网页一致：圆点（±4,-5，r=3.2）贴在 r1+16，文字在点外侧 10，14px/600/#173529。
+        rr = (r1 + 16) * scale
+        dot_x = center[0] + math.cos(mid) * rr + (4 * scale if right else -4 * scale)
+        dot_y = center[1] + math.sin(mid) * rr - 5 * scale
+        radius = 3.2 * scale
+        draw.ellipse((dot_x - radius, dot_y - radius, dot_x + radius, dot_y + radius),
+                     fill=_rgb(item['color']))
+        x = center[0] + math.cos(mid) * rr + (10 * scale if right else -10 * scale)
+        y = center[1] + math.sin(mid) * rr
+        draw.text((x, y), f"{item['name']}  {_pct_text(item['percent'])}%", font=label_font,
+                  fill='#173529', anchor='lm' if right else 'rm')
+
+    line_height = 21
+    gap = 12
+    columns = [(60, 500), (560, 500), (1060, 500)]
+    top = 1070
+    draw.text((60, 1010), '每个切片包含的卡组', font=_font(15), fill='#22322B')
+    draw.text((60, 1034), '◆ = 外环嵌套 >4%；交集 = 两个大类共同占有', font=tiny_font, fill='#7a8b80')
+
+    outer_rows = (payload.get('pie') or {}).get('outer') or []
+
+    def _people(item):
+        # 与网页一致：「其他」用切片人数（等于下面 parts 之和）；其余用“参与该字段的玩家数”。
+        if item.get('kind') == 'other':
+            return int(round(float(item['players'])))
+        involved = sum(float(row.get('players') or 0) for row in middle_rows
+                       if row.get('primary') == item['name']
+                       or item['name'] in (row.get('extras') or []))
+        return int(round(involved)) if involved else int(round(float(item['players'])))
+
+    def _deck_line(row, name):
+        mark = '◆' if float(row.get('players') or 0) / total * 100 > 4 else '·'
+        primary = row.get('primary')
+        suffix = f"  ∩{primary}" if primary and primary != name and row.get('name') != name else ''
+        return f"{mark} {row['name']}  {row['players']}{suffix}"
+
+    def _hits(name, kind):
+        found = []
+        for row in outer_rows:
+            hit = row.get('name') == name if kind == 'deck' else row.get('primary') == name
+            if not hit and name in (row.get('extras') or []):
+                hit = True
+            if hit:
+                found.append(row)
+        return found
+
+    blocks = []
+    for item in items:
+        lines = [f"{item['name']} {_people(item)}人 · {_pct_text(item['percent'])}%"]
+        if item.get('kind') == 'category':
+            # 列出所有带该字段的卡组（含混合构筑）；跨字段的标 ∩主字段，行之和=表头人数。
+            for row in _hits(item['name'], 'category'):
+                lines.append(_deck_line(row, item['name']))
+            for band in item['bands']:
+                if band.get('kind') == 'overlap':
+                    lines.append(f"· 交集 {band['name']}  {band['players']}人（内环/外环各一张卡图）")
+        elif item.get('kind') == 'other':
+            for part in item.get('parts') or []:
+                lines.append(f"· {part['name']}  {part['players']}")
+        elif item.get('kind') == 'deck':
+            hits = _hits(item['name'], 'deck')
+            if len(hits) > 1:
+                for row in hits:
+                    lines.append(_deck_line(row, item['name']))
+        blocks.append(dict(lines=lines, color=item['color'],
+                           height=len(lines) * line_height + gap))
+
+    # 分栏与网页 CSS columns 的平衡效果对齐：按顺序切 3 栏，取“最高一栏最矮”的切法。
+    count = len(blocks)
+    cuts = set()
+    if count > len(columns):
+        best = None
+        for candidate in itertools.combinations(range(1, count), len(columns) - 1):
+            bounds = (0,) + candidate + (count,)
+            heights = [sum(blocks[k]['height'] for k in range(bounds[i], bounds[i + 1]))
+                       for i in range(len(columns))]
+            score = max(heights)
+            if best is None or score < best[0]:
+                best = (score, candidate)
+        if best:
+            cuts = set(best[1])
+
+    column_index = 0
+    y = top
+    bottom = top
+    for index, block in enumerate(blocks):
+        if index in cuts:
+            column_index += 1
+            y = top
+        x = columns[min(column_index, len(columns) - 1)][0]
+        draw.rectangle((x, y + 3, x + 10, y + 13), fill=_rgb(block['color']))
+        draw.text((x + 16, y), block['lines'][0], font=small_font, fill='#22322B')
+        y += line_height
+        for line in block['lines'][1:]:
+            draw.text((x + 16, y), line, font=tiny_font, fill='#4a5a52')
+            y += line_height
+        y += gap
+        bottom = max(bottom, y)
+
+    # 脚注紧跟图例内容，避免整图下半截留白（机器人发的图例图会被裁成大片空白）。
+    draw.text((40, min(height - 40, bottom + 6)), single.get('note') or '', font=small_font, fill='#65776b')
+    output = io.BytesIO()
+    image.save(output, format='PNG', optimize=True)
+    return output.getvalue(), payload
+
+
 def _render_payload(payload):
     pie = payload['pie']
     if not pie.get('total'):
@@ -251,7 +605,7 @@ def _render_payload(payload):
                 _paste_wedge(image, center, radius * 0.94, radius * 0.56,
                              cursor, o_end, code, item['color'], thumb=True)
             o_mid = math.radians((cursor + o_end) / 2)
-            labels.append((o_mid, f"{item['name']}  {item['percent']}%", _rgb(item['color'])))
+            labels.append((o_mid, f"{item['name']}  {_pct_text(item['percent'])}%", _rgb(item['color'])))
             cursor = o_end
         angle = cursor
     hole = radius * 0.56
@@ -328,38 +682,46 @@ def _render_payload(payload):
 _RENDER_LOCK = threading.Lock()
 
 
+def _payload_cache_path(database):
+    return Path(database).parent / 'cache' / 'top100-pie' / 'payload.json'
+
+
+def _db_stamp(database):
+    try:
+        stat = Path(database).stat()
+        return [stat.st_mtime_ns // 1_000_000_000, stat.st_size]
+    except OSError:
+        return None
+
+
+def load_payload(database, now, max_age=120.0):
+    """2 分钟内的同一库版本复用 collect() 结果（QQ 饼图每次重算名册约 8 秒）。"""
+    path = _payload_cache_path(database)
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if record.get('stamp') != _db_stamp(database):
+        return None
+    if not 0 <= float(now) - float(record.get('saved') or 0) <= max_age:
+        return None
+    payload = record.get('payload')
+    return payload if isinstance(payload, dict) and payload.get('pie') else None
+
+
+def save_payload(database, now, payload):
+    path = _payload_cache_path(database)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix('.tmp')
+        tmp.write_text(json.dumps(dict(saved=float(now), stamp=_db_stamp(database), payload=payload),
+                                  ensure_ascii=False, default=str), encoding='utf-8')
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def render(database, replay_root, now):
-    """每次核对当前分布；只将同一数据/卡图版本的最终PNG落盘复用。"""
-    with _RENDER_LOCK:
-        payload = collect(database, replay_root, now)
-        codes = {row.get(key) for section in ('inner','middle','outer')
-                 for row in (payload.get('pie') or {}).get(section, [])
-                 for key in ('image','band_image') if row.get(key)}
-        stamps = []
-        for code in sorted(codes):
-            file = _card_file(code)
-            try:
-                stat = file.stat() if file else None
-                stamps.append((code, str(file), stat.st_mtime_ns, stat.st_size) if stat else (code,None))
-            except OSError:
-                stamps.append((code,None))
-        key = hashlib.sha256(json.dumps([1,payload,stamps],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
-        folder = Path(database).parent / 'cache' / 'top100-pie'
-        cache = folder/'latest.cache'
-        try:
-            if 65 < cache.stat().st_size <= 8*1024*1024+65:
-                record = cache.read_bytes()
-                blob = record[65:]
-                if record[:65] == key.encode()+b'\n' and blob.startswith(b'\x89PNG\r\n\x1a\n'):
-                    return blob,payload
-        except OSError:
-            pass
-        blob,payload = _render_payload(payload)
-        if len(blob) <= 8*1024*1024:
-            try:
-                folder.mkdir(parents=True,exist_ok=True)
-                cache.with_suffix('.tmp').write_bytes(key.encode()+b'\n'+blob)
-                os.replace(cache.with_suffix('.tmp'),cache)
-            except OSError:
-                pass
-        return blob,payload
+    """Return (parts, payload): pie/legend PNGs generated by the website module."""
+    from .statistics_pie_image import render_parts
+    return render_parts(database, replay_root, now)
