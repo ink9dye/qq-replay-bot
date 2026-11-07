@@ -148,7 +148,7 @@ def group_command_text(event: dict, allow_commands: bool = False, extra_accept=N
 
 
 class OneBotClient:
-    def __init__(self, url: str, token: str, on_event, transport=None, pause=None, timeout: float = 8, on_status=None, accept_group_messages: bool = False, expected_self_id=None, account_probe=None, allow_unmentioned_commands: bool = False, group_extra_accept=None, send_interval=0, destination_interval=0, duplicate_reply_seconds=0, request_cooldown=0, duplicate_command_seconds=0, state_dir=None, read_timeout=75):
+    def __init__(self, url: str, token: str, on_event, transport=None, pause=None, timeout: float = 8, on_status=None, accept_group_messages: bool = False, expected_self_id=None, account_probe=None, allow_unmentioned_commands: bool = False, group_extra_accept=None, send_interval=0, destination_interval=0, duplicate_reply_seconds=0, request_cooldown=0, duplicate_command_seconds=0, state_dir=None, read_timeout=75, probe_seconds=None):
         self.url = url
         self.token = token
         self.on_event = on_event
@@ -175,6 +175,21 @@ class OneBotClient:
         self.suspended = bool(self.state_dir and (self.state_dir / 'qq-paused.json').exists())
         self.pause_reason = '已暂停收发，请处理QQ限制后运行 resume-qq.bat。' if self.suspended else ''
         self.read_timeout = read_timeout
+        # 到放弃阈值后是否继续低频探测：0=关闭（默认，行为与旧版一致）。
+        # 也可用环境变量 QQ_AUTO_RESUME_PROBE_SECONDS 配置，避免改 service.py。
+        if probe_seconds is None:
+            probe_seconds = os.environ.get('QQ_AUTO_RESUME_PROBE_SECONDS', '0')
+        try:
+            self.probe_seconds = min(3600.0, max(0.0, float(probe_seconds or 0)))
+        except (TypeError, ValueError):
+            self.probe_seconds = 0.0
+        # 探测总时长上限（小时）：默认 24 小时，0 表示不限。
+        max_hours = os.environ.get('QQ_AUTO_RESUME_PROBE_MAX_HOURS', '24')
+        try:
+            self.probe_max_seconds = max(0.0, float(max_hours)) * 3600
+        except (TypeError, ValueError):
+            self.probe_max_seconds = 24 * 3600
+        self._probe_clock = time.monotonic
         self._published_state = None
         self._published_at = 0
         self.last_heartbeat_at = None
@@ -395,6 +410,8 @@ class OneBotClient:
                         await self.pause_for_attention(
                             "连续重试约 25 分钟仍无法连接 NapCat，已停止自动重连；请检查 NapCat/QQ 登录后运行 resume-qq.bat。",
                             persist=False)
+                        if self.probe_seconds > 0 and await self._probe_for_recovery():
+                            continue
                         break
                 self.publish_state('cooldown' if self.state_dir and delay >= 900 else 'reconnecting', connection_hint(failure) if failure else '接口断开')
                 if self.on_status and failure is not None:
@@ -409,6 +426,79 @@ class OneBotClient:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             self.publish_state('stopped', self.pause_reason)
+
+    async def _probe_exchange(self, action: str) -> dict:
+        """探测专用：直接收发 OneBot 请求，不依赖主循环的 _read_loop。"""
+        echo = 'auto-probe-' + uuid.uuid4().hex[:8]
+        await self.transport.send_text(json.dumps({'action': action, 'params': {}, 'echo': echo}))
+        while True:
+            raw = await self.transport.recv_text()
+            if raw is None:
+                raise ConnectionError('探测连接已断开')
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict) and data.get('echo') == echo:
+                return data
+
+    async def _probe_for_recovery(self) -> bool:
+        """放弃自动重连后按 probe_seconds 低频探测；只重连接口，不登录、不扫码。
+
+        返回 True：账号已恢复，调用方 continue 回到正常循环。
+        返回 False：被停止，或遇到限制类错误 / 账号不一致（保持停泊等待人工）。
+        """
+        self.diagnostics.record('auto_resume_probe_start', retry_seconds=self.probe_seconds)
+        deadline = (self._probe_clock() + self.probe_max_seconds) if self.probe_max_seconds > 0 else None
+        while not self._stopped:
+            if deadline is not None and self._probe_clock() >= deadline:
+                hours = self.probe_max_seconds / 3600
+                self.pause_reason = f'自动探测已满 {hours:g} 小时仍未恢复，已停止探测，等待人工处理。'
+                self.diagnostics.record('auto_resume_probe_expired', retry_seconds=self.probe_max_seconds)
+                return False
+            remaining = self.probe_seconds
+            while remaining > 0 and not self._stopped:
+                step = min(5.0, remaining)
+                await self.pause(step)
+                remaining -= step
+            if self._stopped:
+                return False
+            outcome = 'retry'
+            try:
+                await self.transport.connect()
+                info = await asyncio.wait_for(self._probe_exchange('get_login_info'), timeout=self.timeout)
+                if restriction_hint(info):
+                    outcome = 'restricted'
+                else:
+                    user_id = str((info.get('data') or {}).get('user_id') or '')
+                    if int(info.get('retcode', -1)) != 0 or not user_id.isdigit():
+                        outcome = 'retry'
+                    elif self.expected_self_id and user_id != self.expected_self_id:
+                        outcome = 'mismatch'
+                    else:
+                        status = await asyncio.wait_for(self._probe_exchange('get_status'), timeout=self.timeout)
+                        if restriction_hint(status):
+                            outcome = 'restricted'
+                        elif (int(status.get('retcode', -1)) == 0
+                              and (status.get('data') or {}).get('online') is True):
+                            outcome = 'online'
+            except Exception as exc:
+                self.diagnostics.record('auto_resume_probe', success=False, error_type=type(exc).__name__)
+            finally:
+                await self._close_transport()
+            if outcome == 'online':
+                self.suspended, self.pause_reason = False, ''
+                self.recovery.stable()
+                self.diagnostics.record('auto_resume_probe', success=True)
+                return True
+            if outcome in ('restricted', 'mismatch'):
+                self.pause_reason = ('QQ 明确提示账号受限，已停止自动探测，等待人工处理。'
+                                     if outcome == 'restricted'
+                                     else '探测到登录账号与工具号不一致，已停止自动探测。')
+                self.diagnostics.record('auto_resume_probe', success=False, reason=outcome)
+                return False
+            self.diagnostics.record('auto_resume_probe', success=False)
+        return False
 
     async def _close_transport(self) -> None:
         try:
