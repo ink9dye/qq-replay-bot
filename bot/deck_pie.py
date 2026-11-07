@@ -357,6 +357,30 @@ def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
         else:
             item['decks'] = []
 
+    # 交集均摊：一个卡组的字段命中多个“大类切片”时，按命中数均分人数
+    # （两个 → 0.5/0.5；三个 → 各 1/3）。落在「其他」或未成片的字段不参与均摊，
+    # 仍整份计入原主大类/其他。
+    category_names = {item['name'] for item in slices if item['kind'] == 'category'}
+    deck_names = {item['name'] for item in slices if item['kind'] == 'deck'}
+    weights = {item['name']: (float(item['players']) if item['kind'] == 'deck' else 0.0) for item in slices}
+    for row in outer:
+        primary = row['primary']
+        cats = []
+        if primary in category_names or primary in deck_names:
+            cats.append(primary)
+        for extra in (row.get('extras') or []):
+            if extra in category_names and extra not in cats:
+                cats.append(extra)
+        if not cats:
+            continue
+        share = row['players'] / len(cats)
+        for name in cats:
+            weights[name] += share
+    for item in slices:
+        players = int(round(weights.get(item['name'], item['players'])))
+        item['players'] = players
+        item['percent'] = _pct(players, total)
+
     for index, item in enumerate(slices):
         item['bands'] = []
         if item['kind'] != 'category':
