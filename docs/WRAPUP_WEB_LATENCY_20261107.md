@@ -131,6 +131,14 @@ enderPie() 原本只画内环（主大类）与外环（具体卡组），pie.mi
 - 实测：该卡组 耀圣 133 张 > 狱神 82 > 无垢 64，线上 roster 的 deck_pie.outer.image 与 deck_single 嵌套 band image 均变为 **5559570（耀圣）**。
 - 运维注意：roster 结果有 300s 缓存且版本戳不含 Python 代码；部署后需清 data/query-cache/last-success/*.json 并重启（或等缓存过期），否则会继续返回旧图。回滚：/root/last-pie-fieldrep-backup。
 
+## 4.8 QQ「前百饼图」改为单环（2026-11-07 12:30）
+
+- `top100_pie.py` 新增 `_render_single_payload`：优先用 `deck_single` 数据出单环图，与网页同口径（人数降序、其他最后、交集均摊后的百分比、大类内 >4% 小类嵌套）。
+- 渲染细节：外圈整块卡图 + 嵌套小类图/白线；`其他` 用莫忘天魔女；标签/图例/中心“总人数 · 单环 100%”；`deck_single` 缺失时回退旧双环渲染。
+- payload 缓存和 PNG 缓存仍生效；改完已清 `data/cache/top100-pie/*`，`ygo-qq` 已重启（PID 745274，online）。
+- **顺带修复**：`card_series._compute` 的 `series_membership` 之前返回 list，`statistics_dashboard` 聚合时 `.get` 会抛错（偶发 500）；已改为 `{main_copies, extra_copies}` dict（`card_series.py d04dc012`）。
+- 回滚：`/root/last-qq-single-pie-backup`（top100_pie）、`/root/last-pie-split-backup` 等。
+
 ## 5. 仍未做（按优先级）
 
 1. **卡片统计**：瓶颈已定位为“32 个分桶重建（最多 8.7s）+ 实时名次核验（约 5s）+ 存活检查（2–3s）”，不是缺索引；下一步是“资格快照单槽缓存（约 40MB）+ 名次短时效磁盘缓存（需确认 120s 语义）”；

@@ -140,8 +140,8 @@ def _compute(db, build, sample, catalog, revision):
         complete=complete and item['complete']
         for tag in item['tags']:
             tags.add(tag)
-            entry=counts.setdefault(tag,[0,0])
-            entry[0 if card['partition']=='main' else 1]+=card['copies']
+            entry=counts.setdefault(tag,dict(main_copies=0,extra_copies=0))
+            entry['main_copies' if card['partition']=='main' else 'extra_copies']+=card['copies']
     return dict(series=sorted(tags),series_status='known' if complete else 'partial' if tags else 'unknown',
                 series_origin=SEMANTICS,series_membership=counts)
 

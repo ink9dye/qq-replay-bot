@@ -34,7 +34,8 @@ def collect(database, replay_root, now):
         from .deck_pie import from_data_dir
         pie = from_data_dir([dict(name=item['name'], players=item['count']) for item in items],
                             Path(database).parent)
-    return dict(items=items, pie=pie, covered=int(data.get('covered_players') or 0),
+    return dict(items=items, pie=pie, single=data.get('deck_single'),
+                covered=int(data.get('covered_players') or 0),
                 current=int(data.get('current_players') or 0),
                 unidentified=int(data.get('unidentified_players') or 0))
 
@@ -149,6 +150,7 @@ def _paste_wedge(image, center, out_r, in_r, start, end, code, color, thumb=Fals
         mid = math.radians((start + end) / 2)
         r_mid = (out_r + in_r) / 2
         side = max(out_r * span, out_r - in_r) * 1.02
+        side = min(side, out_r * 2 * 0.60)
         width = side * 1.526
         height = side
         card = _card_art_rect(code, width, height)
@@ -204,6 +206,77 @@ def _draw_top_legend(draw, inner, width, font):
         draw.rectangle((x, y + 3, x + 12, y + 15), fill=_rgb(cat['color']))
         draw.text((x + 20, y), text, font=font, fill='#22322B')
         x += text_width + 50
+
+
+def _render_single_payload(payload):
+    """单环新版：切片按人数降序、「其他」最后；大类内 >4% 的小类嵌套在外圈。"""
+    single = payload.get('single') or {}
+    total = int(single.get('total') or 0)
+    if not total:
+        raise ValueError('暂无卡组档案')
+
+    width, height = 1600, 1100
+    image = Image.new('RGB', (width, height), 'white')
+    draw = ImageDraw.Draw(image)
+    title_font, text_font, small_font = _font(28), _font(16), _font(14)
+    draw.text((40, 30), f"前100卡组分布 · 有档案 {payload['covered']}/{payload['current']} 人 · 单环",
+              font=title_font, fill='#173529')
+    center = (800, 560)
+    radius = 330.0
+    r0, rb, r1 = radius * 0.30, radius * 0.56, radius * 0.94
+
+    items = []
+    for s in single.get('slices') or []:
+        items.append(dict(name=s['name'], players=s['players'], percent=s['percent'],
+                          color=s.get('color') or '#7A8B99', image=s.get('image'),
+                          kind=s.get('kind') or 'deck', bands=s.get('bands') or []))
+    other = single.get('other') or {}
+    if int(other.get('players') or 0) > 0:
+        items.append(dict(name=other.get('name') or '其他', players=other['players'],
+                          percent=other['percent'], color=other.get('color') or '#7A8B99',
+                          image=other.get('image'), kind='other', bands=[]))
+    items.sort(key=lambda item: (item['kind'] == 'other', -item['players'], item['name']))
+
+    labels = []
+    angle = -90.0
+    for item in items:
+        span = item['players'] / total * 360.0
+        end = angle + span
+        _paste_wedge(image, center, r1, r0, angle, end, item.get('image'), item['color'], thumb=True)
+        cursor = angle
+        for band in (b for b in item['bands'] if b.get('kind') == 'member' and b.get('players')):
+            b_span = (band['players'] / max(1, item['players'])) * span
+            band_image = band.get('image')
+            if band_image and band_image != item.get('image'):
+                _paste_wedge(image, center, r1, rb, cursor, cursor + b_span,
+                             band_image, item['color'], thumb=True)
+            draw.arc((center[0] - rb, center[1] - rb, center[0] + rb, center[1] + rb),
+                     cursor, cursor + b_span, fill='white', width=1)
+            cursor += b_span
+        mid = math.radians((angle + end) / 2)
+        labels.append((mid, f"{item['name']}  {item['percent']}%", _rgb(item['color'])))
+        angle = end
+
+    box = (center[0] - r1, center[1] - r1, center[0] + r1, center[1] + r1)
+    angle = -90.0
+    for item in items:
+        span = item['players'] / total * 360.0
+        a = math.radians(angle)
+        draw.line((center[0] + math.cos(a) * r0, center[1] + math.sin(a) * r0,
+                   center[0] + math.cos(a) * r1, center[1] + math.sin(a) * r1),
+                  fill='white', width=2)
+        draw.arc(box, angle, angle + span, fill='white', width=2)
+        angle += span
+
+    _draw_labels(draw, center, r1, labels, _font(16), width, height)
+    draw.ellipse((center[0] - r0, center[1] - r0, center[0] + r0, center[1] + r0), fill='white')
+    _center_text(draw, center[0], center[1] - 16, str(total), _font(46), '#173529')
+    _center_text(draw, center[0], center[1] + 18, '总人数 · 单环 100%', text_font, '#65776b')
+    _draw_top_legend(draw, items, width, text_font)
+    draw.text((40, height - 38), single.get('note') or '', font=small_font, fill='#65776b')
+    output = io.BytesIO()
+    image.save(output, format='PNG', optimize=True)
+    return output.getvalue(), payload
 
 
 def _render_payload(payload):
@@ -372,9 +445,23 @@ def render(database, replay_root, now):
     with _RENDER_LOCK:
         payload = load_payload(database, now) or collect(database, replay_root, now)
         save_payload(database, now, payload)
-        codes = {row.get(key) for section in ('inner','middle','outer')
-                 for row in (payload.get('pie') or {}).get(section, [])
-                 for key in ('image','band_image') if row.get(key)}
+        if payload.get('single'):
+            codes = set()
+            for row in payload['single'].get('slices') or []:
+                if row.get('image'):
+                    codes.add(row['image'])
+                for band in row.get('bands') or []:
+                    if band.get('image'):
+                        codes.add(band['image'])
+            other = payload['single'].get('other') or {}
+            if other.get('image'):
+                codes.add(other['image'])
+            render_payload = _render_single_payload
+        else:
+            codes = {row.get(key) for section in ('inner','middle','outer')
+                     for row in (payload.get('pie') or {}).get(section, [])
+                     for key in ('image','band_image') if row.get(key)}
+            render_payload = _render_payload
         stamps = []
         for code in sorted(codes):
             file = _card_file(code)
@@ -394,7 +481,7 @@ def render(database, replay_root, now):
                     return blob,payload
         except OSError:
             pass
-        blob,payload = _render_payload(payload)
+        blob,payload = render_payload(payload)
         if len(blob) <= 8*1024*1024:
             try:
                 folder.mkdir(parents=True,exist_ok=True)
