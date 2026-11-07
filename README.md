@@ -322,3 +322,9 @@ python bot\watch_core.py --self-test
 ## 安卓观战客户端
 
 朋友 Drcold 贡献的 MoeCardWatch 安卓源码位于 [clients/android](clients/android/README.md)。请在该目录单独打开和构建安卓工程；服务器启动与部署方式不变。原分支的三个作者提交完整保留。
+
+## 文档导航
+
+- 运维与交接入口：`readme.md` / `PROJECT_HANDOFF.md`（工作区根目录）；
+- 文档总索引：`docs/INDEX.md`（核心文档、当前专题、历史报告、维护约定）；
+- 网页耗时专题（含饼图口径、卡图管线）：`docs/WRAPUP_WEB_LATENCY_20261107.md`。

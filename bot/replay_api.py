@@ -73,9 +73,9 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(str(token or "").strip().encode("utf-8")).hexdigest()
 
 
-def safe_part(text: str, fallback: str = "未知") -> str:
+def safe_part(text: str, fallback: str = "未知", limit: int = 60) -> str:
     cleaned = _BAD_PART.sub("_", str(text or "")).strip(" .")
-    return cleaned[:60] or fallback
+    return cleaned[:max(1, int(limit))] or fallback
 
 
 def _like_escape(text: str) -> str:
@@ -138,6 +138,7 @@ class ReplayStore:
         self._ledger: dict[str, tuple] = {}
         self._evidence_cache: dict[str, tuple] = {}
         self._top100: frozenset = frozenset()
+        self._deck_revision: int | None = None
 
     # ---- 连接 ----------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
@@ -189,14 +190,19 @@ class ReplayStore:
 
     # ---- 对局索引 ------------------------------------------------------
     def matches(self) -> list[dict]:
-        """返回对局索引：首次同步构建，之后按数据指纹在后台刷新，不阻塞请求。"""
+        """返回对局索引：结构索引缓存；卡组名按分类 revision 同步刷新，不返回旧名。"""
         now = self.clock()
+        revision = self._classification_revision()
         with self._lock:
             if self._matches is None:
                 self._matches = self._build_index()
                 self._built_at = now
                 self._fingerprint = self._data_fingerprint()
+                self._deck_revision = revision
                 return self._matches
+            if revision is not None and revision != self._deck_revision:
+                if self._refresh_decks():
+                    self._deck_revision = revision
             stale = now - self._built_at > self.index_ttl
             if stale and not self._refreshing and self._data_fingerprint() != self._fingerprint:
                 self._refreshing = True
@@ -205,12 +211,14 @@ class ReplayStore:
 
     def _refresh(self) -> None:
         try:
+            revision = self._classification_revision()
             data = self._build_index()
             fingerprint = self._data_fingerprint()
             with self._lock:
                 self._matches = data
                 self._built_at = self.clock()
                 self._fingerprint = fingerprint
+                self._deck_revision = revision
         finally:
             with self._lock:
                 self._refreshing = False
@@ -222,6 +230,42 @@ class ReplayStore:
         finally:
             con.close()
         return (int(row[0] or 0), int(row[1] or 0))
+
+    def _classification_revision(self) -> int | None:
+        """当前卡组分类修订号；旧库没有该表时返回 None。"""
+        con = self._connect()
+        try:
+            row = con.execute(
+                "SELECT revision FROM stat_classification_state WHERE singleton=1").fetchone()
+            return int(row[0]) if row is not None else None
+        except sqlite3.Error:
+            return None
+        finally:
+            con.close()
+
+    def _refresh_decks(self) -> bool:
+        """只同步缓存里的卡组名/系列，不重建结构索引；失败时保留旧索引。"""
+        try:
+            con = self._connect()
+            try:
+                decks = {str(row["fingerprint"]): str(row["deck_type"] or "")
+                         for row in con.execute("SELECT fingerprint, deck_type FROM stat_builds")}
+                series: dict[str, list[str]] = {}
+                for row in con.execute("SELECT build, series FROM stat_build_series"):
+                    series.setdefault(str(row["build"]), []).append(str(row["series"]))
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return False
+        for match in self._matches or []:
+            for game in match["games"]:
+                for view in game["views"]:
+                    build = str(view.get("build") or "")
+                    view["deck"] = decks.get(build, "")
+                    view["series"] = series.get(build, [])
+            match["decks"] = {player: self._player_deck(player, match["games"])
+                              for player in match["players"]}
+        return True
 
     # ---- session 补全（replay_sessions 从 11-04 起没有新数据） ----------
     def _ledger_sessions(self) -> dict[str, tuple]:
@@ -309,11 +353,13 @@ class ReplayStore:
             series.setdefault(row["build"], []).append(str(row["series"]))
         views: dict[str, list[dict]] = {}
         for row in view_rows:
+            build = str(row["build"] or "")
             views.setdefault(row["digest"], []).append(dict(
                 player=str(row["player"] or ""),
                 outcome=str(row["outcome"] or ""),
-                deck=decks.get(row["build"], "") or "",
-                series=series.get(row["build"]) or [],
+                build=build,
+                deck=decks.get(build, "") or "",
+                series=series.get(build) or [],
             ))
 
         ledger = self._ledger_sessions()
@@ -401,7 +447,8 @@ class ReplayStore:
 
     @staticmethod
     def _player_deck(player: str, games: list[dict]) -> str:
-        for game in sorted(games, key=lambda g: g["recorded_at"], reverse=True):
+        """Match label follows the earliest identified game (game 1 first), like the player page."""
+        for game in sorted(games, key=lambda g: (g.get("game_no") or 999, g.get("recorded_at") or 0.0)):
             for view in game["views"]:
                 if view["player"] == player and view["deck"]:
                     return view["deck"]
@@ -520,10 +567,14 @@ class ReplayStore:
         )
 
     def folder_name(self, match: dict) -> str:
-        """下载目录名：日期_玩家_vs_玩家。卡组名不进目录（.yrp 里已经有卡组）。"""
+        """下载目录名：日期_玩家_卡组_vs_玩家_卡组；卡组未知时省略，不改原始 .yrp 名。"""
         stamp = datetime.fromtimestamp(match["start"] or match["end"]).strftime("%Y%m%d-%H%M")
-        names = [safe_part(name) for name in match["players"][:2]]
-        return safe_part(stamp + ("_" + "_vs_".join(names) if names else ""), "对局")
+        parts = []
+        for name in match["players"][:2]:
+            player = safe_part(name, "玩家", 20)
+            deck = safe_part(match["decks"].get(name) or "", "", 20)
+            parts.append(player + ("_" + deck if deck else ""))
+        return safe_part(stamp + ("_" + "_vs_".join(parts) if parts else ""), "对局", 100)
 
     # ---- 打包 ----------------------------------------------------------
     def _game_summary(self, game: dict) -> dict:

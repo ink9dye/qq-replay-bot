@@ -30,12 +30,20 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 MAX_BODY = 8 * 1024 * 1024          # 控制请求体上限
 MAX_UPLOAD = 4 * 1024 * 1024        # 单个录像上限
-_SAFE_NAME = re.compile(r"[^0-9A-Za-z._\-()\u4e00-\u9fff ]+")
+# 只替换文件系统不接受/控制类字符；@、假名、其他文字的玩家名保持原样。
+# 旧的上传命名（白名单 [0-9A-Za-z._-()汉字空格]）已停用，旧目录由查询端兼容。
+_SAFE_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
+_FILE_LIMIT = 60                    # 字符数；CJK 3 字节，留出 .yrp.evidence.json 的余量
 
 
-def _safe_part(text: str, fallback: str = "unknown") -> str:
-    cleaned = _SAFE_NAME.sub("_", str(text or "")).strip(" .")
-    return cleaned[:80] or fallback
+def _safe_part(text: str, fallback: str = "unknown", limit: int = _FILE_LIMIT) -> str:
+    cleaned = _SAFE_NAME.sub("_", str(text or "")).strip().rstrip(".")
+    return cleaned[:limit] or fallback
+
+
+def _folder_part(text: str) -> str:
+    """录像子目录名：与本地保存的 watch.safe_filename_part 完全一致（40 字）。"""
+    return _safe_part(text, limit=40)
 
 
 class InsufficientStorageError(OSError):
@@ -316,12 +324,12 @@ class WatchApiServer:
                 focus = str((job.payload.get("focus") or [""])[0] or "")
                 if not players:
                     players = list(job.payload.get("room", {}).get("players") or [])
-        folder = _safe_part(focus or (players[0] if players else ""))
+        folder = _folder_part(focus or (players[0] if players else ""))
         target_dir = self.replay_root / folder
         target_dir.mkdir(parents=True, exist_ok=True)
         evidence = name.lower().endswith(".evidence.json")
         suffix = ".yrp.evidence.json" if evidence else ".yrp"
-        safe_name = name if _SAFE_NAME.sub("", name) == name else _safe_part(name[: -len(suffix)]) + suffix
+        safe_name = _safe_part(name[: -len(suffix)]) + suffix
         path = target_dir / safe_name
         from . import watch_replay_evidence as live
         if evidence:

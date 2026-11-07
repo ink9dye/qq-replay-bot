@@ -698,14 +698,14 @@ class OneBotClient:
             "auto_escape": True,
         }
         image_url = getattr(text, "image_url", None)
-        if image_url:
+        image_urls = list(getattr(text, "image_urls", None) or ([image_url] if image_url else []))
+        if image_urls:
             try:
+                segments = [{"type": "text", "data": {"text": str(text)}}]
+                segments.extend({"type": "image", "data": {"file": url}} for url in image_urls)
                 response = await self.call(action, {
                     destination: params[destination],
-                    "message": [
-                        {"type": "text", "data": {"text": str(text)}},
-                        {"type": "image", "data": {"file": image_url}},
-                    ],
+                    "message": segments,
                 })
                 if int(response.get("retcode", -1)) == 0:
                     return True
@@ -718,7 +718,7 @@ class OneBotClient:
             # 卡图下载或发送失败时仍提供文字和原图链接。
             fallback = getattr(text, "image_fallback", None)
             if fallback is None:
-                fallback = ('\n图片发送失败，请稍后重试。' if image_url.startswith('base64://')
+                fallback = ('\n图片发送失败，请稍后重试。' if image_urls and image_urls[0].startswith('base64://')
                             else "\n卡图：" + image_url)
             params["message"] = str(text) + fallback
             await self.pause(max(self.outbound.interval, self.outbound.destination_interval))

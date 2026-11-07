@@ -17,9 +17,19 @@ COOKIE='qqstats_owner'
 SESSION_SECONDS=5*3600
 QUERY_WAIT_SECONDS=8.0
 QUERY_CACHE_MAX_BYTES = 8 * 1024 * 1024
+PRECOMPUTED_ROSTER_SECONDS = 900.0
+
+
+def _trim_heap():
+    """Return freed arenas to the OS after a heavy build (glibc only)."""
+    try:
+        import ctypes
+        ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
 CACHED_API_PATHS=frozenset('/statistics/api/'+name for name in (
     'recordings','deck-naming/groups','card-table','cards-extra','card-combo',
-    'card-report','roster','build','matrix'))
+    'card-report','roster','build','matrix','side-analysis'))
 
 
 def owner_secret(path):
@@ -95,7 +105,7 @@ class StatisticsPortal:
             return self._reply(200,Path(__file__).with_name('statistics_small_world.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_small_world.js','small_world_engine.js','statistics_small_world.css'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
-            return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
+            return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime,{'Cache-Control':'private, max-age=3600'})
         if parts==['statistics','api','small-world-cards']:
             from .small_world import read_cards
             from .statistics_local_cards import library_root
@@ -112,7 +122,7 @@ class StatisticsPortal:
                 self._small_world_catalog_lock.release()
         if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_autocomplete.js','statistics_theme.css','statistics_ui.css','statistics_card_metrics.js','statistics_cards_report.js','statistics_cards_report.css','statistics_cards_report_combo.css','statistics_build.js','statistics_pt.js','statistics_filter_controls.js','statistics_nav.css','statistics_nav.js','statistics_busy.js','statistics_refresh.js'):
             mime='text/css; charset=utf-8' if parts[2].endswith('.css') else 'text/javascript; charset=utf-8'
-            return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime)
+            return self._reply(200,Path(__file__).with_name(parts[2]).read_text(encoding='utf8'),mime,{'Cache-Control':'private, max-age=3600'})
         if parts==['statistics','devices']:
             return self._reply(200,Path(__file__).with_name('statistics_devices.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','api','devices']:
@@ -252,6 +262,18 @@ class StatisticsPortal:
             mime={'.webp':'image/webp','.jpg':'image/jpeg','.png':'image/png'}[image.suffix]
             status,kind,_,extra=self._reply(200,'',mime,{'Cache-Control':'private, max-age=86400'})
             return status,kind,image.read_bytes(),extra
+        if parts==['statistics','api','deck-pie.png']:
+            # 网站自己生成并缓存饼图 PNG；QQ「前百饼图」直接复用这张图。
+            from .statistics_pie_image import render_from_roster
+            try:
+                reply=self._roster_reply()
+                blob=render_from_roster(self.database, json.loads(reply[2]))
+            except ValueError:
+                return self._reply(503,'暂无卡组档案。')
+            except Exception:
+                return self._reply(500,'饼图暂时无法生成，请稍后重试。')
+            status,kind,_,extra=self._reply(200,'','image/png',{'Cache-Control':'private, max-age=60'})
+            return status,kind,blob,extra
         if len(parts)==3 and parts[:2]==['statistics','card-image']:
             from .statistics_local_cards import picture
             if not parts[2].isdigit() or len(parts[2])>10:return self._reply(400,'卡号无效。')
@@ -404,7 +426,7 @@ class StatisticsPortal:
             name='statistics_card_metrics.html' if parts[-1]=='cards' else 'statistics_matrix.html'
             return self._reply(200,Path(__file__).with_name(name).read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','assets','statistics_samples.js']:
-            return self._reply(200,Path(__file__).with_name('statistics_samples.js').read_text(encoding='utf8'),'text/javascript; charset=utf-8')
+            return self._reply(200,Path(__file__).with_name('statistics_samples.js').read_text(encoding='utf8'),'text/javascript; charset=utf-8',{'Cache-Control':'private, max-age=3600'})
         if parts==['statistics','api','card-metrics']:
             from .card_statistics import query as card_query,Filters
             args=parse_qs(parsed.query)
@@ -462,6 +484,63 @@ class StatisticsPortal:
             except (ValueError,TypeError):return self._reply(400,'矩阵格子条件无效。')
             try:
                 return self._query_reply(lambda db:scoped_query(ranges,lambda:matrix_cell(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1',threshold=args.get('threshold',['10'])[0])))
+            except ValueError as exc:
+                return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
+        if parts==['statistics','api','side-analysis']:
+            # 玩家排行/构筑页与对战矩阵共用的 Side 换入换出证据查询；只读。
+            from .statistics_side_analysis import query as side_analysis
+            args=parse_qs(parsed.query,keep_blank_values=True)
+            mode=args.get('mode',['player'])[0]
+            player=(args.get('player',[''])[0] or '').strip()
+            deck=(args.get('deck',[''])[0] or '').strip()
+            opponent_deck=(args.get('opponent_deck',[''])[0] or '').strip()
+            algorithm=args.get('algorithm',['1'])[0]
+            first=args.get('first',['all'])[0]
+            cell_token=(args.get('cell_token',[''])[0] or '').strip()
+            if mode not in ('player','matrix') or algorithm not in ('0','1') or first not in ('all','first','second'):
+                return self._reply(400,json.dumps({'error':'Side 分析入口无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if len(cell_token)>64:
+                return self._reply(400,json.dumps({'error':'矩阵格样本标记无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if any(len(value)>128 for value in (player,deck,opponent_deck)):
+                return self._reply(400,json.dumps({'error':'玩家或卡组条件过长。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if mode=='player' and not player:
+                return self._reply(400,json.dumps({'error':'需要玩家名称。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if mode=='matrix' and not deck:
+                return self._reply(400,json.dumps({'error':'矩阵分析需要我方卡组。'},ensure_ascii=False),'application/json; charset=utf-8')
+            def side_run(db):
+                if mode=='matrix':
+                    from .statistics_rank_scope import parse_ranges,scoped_query
+                    ranges=parse_ranges(args)
+                    result=scoped_query(ranges,lambda:side_analysis(
+                        db,self.replay_root,float(self.clock()),None,deck,opponent_deck or None,
+                        mode='matrix',internal_only=args.get('internal',['0'])[0]=='1',
+                        algorithm=False,first=first,cell_token=cell_token))
+                else:
+                    result=side_analysis(
+                        db,self.replay_root,float(self.clock()),player,None,opponent_deck or None,
+                        mode='player',algorithm=algorithm=='1',first=first)
+                from .statistics_card_names import index as name_index
+                names=name_index(self.database.parent)
+                def decorate(cards):
+                    for card in cards:
+                        info=names.get(str(card['code']))
+                        card['name']=card_name(info) if info else ('#%d' % int(card['code']))
+                for side in result['sides']:
+                    for key in ('added','removed'):
+                        decorate(side['observed'][key])
+                    decorate(side['observed']['direct_side']['cards'])
+                    decorate(side['observed']['unknown_outcome']['cards'])
+                    decorate(side['algorithm']['cards'])
+                    decorate(side['algorithm']['latent_cards'])
+                    side['algorithm']['observed_only']=[
+                        dict(code=code, name=(card_name(names.get(str(code))) if names.get(str(code)) else '#%d' % code))
+                        for code in side['algorithm']['observed_only']]
+                    for session in side['sessions']:
+                        for key in ('added','removed'):
+                            decorate(session[key])
+                return result
+            try:
+                return self._cached_query_reply(('side-analysis',parsed.query),side_run,ttl=30.0)
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','api','sample'] or len(parts)==3 and parts[:2]==['statistics','sample']:
@@ -578,8 +657,36 @@ class StatisticsPortal:
             except Exception:
                 pass
 
+    def _precomputed_roster(self):
+        """Serve the roster built by tools/roster_precompute.py.
+
+        Keeps the 30-90 s build and its 250-300 MB intermediate out of this
+        process, so _query_compute_lock is not held and query 503s drop.
+        """
+        try:
+            path = self.database.parent / 'cache' / 'roster.json'
+            item = json.loads(path.read_text(encoding='utf8'))
+            saved = float(item['saved'])
+            if not 0.0 <= float(self.clock()) - saved <= PRECOMPUTED_ROSTER_SECONDS:
+                return None
+            if int(item['status']) != 200:
+                return None
+            body = str(item['body'])
+            if not body or len(body) > 4 * 1024 * 1024:
+                return None
+            headers = dict(item.get('headers') or {})
+            headers['X-Statistics-State'] = 'precomputed'
+            headers['X-Statistics-Saved-At'] = str(int(saved))
+            return 200, str(item['kind']), body.encode('utf8'), headers
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+
     def _roster_reply(self, force=False, background=False):
         """榜首查询的唯一入口：route 与后台保活共用，保证缓存键一致。"""
+        if not force:
+            precomputed = self._precomputed_roster()
+            if precomputed is not None:
+                return precomputed
         from .statistics_dashboard import query
         return self._cached_query_reply(('roster',), lambda db:query(db,self.replay_root,float(self.clock()),None), ttl=300.0, stamp_seconds=86400, force=force, background=background)
 
@@ -588,12 +695,19 @@ class StatisticsPortal:
         return self._roster_reply(force=getattr(self,'_refresh',None) is None, background=True)
 
     def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False,background=False):
-        if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings','matrix','cards-extra'):
+        if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings','matrix','cards-extra','deck-detail'):
             from urllib.parse import parse_qs,urlencode
-            if len(key)>1:key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
+            # deck-detail 的 key[1] 是玩家名，不是查询串：不能按参数归一化，否则不同玩家会撞成同一个 key。
+            if len(key)>1 and key[0]!='deck-detail':key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
             from .statistics_roster_version import snapshot_version
-            return self._refresh.get(key,lambda:self._cached_query_reply_sync(
-                key,callback,ttl,stamp_seconds,force),lambda:snapshot_version(self.database),ttl,background=background)
+            wait=4.0 if key[0]=='deck-detail' else 1.0
+            if key[0]=='deck-detail':
+                # 构筑页计算本身是亚秒级：不要排进全局 _query_compute_lock，
+                # 否则会被 roster/matrix 的长计算堵到 8 秒超时。
+                compute=lambda:self._query_reply(callback)
+            else:
+                compute=lambda:self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
+            return self._refresh.get(key,compute,lambda:snapshot_version(self.database),ttl,background=background,wait=wait)
         return self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
 
     def _cached_query_reply_sync(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):
@@ -666,6 +780,8 @@ class StatisticsPortal:
         try:disk_identity=response_identity(self.database,key)
         except OSError:disk_identity=None
         result=self._query_reply(callback)
+        if key and key[0] in ('roster','matrix','card-report','recordings'):
+            _trim_heap()
         try:
             if disk_identity is not None and disk_identity==response_identity(self.database,key):
                 response_put(disk_identity,result)

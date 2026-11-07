@@ -209,7 +209,26 @@ def _selected_rows(db, replay_root, now, filters):
 
 
 def _merge_fact_rows(rows, partition):
-    """把同一 card/partition 的 facts 行按 (digest,player) 合并；与 card_identity.facts 同规则。"""
+    """把同一 card/partition 的 facts 行按 (digest,player) 合并；与 card_identity.facts 同规则。
+
+    绝大多数 (digest,player) 只有一行事实：直接复制并改写 partition，不再走逐字段合并，
+    合并结果与逐字段路径相同（单行时 1/0/None 的判定退化为原值）。
+    """
+    merged_fields = ('drawn', 'used', 'used_after_draw', 'appeared')
+    counted_fields = ('draw_count', 'initial_count', 'use_count', 'appearance_count')
+    result = {}
+    duplicated = False
+    for row in rows:
+        key = (row['digest'], row['player'])
+        if key in result:
+            duplicated = True
+            break
+        result[key] = row
+    if not duplicated:
+        for key, row in list(result.items()):
+            if row['partition'] != partition:
+                result[key] = dict(row, partition=partition)
+        return result
     groups = {}
     for row in rows:
         groups.setdefault((row['digest'], row['player']), []).append(row)
@@ -217,10 +236,10 @@ def _merge_fact_rows(rows, partition):
     for key, group in groups.items():
         merged = {k: group[0][k] for k in ('digest', 'player', 'partition')}
         merged['partition'] = partition
-        for field in ('drawn', 'used', 'used_after_draw', 'appeared'):
+        for field in merged_fields:
             values = [r[field] for r in group]
             merged[field] = 1 if 1 in values else 0 if all(v == 0 for v in values) else None
-        for field in ('draw_count', 'initial_count', 'use_count', 'appearance_count'):
+        for field in counted_fields:
             values = [r[field] for r in group]
             merged[field] = sum(values) if all(v is not None for v in values) else None
         if len(group) > 1 and merged['drawn'] == 1 and merged['used'] == 1 and merged['used_after_draw'] != 1:
@@ -328,8 +347,10 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
             ' FROM stat_card_facts f WHERE (f.digest,f.player) IN '
             '(SELECT digest,player FROM ' + selected_table + ')' + projection, args)])
     from .statistics_report_intermediate import raw_tables
+    # fact_fields 里 digest 的位置就是分桶拆分用的列：单次读到的行据此拆回各桶。
     raw = raw_tables(db, read_raw_tables, projection=needed_codes,
-                     chunk_loader=read_raw_tables if needed_codes is None else None)
+                     chunk_loader=read_raw_tables if needed_codes is None else None,
+                     fact_digest_index=fact_fields.index('digest'))
     copies_lookup = {}
     for build, part, code, count in raw.pop('copies'):
         copies_lookup.setdefault((code, part), {})[build] = count

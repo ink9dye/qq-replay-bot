@@ -226,7 +226,8 @@ def _query(db,root,now,args,limit=2000,ranges=None):
     basis,rows,draws,used,carried,canonical=snapshot(db,root,now,include_opponents=True,
         annotate_series=bool(args.get('series')or args.get('opponent_series')),with_facts=needs_facts,row_filter=row_filter)
     from .statistics_recording_names import decorate
-    decorate(db,rows,root,now)
+    # 复用同一次快照的身份信息与存活判定，避免逐行重复读证据表和重复 stat。
+    decorate(db,rows,root,now,identity=basis.get('identity'),alive=basis.get('source_alive'))
     if args.get('phase_none',['0'])[0]=='1':
         rows=[]
     # 前200/全部时，自己可能不在当前前100名单里：用范围筛选给出的名次补显示字段。

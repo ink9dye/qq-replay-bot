@@ -286,34 +286,46 @@ class QueryCore:
         return result
 
     def player_replays(self, name: str, identity: str = ""):
-        """P3：有 share 时返回 {items, link}（/s/ 分享链接，与 QQ「录像」同机制）；
-        否则退回门户 recordings 透传（无链接）。"""
-        if self.share is not None and self.store is not None and self.replay_root is not None:
-            return self._cached(("replay-links", identity, name), 30.0,
-                                lambda: self._replay_links(identity or "query", name))
+        """返回录像列表；提供 store/replay_root 时使用查询 API 的认证下载 URL。
+
+        不再创建公开分享链接：旧安卓的 QueryApi.downloadBytes() 会给
+        ``/query-api/replay/<id>`` 带 Bearer 令牌，因此不需要 public_base_url，
+        也不会每 3 秒重试就写一条 share_links。
+        """
+        if self.store is not None and self.replay_root is not None:
+            return self._cached(("replay-items", name), 30.0,
+                                lambda: self._replay_items(name))
         return self._cached(("replays", name), 30.0,
                             lambda: self.portal.get_json("/statistics/api/recordings", {"player": name}))
 
-    def _replay_links(self, identity: str, player: str) -> dict:
+    def _replay_items(self, player: str) -> dict:
         from .share import safe_replay_file
         cutoff = time.time() - 14 * 86400
         rows = [row for row in (self.store.replays_for_player(player) or [])
                 if float(row.get("recorded_at") or 0) >= cutoff
                 and safe_replay_file(self.replay_root, row["rel_path"])][-1000:]
         items = [dict(id=row.get("id"), name=Path(row["rel_path"]).name,
-                      recorded_at=row.get("recorded_at")) for row in rows]
-        if not rows:
-            return dict(ok=True, items=items, link=None)
-        # range_start 与 QQ 端一致：最近 14 天窗口（REPLAY_WINDOW_SECONDS）。
-        link = self.share.create_link(identity, player, [row.get("id") for row in rows],
-                                      cutoff)
-        if not link.get("public"):
-            raise PortalUnavailable("share_unavailable")
-        for item in items:
-            item["url"] = f"{link['url']}/file/{item['id']}"
-        return dict(ok=True, items=items,
-                    link=dict(url=link.get("url"), expires_at=link.get("expires_at"),
-                              public=link.get("public")))
+                      recorded_at=row.get("recorded_at"),
+                      url=f"/query-api/replay/{int(row['id'])}") for row in rows]
+        return dict(ok=True, items=items, link=None)
+
+    def replay_file(self, replay_id: int):
+        """认证下载端点用：返回 (Path, row) 或 None；限制 14 天和录像根目录。"""
+        if self.store is None or self.replay_root is None:
+            return None
+        try:
+            row = self.store.get_replay(int(replay_id))
+        except (TypeError, ValueError):
+            return None
+        if not row:
+            return None
+        if float(row.get("recorded_at") or 0) < time.time() - 14 * 86400:
+            return None
+        from .share import safe_replay_file
+        path = safe_replay_file(self.replay_root, row.get("rel_path") or "")
+        if path is None:
+            return None
+        return path, row
 
     def pie(self):
         """P3：前百卡组分布（top100_pie.collect 纯数据层；OCG 饼图无现成数据源，见 v5 默认决策 #2）。"""

@@ -105,10 +105,32 @@ def identity_metadata(db, digests, captures=None):
     return result
 
 
-def inherit_first_game_types(db,rows):
-    digests = {r['digest'] for r in rows}
-    captures=capture_metadata(db,digests)
-    metadata=identity_metadata(db,digests,captures)
+def identity_context(db, digests):
+    """一次请求内可复用的身份上下文：captures/metadata/pairs 都只按给定 digest 计算。"""
+    wanted = {digest for digest in digests if digest}
+    captures = capture_metadata(db, wanted) if wanted else {}
+    metadata = identity_metadata(db, wanted, captures) if wanted else {}
+    pairs = {}
+    if wanted:
+        for row in db.execute('SELECT digest,player FROM stat_views'):
+            if row['digest'] in wanted:
+                pairs.setdefault(row['digest'], set()).add(row['player'])
+    return dict(captures=captures, metadata=metadata, pairs=pairs, digests=wanted)
+
+
+def inherit_first_game_types(db, rows, digests=None, context=None):
+    """注解 rows 的首局身份；context 可复用同一请求内已算好的身份/配对信息。
+
+    rows 决定“哪些行需要注解”，digests 决定“身份信息算到哪些 digest 为止”
+    （调用方常用全部候选视角，让后续录像命名/首局卡组复用同一份结果）。
+    """
+    wanted = {row['digest'] for row in rows} if digests is None else {
+        digest for digest in digests if digest}
+    if context is None:
+        context = identity_context(db, wanted)
+    captures = context['captures']
+    metadata = context['metadata']
+    pairs = context['pairs']
     for row in rows:
         meta=metadata.get(row['digest'])
         row['observed_session_id']=meta[0] if meta else None
@@ -118,9 +140,7 @@ def inherit_first_game_types(db,rows):
         row['observed_identity_confirmed']=bool(meta and meta[2])
         row['first_game_status']='confirmed' if meta and meta[1:]==(1,True) else 'unconfirmed'
         row['observed_deck_type']=row.get('deck_type')
-    pairs={}
-    for row in db.execute('SELECT digest,player FROM stat_views'):
-        pairs.setdefault(row['digest'],set()).add(row['player'])
+    # 配对玩家来自 context（作用域覆盖本次注解的行），不再每次重扫整张 stat_views。
     for row in rows:
         row['observed_match_players'] = tuple(sorted(pairs.get(row['digest'], ())))
     def key(row):
@@ -149,6 +169,7 @@ def inherit_first_game_types(db,rows):
         row['classification_source']='same_match_first_game'if anchor else'post_side_first_game_missing'
         row['classification_source_digest']=anchor['digest']if anchor else None
         row['classification_reason']='post_side_not_classified_independently'
+    return context
 
 
 def classification_builds(db):

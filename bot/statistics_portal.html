@@ -79,7 +79,8 @@ const time=t=>t?new Date(t*1000).toLocaleString('zh-CN',{hour12:false}):'暂无'
 async function api(path){const r=await fetch('/statistics/api/'+path,{cache:'no-store',credentials:'same-origin'});if(!r.ok){let text=await r.text();try{text=JSON.parse(text).error||text}catch(_){}throw Error(r.status===403?'访问已到期，请重新使用本机入口打开。':text)}return r.json()}
 function options(id,values,label){const n=$(id),old=n.value,list=document.getElementById(id+'-options'),clean=[...new Set(values)].sort();if(list){list.replaceChildren(...clean.map(v=>{const o=el('option');o.value=v;return o}))}if(n.tagName==='INPUT'){n.value=clean.includes(old)?old:'';return}n.replaceChildren(el('option',label));n.firstChild.value='';for(const v of clean){const o=el('option',v);o.value=v;n.append(o)}n.value=clean.includes(old)?old:''}
 function render(){if(!data)return;const q=$('search').value.trim().toLocaleLowerCase(),d=$('deck').value.trim().toLocaleLowerCase();
-const rows=(searchRows||data.people).filter(p=>p.player.toLocaleLowerCase().includes(q)&&(!d||(p.observed?(p.deck_type||'未识别'):'未采集').toLocaleLowerCase().includes(d)));
+const g=(window.__pieGroup&&window.__pieGroup.names?window.__pieGroup.names:[]).map(x=>String(x).toLocaleLowerCase());
+const rows=(searchRows||data.people).filter(p=>{const t=(p.observed?(p.deck_type||'未识别'):'未采集').toLocaleLowerCase();return p.player.toLocaleLowerCase().includes(q)&&(d?t.includes(d):(g.length?g.includes(t):true))});
 $('count').textContent=`显示 ${rows.length} / ${data.current_players} 名玩家 · 点击“构筑”查看当局卡片与来源时间`;$('rows').replaceChildren();$('empty').hidden=rows.length>0;
 for(const p of rows){const tr=el('tr');tr.append(el('td',p.rank??'排名暂缺'));const name=el('td');name.append(el('div',p.player,'name'),el('div',p.points===null?'暂无当前积分':Number(p.points).toLocaleString('zh-CN',{maximumFractionDigits:2})+' 分','points'));tr.append(name);const deck=el('td');deck.append(el('div',p.observed?(p.deck_type||'卡组未识别'):'尚未采集',p.observed?'':'muted'));tr.append(deck);const action=el('td');if(p.observed){const b=el('button','构筑','detail');b.setAttribute('aria-label','查看'+p.player+'的构筑');b.onclick=()=>details(p.player);action.append(b)}else action.textContent='—';tr.append(action);$('rows').append(tr)}}
 async function load(){if(loading)return;loading=true;$('refresh').disabled=true;$('status').className='status busy';$('status').textContent='正在读取当前榜单…';try{const fresh=await api('roster');data=fresh;const r=data.roster;$('status').className='status'+(r.stale?' stale':'');$('status').textContent=`${r.stale?'榜单已过期，展示上次有效名单':'官方榜单有效'} · 有效时间 ${time(r.updated_at)}`;
@@ -203,6 +204,17 @@ function renderPie(data){const box=$('deckPie');if(!box)return;window.__piePaylo
    shapes.push('<path d="'+oPath+'" fill="none" stroke="#fff" stroke-width="1" data-deck="'+pieEsc(o.name)+'" style="cursor:pointer" pointer-events="all"><title>'+pieEsc(o.name)+' · '+o.players+'人 · '+o.percent+'%</title></path>');
    labels.push({a:oMid,text:o.name+'  '+o.percent+'%',deck:o.name});
    c=oEnd}
+  // 中环交集：与外环卡组同样有可见弧段和引导线，至少 3 人的交集才画，避免过密。
+  {
+   let mStart=angle;
+   for(const m of (pie.middle||[]).filter(x=>x.primary===cat.name&&x.primary!=='其他'&&(x.extras||[]).length&&x.extras.every(e=>cat.name===e||(pie.inner||[]).some(c=>c.name===e))&&x.players>0)){
+    const mSpan=(m.players/Math.max(1,cat.players))*span,mEnd=mStart+mSpan,mMid=(mStart+mEnd)/2;
+    const mColor=m.mixed||m.color||m.color_mixed||cat.color;
+    shapes.push('<path d="'+annulusPath(cx,cy,R*0.555,R*0.605,mStart,mEnd)+'" fill="'+pieEsc(mColor)+'" stroke="#fff" stroke-width="1" pointer-events="none"><title>'+pieEsc(m.label)+' '+m.players+'人 · '+m.percent+'%</title></path>');
+    labels.push({a:mMid,text:cat.name+m.label+'  '+m.players+'人',deck:''});
+    mStart=mEnd;
+   }
+  }
   angle=end}
  const cols={left:[],right:[]};
  for(const item of labels){const side=Math.cos(item.a)>=0?'right':'left';cols[side].push({a:item.a,text:item.text,deck:item.deck,side:side})}
@@ -213,7 +225,7 @@ function renderPie(data){const box=$('deckPie');if(!box)return;window.__piePaylo
  box.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="前100卡组分布：内环主大类，外环具体卡组">'+'<defs>'+defs.join('')+'</defs>'+shapes.join('')+'</svg>';
  const legend=$('deckPieLegend');if(legend){const nodes=[];
   for(const cat of pie.inner){const details=el('details',undefined,'pie-cat');details.open=nodes.length<3;
-   const summary=el('summary');const dot=el('i');dot.style.background=cat.color;summary.append(dot);summary.append(el('b',cat.name));summary.append(el('span',cat.players+'人 · '+cat.percent+'%','pie-cat-count'));summary.title='点击筛选：包含「'+cat.name+'」的卡组';summary.addEventListener('click',()=>onPieCategory(cat.name));details.append(summary);
+   const summary=el('summary');const dot=el('i');dot.style.background=cat.color;summary.append(dot);summary.append(el('b',cat.name));summary.append(el('span',(function(){var t=0,rows=((window.__pieData||{}).deck_pie||{}).middle||[];for(var i=0;i<rows.length;i++){var r=rows[i];if(r.primary===cat.name||(r.extras||[]).indexOf(cat.name)>=0)t+=r.players}return t||cat.players})()+'人 · '+cat.percent+'%','pie-cat-count'));summary.title='点击筛选：包含「'+cat.name+'」的卡组';summary.addEventListener('click',()=>onPieCategory(cat.name));details.append(summary);
    const body=el('div',undefined,'pie-sub');let number=0;
    for(const m of (pie.middle||[]).filter(x=>x.primary===cat.name)){const row=el('div',undefined,'pie-sub-row');const dot2=el('i');dot2.style.background=m.mixed||m.color;row.append(dot2);row.append(el('span',m.label+'  '+m.players+'人 · '+m.percent+'%','pie-sub-mid'));body.append(row)}
    const names=outerByPrimary.get(cat.name)||[];if(names.length){const namesBox=el('div',undefined,'pie-sub-names');for(const o of names){number+=1;const line=el('div',number+'. '+o.name+'  '+o.players+'人 · '+o.percent+'%','pie-sub-name');line.title='点击筛选：'+o.name;line.onclick=()=>onPieClick(o.name);namesBox.append(line)}body.append(namesBox)}
@@ -232,4 +244,257 @@ function details(player){location.href='/statistics/build?player='+encodeURIComp
 $('close').onclick=()=>{detailRequest++;$('dialog').close()};$('dialog').addEventListener('cancel',()=>detailRequest++);$('refresh').onclick=load;for(const id of ['deck'])$(id).addEventListener('input',()=>{render();paintPie()});$('search').addEventListener('input',()=>{clearTimeout(searchTimer);const id=++searchRequest,q=$('search').value.trim();searchRows=null;render();if(q)searchTimer=setTimeout(async()=>{try{const r=await api('player-search?q='+encodeURIComponent(q));if(id!==searchRequest)return;searchRows=r.people;render();$('count').textContent='搜索前100与订阅名单 · '+r.people.length+'名'+(r.limited?'（最多显示30名，请细化名称）':'')}catch(e){if(id===searchRequest)$('count').textContent=e.message}},300)});load();
 
 window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster')load()});
-</script></body><script src="/statistics/assets/statistics_nav.js"></script></html>
+</script></body>
+<script>
+(function(){
+  function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]})}
+  function renderSinglePie(data){
+    if(data&&data.deck_single) window.__pieData=data;
+    var box=document.getElementById('deckPie'); if(!box) return false;
+    var p=data&&data.deck_single, total=p&&p.total;
+    if(!p||!total||!(p.slices||[]).length) return false;
+    var W=980,H=780,cx=490,cy=390,R=300,r0=R*0.30,r1=R*0.94,b0=R*0.56;
+    var unit=360/total;
+    var sel=(document.getElementById('deck')||{}).value||'';
+    var items=(p.slices||[]).map(function(s){return{name:s.name,players:s.players,percent:s.percent,color:s.color,image:s.image,frames:s.image,kind:s.kind,bands:s.bands||[],decks:s.decks||[]}});
+    if(p.other&&p.other.players>0){items.push({name:p.other.name,players:p.other.players,percent:p.other.percent,color:p.other.color,image:p.other.image,frames:p.other.image,kind:'other',bands:[],parts:p.other.parts||[]})}
+    // 排序：按人数（百分比）降序；「其他」固定放最后；交集不再影响排序。
+    items.sort(function(a,b){
+      if(a.kind==='other')return 1;
+      if(b.kind==='other')return -1;
+      return b.players-a.players||(a.name<b.name?-1:1);
+    });
+    var a=-90; items.forEach(function(s){s.a0=a;s.a1=a+s.players*unit;a=s.a1});
+    items.forEach(function(s){
+      s.sel=!!sel&&(sel===s.name||(s.kind==='other'&&(s.parts||[]).some(function(q){return q.name===sel})));
+    });
+    var steps={};
+    for(var i=0;i<items.length-1;i++){
+      var L=items[i],Rn=items[i+1],ov=null;
+      (L.bands||[]).forEach(function(b){if(b.kind==='overlap'&&b.partner===Rn.name)ov=b});
+      (Rn.bands||[]).forEach(function(b){if(b.kind==='overlap'&&b.partner===L.name)ov=b});
+      if(ov){var w=ov.players*unit;steps[i]={th1:L.a1-w/2,th2:L.a1+w/2,span:w}}
+    }
+    // 交集：以 deck_pie.middle 为准，只补“两侧都是本图切片（非「其他」）”的相邻交集。
+    // 三幻魔等是单环切片时会被补上；魔女术等落在「其他」里的组不会出现。
+    (function(){
+      var names={};items.forEach(function(s){names[s.name]=1});
+      var mids=(data&&data.deck_pie&&data.deck_pie.middle)||[];
+      for(var i=0;i<items.length-1;i++){
+        var L=items[i],Rn=items[i+1];
+        if(steps[i]||!names[L.name]||!names[Rn.name]||L.name==='其他'||Rn.name==='其他')continue;
+        var hit=null;
+        mids.forEach(function(m){
+          if(hit||!m.extras||m.primary!==L.name||m.extras.length!==1||m.extras[0]!==Rn.name)return;
+          hit=m;
+        });
+        if(!hit)mids.forEach(function(m){
+          if(hit||!m.extras||m.primary!==Rn.name||m.extras.length!==1||m.extras[0]!==L.name)return;
+          hit=m;
+        });
+        if(!hit)continue;
+        var w=hit.players*unit;
+        steps[i]={th1:L.a1-w/2,th2:L.a1+w/2,span:w};
+        L.bands.push({kind:'overlap',side:'left',name:L.name+'∩'+Rn.name,partner:Rn.name,
+                      players:hit.players,percent:hit.players,images:[],image:null});
+      }
+    })();
+    function pt(r,deg){var t=deg*Math.PI/180;return[cx+r*Math.cos(t),cy+r*Math.sin(t)]}
+    function f(q){return q[0].toFixed(1)+' '+q[1].toFixed(1)}
+    function ar(r,a0,a1,sw){var lg=Math.abs(a1-a0)>180?1:0;return 'A'+r.toFixed(1)+' '+r.toFixed(1)+' 0 '+lg+' '+sw+' '+f(pt(r,a1))}
+    function slicePath(i){
+      var s=items[i],L=steps[i-1],Rt=steps[i];
+      var RR=s.sel?r1+26:r1;
+      var oa0=L?L.th2:s.a0, oa1=Rt?Rt.th2:s.a1, ia1=Rt?Rt.th1:s.a1, ia0=L?L.th1:s.a0;
+      var d='M'+f(pt(RR,oa0))+ar(RR,oa0,oa1,1);
+      if(Rt){d+=' L'+f(pt(b0,oa1))+ar(b0,oa1,ia1,0)}
+      d+=' L'+f(pt(r0,ia1))+ar(r0,ia1,ia0,0);
+      if(L){d+=' L'+f(pt(b0,ia0))+ar(b0,ia0,oa0,1)}
+      return d+' Z';
+    }
+    function bandPath(a0,a1,rr0,rr1){
+      var d='M'+f(pt(rr1,a0))+ar(rr1,a0,a1,1)+' L'+f(pt(rr0,a1))+ar(rr0,a1,a0,0);
+      return d+' Z';
+    }
+    function bboxOf(pts){
+      var x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+      pts.forEach(function(q){x0=Math.min(x0,q[0]);y0=Math.min(y0,q[1]);x1=Math.max(x1,q[0]);y1=Math.max(y1,q[1])});
+      return[x0,y0,x1,y1];
+    }
+    function samples(a0,a1,rrs){
+      var out=[];
+      for(var k=0;k<=16;k++){var ang=a0+(a1-a0)*k/16;rrs.forEach(function(rr){out.push(pt(rr,ang))})}
+      return out;
+    }
+    var CARD_W=400,CARD_H=580,AX=63,AY=103,AW=282,AH=273;
+    function art(code,clip,bbox){
+      if(!code) return '';
+      var x0=bbox[0],y0=bbox[1],bw=Math.max(1,bbox[2]-bbox[0]),bh=Math.max(1,bbox[3]-bbox[1]);
+      var sc=Math.max(bw/AW,bh/AH),iw=CARD_W*sc,ih=CARD_H*sc;
+      var x=x0-AX*sc,y=y0-AY*sc;
+      // 卡框内插画区在用户在坐标系里的矩形：只允许这块内容出现，框、卡名、效果文本一律不显示
+      var aid='ac'+(++idx);
+      defs.push('<clipPath id="'+aid+'"><rect x="'+x0.toFixed(1)+'" y="'+y0.toFixed(1)+'" width="'+(AW*sc).toFixed(1)+'" height="'+(AH*sc).toFixed(1)+'"/></clipPath>');
+      return '<g clip-path="url(#'+clip+')"><image href="'+cardArtUrl(code)+'" x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+iw.toFixed(1)+'" height="'+ih.toFixed(1)+'" preserveAspectRatio="none" clip-path="url(#'+aid+')" pointer-events="none"/></g>';
+    }
+    var defs=[],shapes=[],labels=[],idx=0;
+    items.forEach(function(s,i){
+      var d=slicePath(i), cid='sp'+(++idx);
+      defs.push('<clipPath id="'+cid+'"><path d="'+d+'"/></clipPath>');
+      var lo=s.a0, hi=s.a1;
+      if(steps[i-1]) lo=Math.min(lo,steps[i-1].th1);
+      if(steps[i]) hi=Math.max(hi,steps[i].th2);
+      var pts=samples(lo,hi,[r0,s.sel?r1+26:r1]);
+      var bb=bboxOf(pts);
+      var isSel=s.sel;
+      var grp=[];
+      grp.push(art(s.frames,cid,bb));
+      grp.push('<rect x="0" y="0" width="'+W+'" height="'+H+'" fill="#0a1812" opacity="0.22" clip-path="url(#'+cid+')" pointer-events="none"/>');
+      grp.push('<path d="'+d+'" fill="none" stroke="'+(isSel?'none':'#fff')+'" stroke-width="1.4" pointer-events="all" data-deck="'+esc(s.name)+'" style="cursor:pointer"><title>'+esc(s.name)+' · '+(function(){var t=0,rows=((window.__pieData||{}).deck_pie||{}).middle||[];for(var i=0;i<rows.length;i++){var r=rows[i];if(r.primary===s.name||(r.extras||[]).indexOf(s.name)>=0)t+=r.players}return t||s.players})()+'人 · '+s.percent+'%</title></path>');
+      // 嵌套：连续同卡图合并
+      var members=(s.bands||[]).filter(function(b){return b.kind==='member'}).slice();
+      var groups=[], mcursor=s.a0;
+      members.forEach(function(b){
+        var code=b.image||s.image, w=b.players*unit;
+        var g=groups.length?groups[groups.length-1]:null;
+        if(g&&g.code===code){g.a1+=w; g.parts.push({name:b.name,players:b.players})}
+        else{groups.push({a0:mcursor,a1:mcursor+w,code:code,parts:[{name:b.name,players:b.players}]})}
+        mcursor+=w;
+      });
+      var parentSel=(sel===s.name);
+      var grpSel=window.__pieGroup||null;
+      groups.forEach(function(g){
+        var gnames=g.parts.map(function(pt){return pt.name});
+        var isG=!!grpSel&&(grpSel.names||[]).length===gnames.length&&gnames.every(function(n){return (grpSel.names||[]).indexOf(n)>=0});
+        var ext=parentSel||isG;
+        if(g.code!==s.image){
+          var rr=ext?r1+26:r1;
+          var bd=bandPath(g.a0,g.a1,b0,rr), bid='bp'+(++idx);
+          defs.push('<clipPath id="'+bid+'"><path d="'+bd+'"/></clipPath>');
+          var gb=bboxOf(samples(g.a0,g.a1,[b0,rr]));
+          grp.push(art(g.code,bid,gb));
+          grp.push('<rect x="0" y="0" width="'+W+'" height="'+H+'" fill="#0a1812" opacity="0.22" clip-path="url(#'+bid+')" pointer-events="none"/>');
+          grp.push('<path d="'+bd+'" fill="none" stroke="'+(ext?'none':'#fff')+'" stroke-width="1.2"/>');
+        }
+        if(g.code===s.image) return; // 跟母片同一张卡：整块都归母片点击，不再单独成块
+        var rr2=ext?r1+26:r1;
+        var bd2=bandPath(g.a0,g.a1,b0,rr2);
+        var label=g.parts.reduce(function(a,b){return b.players>a.players?b:a},g.parts[0]).name;
+        grp.push('<path d="'+bd2+'" fill="none" stroke="none" pointer-events="all" data-deck="'+esc(label)+'" data-group="'+esc(JSON.stringify(gnames))+'" style="cursor:pointer"><title>'+esc(label)+' · '+g.parts.map(function(pt){return pt.players+'人'}).join(' + ')+'</title></path>');
+      });
+      var m0=(s.a0+s.a1)/2*Math.PI/180;
+      shapes.push('<g data-slice="'+esc(s.name)+'" data-mid="'+(m0*180/Math.PI).toFixed(2)+'">'+grp.join('')+'</g>');
+      labels.push({a:(s.a0+s.a1)/2,text:s.name+'  '+s.percent+'%',name:s.name,color:s.color});
+    });
+    // 圆环边缘
+
+    // 外侧标签（无折线，简单避碰）
+    var lefts=labels.filter(function(l){return Math.cos(l.a*Math.PI/180)<0}).sort(function(x,y){return Math.sin(x.a*Math.PI/180)-Math.sin(y.a*Math.PI/180)});
+    var rights=labels.filter(function(l){return Math.cos(l.a*Math.PI/180)>=0}).sort(function(x,y){return Math.sin(x.a*Math.PI/180)-Math.sin(y.a*Math.PI/180)});
+    function place(list,side){
+      list.forEach(function(l){
+        var ang=l.a*Math.PI/180, rr=r1+16;
+        var x=cx+Math.cos(ang)*rr, y=cy+Math.sin(ang)*rr;
+        var right=Math.cos(ang)>=0;
+        shapes.push('<circle cx="'+(x+(right?4:-4)).toFixed(1)+'" cy="'+(y-5).toFixed(1)+'" r="3.2" fill="'+l.color+'"/>');
+        shapes.push('<text x="'+(x+(right?10:-10)).toFixed(1)+'" y="'+y.toFixed(1)+'" dominant-baseline="middle" text-anchor="'+(right?'start':'end')+'" font-size="14" font-weight="600" fill="#173529" data-deck="'+esc(l.name)+'" style="cursor:pointer">'+esc(l.text)+'</text>');
+      });
+    }
+    place(lefts,'left'); place(rights,'right');
+    shapes.push('<text x="'+cx+'" y="'+(cy+4)+'" text-anchor="middle" font-size="34" font-weight="700" fill="#173529">'+total+'</text>');
+    shapes.push('<text x="'+cx+'" y="'+(cy+26)+'" text-anchor="middle" font-size="12" fill="#65776b">总人数 · 单环 100%</text>');
+    var svg='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="前100卡组分布" style="width:100%;max-width:none;display:block"><defs>'+defs.join('')+'</defs>'+shapes.join('')+'</svg>';
+    // 右侧明细
+    var html='<div style="margin-top:14px;border-top:1px solid #dbe2d8;padding-top:10px;columns:3 280px;column-gap:26px;font-size:12.5px;line-height:1.7">';
+    html+='<div style="font-weight:700;margin-bottom:6px">每个切片包含的卡组</div>';
+    html+='<div style="color:#7a8b80;font-size:11.5px;margin-bottom:10px">◆ = 外环嵌套 &gt;4%；交集 = 两个大类共同占有</div>';
+    var pieNames={};items.forEach(function(x){pieNames[x.name]=1});
+    var ordered=items.slice().sort(function(x,y){return x.kind==='other'?1:(y.kind==='other'?-1:0)});
+    ordered.forEach(function(s){
+      var block='<div style="break-inside:avoid;margin-bottom:10px">';
+      block+='<div style="margin:0 0 2px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+s.color+';margin-right:6px"></span><b>'+esc(s.name)+'</b> '+((s.kind==='other')?s.players:(function(){var t=0,rows=((window.__pieData||{}).deck_pie||{}).middle||[];for(var i=0;i<rows.length;i++){var r=rows[i];if(r.primary===s.name||(r.extras||[]).indexOf(s.name)>=0)t+=r.players}return t||s.players})())+'人 · '+s.percent+'%</div>';
+      var pieHit=function(o,kind){if(kind==='deck'){if(o.name===s.name)return true}else if(o.primary===s.name)return true;return (o.extras||[]).indexOf(s.name)>=0};
+      var pieRow=function(o){var nested=(o.players*100/total)>4;var ex=(o.name!==s.name&&o.primary&&o.primary!==s.name)?' <span style="color:#8a6a2a">∩'+esc(o.primary)+'</span>':'';return '<div data-deck="'+esc(o.name)+'" style="cursor:pointer;padding-left:16px;color:'+(nested?'#4a5a52':'#6b7a70')+'">'+(nested?'◆ ':'· ')+esc(o.name)+' '+o.players+ex+'</div>'};
+      var isCat=(s.kind==='cat'||s.kind==='category'); if(isCat){
+        ((data&&data.deck_pie&&data.deck_pie.outer)||[]).forEach(function(o){if(pieHit(o,'category'))block+=pieRow(o)});
+        (s.bands||[]).forEach(function(b){if(b.kind==='overlap')block+='<div style="padding-left:16px;color:#7a5a24">· 交集 '+esc(b.name)+' '+b.players+'人（内环/外环各一张卡图）</div>'});
+        ((data&&data.deck_pie&&data.deck_pie.middle)||[]).forEach(function(m){var ex=m.extras||[];if(ex.length!==1||m.primary!==s.name)return;var pp=ex[0];if(!pieNames[pp]||pp==='其他')return;var cov=(s.bands||[]).some(function(b){return b.kind==='overlap'&&b.partner===pp});if(cov)return;block+='<div style="padding-left:16px;color:#7a5a24">· 交集 '+esc(s.name)+'∩'+esc(pp)+' '+m.players+'人（内环/外环各一张卡图）</div>'});
+      }else if(s.kind==='deck'){
+        // 独立卡组：列出所有带该字段的卡组（含混合构筑）；只有它自己时不重复列。
+        var hits=[];((data&&data.deck_pie&&data.deck_pie.outer)||[]).forEach(function(o){if(o.name===s.name||(o.extras||[]).indexOf(s.name)>=0)hits.push(o)});
+        hits.forEach(function(o){block+=pieRow(o)});
+      }else{
+        (s.parts||[]).forEach(function(q){
+          block+='<div data-deck="'+esc(q.name)+'" style="cursor:pointer;padding-left:16px;color:#5c6a62">· '+esc(q.name)+' '+q.players+'</div>';
+        });
+      }
+      html+=block+'</div>';
+    });
+    html+='</div>';
+    var bd='';
+    ordered.forEach(function(s){
+      if(s.kind==='other'){
+        bd+='<div style="break-inside:avoid;margin-bottom:10px"><b style="color:#173529;cursor:pointer" data-deck="'+esc(s.name)+'">其他</b> <span style="color:#65776b">'+s.players+'人</span>';
+        (s.parts||[]).forEach(function(q){
+          bd+='<div data-deck="'+esc(q.name)+'" style="cursor:pointer;color:#3c4f45;padding:1px 0">· '+esc(q.name)+' '+q.players+'</div>';
+        });
+        bd+='</div>';
+        return;
+      }
+      bd+='<div style="break-inside:avoid;margin-bottom:10px"><b style="color:#173529;cursor:pointer" data-deck="'+esc(s.name)+'">'+esc(s.name)+'</b> <span style="color:#65776b">'+(function(){var t=0,rows=((window.__pieData||{}).deck_pie||{}).middle||[];for(var i=0;i<rows.length;i++){var r=rows[i];if(r.primary===s.name||(r.extras||[]).indexOf(s.name)>=0)t+=r.players}return t||s.players})()+'人 · '+s.percent+'%</span>';
+      if(s.kind!=='deck'){
+        (s.decks||[]).forEach(function(d){
+          var ex=(d.extras&&d.extras.length)?' <span style="color:#8a6a2a">∩'+d.extras.map(esc).join('、')+'</span>':'';
+          bd+='<div data-deck="'+esc(d.name)+'" style="cursor:pointer;color:#3c4f45;padding:1px 0">· '+esc(d.name)+' '+d.players+ex+'</div>';
+        });
+      }
+      bd+='</div>';
+    });
+    box.innerHTML='<div style="width:100%">'+svg+'</div>'+html;
+    box.setAttribute('data-single-pie','1');
+    var legend=document.getElementById('deckPieLegend'); if(legend) legend.replaceChildren();
+    var note=document.getElementById('deckPieNote');
+    if(note){var base='严格 >5% 单独成片，其余并入「其他」；外环嵌套 >4% 的组内卡组与相邻大类交集；卡图只取卡框内插画。';
+      var gs=window.__pieGroup; note.textContent=base+(gs?(' · 已筛：'+gs.label+'（合并块 '+gs.names.length+' 个卡组，再点一次取消）'):'');
+    }
+    box.onclick=function(ev){
+      var node=ev.target;
+      while(node&&node!==box&&!(node.getAttribute&&node.getAttribute('data-deck'))) node=node.parentNode;
+      if(!node||node===box) return;
+      var name=node.getAttribute('data-deck');
+      if(!name) return;
+      var raw=node.getAttribute('data-group');
+      var inp=document.getElementById('deck');
+      if(raw){
+        var arr=[]; try{arr=JSON.parse(raw)}catch(e){arr=[]}
+        var cur=window.__pieGroup;
+        var same=!!cur&&(cur.names||[]).length===arr.length&&(cur.names||[]).every(function(x){return arr.indexOf(x)>=0});
+        window.__pieGroup=same?null:{names:arr,label:name};
+        if(inp) inp.value='';
+      }else{
+        window.__pieGroup=null;
+        if(inp) inp.value=(inp.value===name)?'':name;
+      }
+      try{ if(typeof window.render==='function') window.render(); }catch(e){}
+      if(window.__pieData){ try{ renderSinglePie(window.__pieData); }catch(e){} }
+    };
+    return true;
+  }
+  (function(){
+    var inp=document.getElementById('deck');
+    if(inp) inp.addEventListener('input',function(){ if(window.__pieGroup){ window.__pieGroup=null; try{ if(typeof window.render==='function') window.render(); }catch(e){} } });
+  })();
+  var old=window.renderPie;
+  setTimeout(function(){
+    try{
+      var b=document.getElementById('deckPie');
+      if(b&&!b.getAttribute('data-single-pie')&&typeof render==='function') render();
+    }catch(e){}
+  },1500);
+  window.renderPie=function(data){
+    try{ if(renderSinglePie(data)) return; }catch(e){ if(window.console) console.error('single pie failed',e); }
+    return old.apply(this,arguments);
+  };
+})();
+</script>
+<script src="/statistics/assets/statistics_nav.js"></script></html>

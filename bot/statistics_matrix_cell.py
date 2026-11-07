@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+import secrets
+import time
 
 from .card_identity import reference as identity_reference
 from .card_search import card_name
@@ -21,6 +23,34 @@ VERSION = 1
 MAX_CARDS = 50
 MAX_RECORDINGS = 200
 OUTCOMES = ('win', 'loss', 'draw')
+
+# 矩阵格刚算出的候选样本只在本进程保留 120 秒，供紧随其后的 Side 按需分析
+# 复用同一集合；不是持久缓存，也不写磁盘。token 不可猜，不暴露玩家数据。
+_CELL_SAMPLE_TTL = 120.0
+_CELL_SAMPLE_MAX = 16
+_CELL_SAMPLES = {}
+_CELL_SAMPLE_ORDER = []
+
+
+def _remember_cell_samples(samples):
+    now = time.time()
+    token = secrets.token_urlsafe(12)[:16]
+    _CELL_SAMPLES[token] = (now, list(samples))
+    _CELL_SAMPLE_ORDER.append((now, token))
+    while _CELL_SAMPLE_ORDER and (len(_CELL_SAMPLES) > _CELL_SAMPLE_MAX
+                                  or _CELL_SAMPLE_ORDER[0][0] < now - _CELL_SAMPLE_TTL):
+        _, old = _CELL_SAMPLE_ORDER.pop(0)
+        _CELL_SAMPLES.pop(old, None)
+    return token
+
+
+def cached_cell_samples(token):
+    if not token:
+        return None
+    entry = _CELL_SAMPLES.get(str(token))
+    if not entry or entry[0] < time.time() - _CELL_SAMPLE_TTL:
+        return None
+    return entry[1]
 
 
 def threshold_value(raw):
@@ -158,5 +188,5 @@ def query(db, replay_root, now, row, column, first_player=None, internal_only=Fa
         denominator=denominator, unknown=len(samples) - denominator,
         cards=shown, cards_total=total_cards, truncated=total_cards > len(shown),
         recordings=ordered[:MAX_RECORDINGS], recordings_total=len(ordered),
-        notes=notes,
+        notes=notes, side_token=_remember_cell_samples(samples),
     )
