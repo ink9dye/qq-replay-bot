@@ -74,19 +74,33 @@ def _put(path, key, value, now):
                 cache.execute('DELETE FROM entries WHERE key=?',(entry,))
 
 
-def _chunked_tables(db, loader):
+def _bucket_index(digest):
+    return hashlib.sha256(str(digest).encode()).digest()[0] % 32
+
+
+def _load_bucket(db, loader, rows):
+    db.execute('DELETE FROM _report_chunk_selected');db.execute('DELETE FROM _report_chunk_builds')
+    db.executemany('INSERT INTO _report_chunk_selected VALUES(?,?)',rows)
+    db.execute('INSERT OR IGNORE INTO _report_chunk_builds SELECT v.build FROM stat_views v '
+               'JOIN _report_chunk_selected s ON s.digest=v.digest AND s.player=v.player '
+               'WHERE v.build IN (SELECT build FROM _report_builds)')
+    return loader('_report_chunk_selected','_report_chunk_builds')
+
+
+def _chunked_tables(db, loader, fact_digest_index=None):
     # Stable digest buckets survive new uploads without invalidating every shard.
     # Cache stores raw facts only; current eligibility was already recalculated.
+    # 未命中的桶合并成一次取数：逐桶查询会为每个桶各扫一遍 stat_card_facts，
+    # 桶数越多越慢；单次读取后按 digest 哈希把行分回各桶，缓存键与桶划分保持不变。
     keys=list(db.execute('SELECT digest,player FROM _report_selected'))
     buckets={}
     for digest,player in keys:
-        bucket=hashlib.sha256(str(digest).encode()).digest()[0] % 32
-        buckets.setdefault(bucket,[]).append((digest,player))
+        buckets.setdefault(_bucket_index(digest),[]).append((digest,player))
     db.execute('DROP TABLE IF EXISTS temp._report_chunk_selected')
     db.execute('DROP TABLE IF EXISTS temp._report_chunk_builds')
     db.execute('CREATE TEMP TABLE _report_chunk_selected(digest TEXT,player TEXT,PRIMARY KEY(digest,player))')
     db.execute('CREATE TEMP TABLE _report_chunk_builds(build TEXT PRIMARY KEY)')
-    facts=[];copies={}
+    values={};missing=[]
     for bucket,rows in sorted(buckets.items()):
         db.execute('DELETE FROM _report_chunk_selected');db.execute('DELETE FROM _report_chunk_builds')
         db.executemany('INSERT INTO _report_chunk_selected VALUES(?,?)',rows)
@@ -99,21 +113,82 @@ def _chunked_tables(db, loader):
         if identity:
             try:value=_get(*identity,time.time())
             except (sqlite3.Error,OSError,ValueError,TypeError):pass
-        if value is None:
-            value=loader('_report_chunk_selected','_report_chunk_builds')
-            if identity:
-                try:_put(*identity,value,time.time())
-                except (sqlite3.Error,OSError,ValueError,TypeError):pass
-        facts.extend(value['facts'])
-        for row in value['copies']:copies[tuple(row[:3])]=row
+        if value is None:missing.append((bucket,identity))
+        else:values[bucket]=value
+    if missing:
+        wanted={bucket for bucket,_ in missing}
+        if fact_digest_index is None:
+            # 调用方没有声明 facts 里 digest 的列位置：无法拆分，按原方式逐桶读取。
+            for bucket,identity in missing:
+                value=_load_bucket(db,loader,buckets[bucket])
+                values[bucket]=value
+                if identity:
+                    try:_put(*identity,value,time.time())
+                    except (sqlite3.Error,OSError,ValueError,TypeError):pass
+        else:
+            rows=[row for bucket in sorted(wanted) for row in buckets[bucket]]
+            db.execute('DELETE FROM _report_chunk_selected');db.execute('DELETE FROM _report_chunk_builds')
+            db.executemany('INSERT INTO _report_chunk_selected VALUES(?,?)',rows)
+            db.execute('INSERT OR IGNORE INTO _report_chunk_builds SELECT v.build FROM stat_views v '
+                       'JOIN _report_chunk_selected s ON s.digest=v.digest AND s.player=v.player '
+                       'WHERE v.build IN (SELECT build FROM _report_builds)')
+            combined=loader('_report_chunk_selected','_report_chunk_builds')
+            raw_facts=combined.pop('facts',[])
+            raw_copies=combined.pop('copies',[])
+            # 单次取回的是“缺失桶的并集”，按 digest 哈希拆回各桶；copies 按 build 归属分发。
+            # 桶内顺序可能与逐桶查询不同，但 _merge_fact_rows 与后续按卡聚合都与顺序无关。
+            builds_by_bucket={bucket:set() for bucket in wanted}
+            for row in db.execute('SELECT v.digest,v.build FROM stat_views v '
+                                  'JOIN _report_chunk_selected s ON s.digest=v.digest AND s.player=v.player '
+                                  'WHERE v.build IN (SELECT build FROM _report_builds)'):
+                bucket=_bucket_index(row[0])
+                if bucket in wanted:builds_by_bucket[bucket].add(row[1])
+            buckets_by_build={}
+            for bucket,builds in builds_by_bucket.items():
+                for build in builds:buckets_by_build.setdefault(build,set()).add(bucket)
+            bucket_of={digest:_bucket_index(digest) for bucket,rows in buckets.items()
+                       for digest,_ in rows}
+            facts_by_bucket={bucket:[] for bucket in wanted}
+            split=True
+            for row in raw_facts:
+                if isinstance(row,dict):
+                    split=False;break
+                try:digest=row[fact_digest_index]
+                except (IndexError,TypeError):split=False;break
+                bucket=bucket_of.get(digest)
+                if bucket is None:
+                    split=False;break
+                facts_by_bucket.setdefault(bucket,[]).append(row)
+            if not split:
+                # 无法按 digest 拆分（loader 结构不同）→ 逐桶读取，保持原语义与缓存行为。
+                for bucket,identity in missing:
+                    value=_load_bucket(db,loader,buckets[bucket])
+                    values[bucket]=value
+                    if identity:
+                        try:_put(*identity,value,time.time())
+                        except (sqlite3.Error,OSError,ValueError,TypeError):pass
+            else:
+                copies_by_bucket={bucket:[] for bucket in wanted}
+                for row in raw_copies:
+                    for bucket in buckets_by_build.get(row[0],()):copies_by_bucket[bucket].append(row)
+                for bucket,identity in missing:
+                    value=dict(facts=facts_by_bucket.get(bucket,[]),copies=copies_by_bucket.get(bucket,[]))
+                    values[bucket]=value
+                    if identity:
+                        try:_put(*identity,value,time.time())
+                        except (sqlite3.Error,OSError,ValueError,TypeError):pass
+    facts=[];copies={}
+    for bucket in sorted(values):
+        facts.extend(values[bucket]['facts'])
+        for row in values[bucket]['copies']:copies[tuple(row[:3])]=row
     return dict(copies=list(copies.values()),facts=facts)
 
 
-def raw_tables(db, loader, projection=None, chunk_loader=None):
+def raw_tables(db, loader, projection=None, chunk_loader=None, fact_digest_index=None):
     if chunk_loader is not None:
         count=db.execute('SELECT COUNT(*) FROM _report_selected').fetchone()[0]
         if count>300:
-            return _chunked_tables(db,chunk_loader)
+            return _chunked_tables(db,chunk_loader,fact_digest_index)
 
     identity=None
     try:

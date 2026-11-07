@@ -1,0 +1,214 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>设备与观战 · Arena Observatory</title><link rel="stylesheet" href="/statistics/assets/statistics_nav.css"><style>
+:root{font:15px "Microsoft YaHei",system-ui,sans-serif;color:#20392d;background:#f2f4ef;--green:#173f32;--muted:#687c6e;--line:#dee6da}*{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}button{cursor:pointer}a{color:#275c40}main{max-width:1240px;margin:auto;padding:32px 24px 60px}.eyebrow{font-size:11px;letter-spacing:.17em;font-weight:700;color:#71876a}h1{font-size:31px;margin:8px 0}h2{font-size:17px;margin:0}.intro{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:25px}.intro p{margin:0;color:var(--muted);font-size:13px;line-height:1.7}.live{font-size:12px;background:#e2ebd9;border-radius:20px;padding:8px 12px;white-space:nowrap}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}.kpi{background:white;border:1px solid var(--line);padding:18px 21px;border-radius:12px}.kpi:first-child{background:var(--green);color:white}.label,small{font-size:12px;color:var(--muted)}.kpi:first-child .label,.kpi:first-child small{color:#c0d7b9}.value{font-size:34px;font-weight:700;line-height:1.5;font-variant-numeric:tabular-nums}.kpi.stale{background:#fff8e8;border-color:#ecd49c}.kpi.stale .value{color:#a86a12}.kpi.stale .label,.kpi.stale small{color:#8a6a26}small{font-size:11px}.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:17px}.toolbar input{flex:1;min-width:200px;border:1px solid #cdd8c6;background:white;border-radius:8px;padding:10px 12px}.toolbar select,.toolbar button{border:1px solid #cdd8c6;background:white;border-radius:8px;padding:10px;color:#234532}.toolbar label{font-size:12px;color:var(--muted);display:flex;gap:7px;align-items:center}.toolbar input[type=checkbox]{min-width:0;flex:none;accent-color:var(--green)}.layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}.aside{display:grid;gap:20px}.panel{background:white;border:1px solid var(--line);border-radius:12px;padding:21px}.panelhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:19px}.panelhead a{font-size:12px}.cards{display:grid;gap:12px}.device{border:1px solid var(--line);border-radius:9px;padding:16px}.devicehead{display:flex;justify-content:space-between;gap:10px;align-items:center}.name{font-size:16px;font-weight:700;overflow-wrap:anywhere}.ip{font-family:Consolas,monospace;font-size:12px;color:var(--muted);margin:5px 0 14px}.badge{font-size:11px;padding:4px 9px;border-radius:20px;background:#edf3e5;color:#466b32;white-space:nowrap}.badge.off{color:#747a75;background:#eff0ee}.badge.busy{background:#fdf0d8;color:#8a6314}.capacity,.meta{display:flex;justify-content:space-between;font-size:12px}.capacity b{font-size:16px}.track{height:7px;background:#e9eee4;border-radius:4px;margin:10px 0}.fill{height:100%;background:#82a656;border-radius:4px}.empty{padding:26px 12px;text-align:center;font-size:13px;color:var(--muted)}.iprow{padding:15px 0;border-bottom:1px solid #edf0e9}.iprow:last-child{border:0}.iprow code{font-size:12px}.meta{font-size:11px;color:var(--muted)}.note,.sub{font-size:12px;color:var(--muted);line-height:1.7;margin:14px 0 0}.sub{font-size:11px;margin-top:4px}.records{margin-top:20px}.scroll{overflow:auto;max-height:520px}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;background:#f5f7f2;font-size:11px;color:var(--muted);position:sticky;top:0}td,th{padding:13px 12px;border-bottom:1px solid #edf0e9}td:first-child{min-width:235px;font-weight:600}td:nth-child(2){min-width:130px}td small{display:block;font-size:10px;color:var(--muted);font-weight:400;margin-top:3px}.ok{color:#4f7737;white-space:nowrap}.notice,.alert{background:#fff4d9;border:1px solid #ecd49c;border-radius:8px;color:#76591a;padding:12px 16px;font-size:13px;line-height:1.6;margin:0 0 16px}.alert.warn{background:#fdeee0;border-color:#e8c49b;color:#7a4b17}.alert.info{background:#eef4ea;border-color:#d5e2c8;color:#3f5c34}.hours{display:flex;align-items:flex-end;gap:2px;height:96px;margin:4px 0}.hcol{flex:1;min-width:0;height:100%;display:flex;align-items:flex-end}.hbar{width:100%;min-height:2px;background:#dfe8d6;border-radius:2px 2px 0 0}.hbar.has{background:#82a656}.hbar.now{background:var(--green)}.hoursAxis{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:2px}.hoursMeta{margin-top:10px}.foot{display:flex;gap:15px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:16px}.foot b{color:#3f5c34;font-weight:700}:focus-visible{outline:3px solid #a5c878;outline-offset:3px}button:disabled{opacity:.6}@media(max-width:850px){.layout{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}main{padding:24px 14px}.panel{padding:16px}}@media(max-width:450px){h1{font-size:25px}.intro{display:block}.live{display:inline-block;margin-top:12px}.kpi{padding:13px}.value{font-size:28px}.toolbar label{width:100%}}
+.rooms{margin-top:20px}.rooms td:first-child{min-width:110px}.rooms td:nth-child(2){min-width:270px}.rooms .mut{color:var(--muted)}.rooms .ok{white-space:nowrap}.rooms .bad{color:#a33b2e;font-weight:600;white-space:nowrap}.rooms .players{font-weight:400;color:var(--muted);font-size:11px;margin-top:3px}.rooms .roomkey{font-size:10px;color:var(--muted);font-weight:400}.roomsEnd{margin-top:22px}.record-history{max-height:65vh;overflow:auto}.record-history thead{position:sticky;top:0;background:white;z-index:1}.history-actions{display:flex;align-items:center;gap:12px;margin-top:14px}.history-actions button{border:1px solid #cdd8c6;background:#edf3e5;border-radius:8px;padding:9px 15px}</style></head><body><nav class="main-nav"><a href="/statistics">玩家排名</a><a href="/statistics/cards-report">卡片统计</a><a href="/statistics/recordings">录像筛选</a><a href="/statistics/devices" aria-current="page">设备与观战</a></nav><main>
+<div class="intro"><div><div class="eyebrow">ARENA OBSERVATORY / OPERATIONS</div><h1>设备与观战</h1><p>设备连接、并发占用、每个观战房间与最近入库对战。服务端只知道把哪间房派给了哪台设备、实际收到几个录像，不解析打到第几局。</p></div><div class="live" id="live" aria-live="polite">正在连接状态服务</div></div>
+<div id="notice" class="notice" role="alert" hidden></div><div id="alert" class="alert" role="status" aria-live="polite" hidden></div>
+<section class="kpis" aria-label="实时概览"><div class="kpi"><div class="label">在线设备</div><div class="value" id="online">—</div><small id="offline">等待首次采样</small></div><div class="kpi"><div class="label">执行中的观战任务</div><div class="value" id="active">—</div><small id="capacity">有效槽位 —</small></div><div class="kpi"><div class="label">等待认领</div><div class="value" id="pending">—</div><small>等待观战的房间数；采集采样过期显示 —</small></div><div class="kpi" id="lastKpi"><div class="label">最近入库</div><div class="value" id="lastAge">—</div><small id="lastMeta">等待采样</small></div></section>
+<div class="toolbar"><input id="search" type="search" placeholder="搜索设备、IP、房间或对战玩家" aria-label="搜索设备、IP、房间或玩家"><select id="filter" aria-label="设备状态"><option value="all">全部设备</option><option value="online">仅在线</option><option value="offline">仅离线</option></select><select id="interval" aria-label="自动刷新间隔"><option value="10">每 10 秒刷新</option><option value="30">每 30 秒刷新</option><option value="60">每 60 秒刷新</option></select><button id="refresh">刷新</button><label><input id="auto" type="checkbox" checked>自动刷新</label></div>
+<div class="layout"><section class="panel"><div class="panelhead"><h2>设备并发</h2><small id="deviceCount"></small></div><div id="devices" class="cards"></div><p class="note">执行中表示设备已认领任务，不等同于录像已保存。下方入库列表用于确认实际收录。</p></section><div class="aside"><aside class="panel"><h2>按出口 IP 汇总</h2><div id="ips"></div><p class="note">同一出口下的设备共享 IP 并发上限。127.0.0.1 表示服务器本机观战端。</p></aside><aside class="panel"><h2>近 24 小时入库</h2><div id="hours" class="hours" role="img" aria-label="近 24 小时每小时入库场次"></div><div class="hoursAxis"><span id="hoursStart"></span><span id="hoursEnd"></span></div><p class="note hoursMeta" id="hoursMeta"></p></aside></div></div>
+<section class="panel rooms"><div class="panelhead"><div><h2>观战中的房间</h2><div class="sub">服务端任务分配；每台设备的每个并发任务单独一行。局数不解析，只显示实际回传的录像数。</div></div><small id="roomCount"></small></div><div class="scroll"><table><thead><tr><th>设备</th><th>对局</th><th>已回传</th><th>最近回传</th><th>已观战</th><th>状态</th></tr></thead><tbody id="rooms"></tbody></table></div><div class="panelhead roomsEnd"><div><h2>最近结束的房间</h2><div class="sub">从并发列表消失且服务端没有收到该房间录像时，判定为“未能传回录像”。</div></div><small id="endedCount"></small></div><div class="scroll" style="max-height:320px"><table><thead><tr><th>设备</th><th>对局</th><th>结果</th><th>结束时间</th><th>观战时长</th></tr></thead><tbody id="ended"></tbody></table></div><p class="note" id="roomNote"></p></section><section class="panel records"><div class="panelhead"><div><h2>最近入库对战</h2><div class="sub">实际入库记录；来源取上传归属，局次和胜负只展示有效证据</div></div><a href="/statistics/recordings">查看与筛选录像 ↗</a></div><div class="scroll record-history" id="historyScroll"><table><thead><tr><th>对战玩家</th><th>收录对象</th><th>来源</th><th>局次</th><th>胜负</th><th>录像时间</th><th>入库时间</th><th>状态</th><th>下载</th></tr></thead><tbody id="records"></tbody></table></div><div class="history-actions"><button id="older">加载更早录像</button><span id="historyStatus" class="note"></span></div><p class="note" id="recordNote"></p></section><div class="foot"><span id="updated">状态采样：—</span><span id="counters"></span><span>此页仅管理员可见</span></div></main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=String(text);if(cls)n.className=cls;return n};
+let snapshot=null,busy=false,timer=null,historyRows=[],historyEnded=false,historyBusy=false;
+function keepHistory(rows){const seen=new Map(historyRows.map(g=>[g.digest,g]));for(const g of rows||[])seen.set(g.digest,g);historyRows=[...seen.values()].sort((a,b)=>b.id-a.id)}
+
+function stamp(value){if(!value)return '—';const d=new Date(value*1000);if(isNaN(d.getTime()))return '—';const pad=n=>String(n).padStart(2,'0');const year=d.getFullYear()!==new Date().getFullYear()?d.getFullYear()+'-':'';return year+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())}
+function rel(seconds){if(seconds===null||seconds===undefined||isNaN(seconds))return '—';const s=Math.max(0,Math.round(seconds));if(s<60)return '刚刚';const m=Math.floor(s/60);if(m<60)return m+' 分钟前';const h=Math.floor(m/60),rm=m%60;return rm?h+' 小时 '+rm+' 分前':h+' 小时前'}
+function span(seconds){const s=Math.max(0,Math.round(seconds||0));if(s<60)return s+' 秒';const m=Math.floor(s/60);if(m<60)return m+' 分钟';const h=Math.floor(m/60),rm=m%60;return rm?h+' 小时 '+rm+' 分钟':h+' 小时'}
+function ageOf(value,now){return value?Math.max(0,now-value):null}
+function track(active,cap){const t=el('div',undefined,'track'),f=el('div',undefined,'fill');f.style.width=Math.min(100,active/Math.max(1,cap)*100)+'%';t.append(f);return t}
+function clockLabel(value){const d=new Date(value*1000);return isNaN(d.getTime())?'':String(d.getHours()).padStart(2,'0')+':00'}
+
+function alertFor(d){
+  const summary=d.summary||{},ingest=d.ingest||{};
+  if(!d.remote_ok)return ['warn','设备状态采样中断，当前显示最后一次成功采样（'+(d.status_at?stamp(d.status_at):'—')+'），不能当作现在的状态。'];
+  if(d.recordings_ok===false)return ['warn','录像记录读取失败，最近入库与入库节奏可能不完整。'];
+  if(!ingest||ingest.last_saved_at===undefined)return null;
+  if(ingest.last_saved_at===null||ingest.last_saved_at===undefined)return summary.active>0?['warn','观战端正在进房，但还没有任何录像入库记录。']:null;
+  if(summary.active>0&&ingest.age_seconds>1800)return ['warn','观战端仍在进房（执行中 '+summary.active+' 个），但已经 '+span(ingest.age_seconds)+'没有新录像入库（最近一次 '+stamp(ingest.last_saved_at)+'）。进房成功不等于录像已回传：常见原因是平台没有下发回放，或客户端上传失败。'];
+  if(summary.online>0&&summary.active===0)return ['info','设备在线，但当前没有执行中的观战任务，正在等待派发。'];
+  return null;
+}
+
+function renderHours(ingest){
+  const host=$('hours');host.replaceChildren();
+  const rows=(ingest&&Array.isArray(ingest.hourly))?ingest.hourly:[];
+  if(!rows.length){host.append(el('div','暂无采样','empty'));$('hoursStart').textContent='';$('hoursEnd').textContent='';$('hoursMeta').textContent='';return}
+  const max=rows.reduce((top,row)=>Math.max(top,row.n||0),1);
+  const last=rows.length-1;
+  rows.forEach((row,index)=>{
+    const col=el('div',undefined,'hcol'),bar=el('div',undefined,'hbar'+(row.n?' has':'')+(index===last?' now':''));
+    bar.style.height=(row.n?Math.max(6,Math.round(row.n/max*100)):2)+'%';
+    bar.title=stamp(row.t)+' 起 1 小时 · '+row.n+' 场';
+    col.append(bar);host.append(col);
+  });
+  $('hoursStart').textContent=clockLabel(rows[0].t);
+  $('hoursEnd').textContent=clockLabel(rows[last].t);
+  const total=rows.reduce((sum,row)=>sum+(row.n||0),0);
+  $('hoursMeta').textContent=total?('近 24 小时合计 '+total+' 场，峰值 '+max+' 场/小时；最右一柱是当前小时。'):'近 24 小时没有新录像入库。';
+}
+
+function render(d){
+  snapshot=d;
+  keepHistory(d.recordings||[]);
+  const fresh=d.remote_ok===true,ingest=d.ingest||{},summary=d.summary||{},query=$('search').value.trim().toLowerCase(),filter=$('filter').value;
+  $('online').textContent=fresh?summary.online:'—';
+  $('active').textContent=fresh?summary.active:'—';
+  $('pending').textContent=summary.pending===null||summary.pending===undefined?'—':summary.pending;
+  $('offline').textContent=fresh?((d.workers||[]).filter(w=>!w.online).length?'另有 '+(d.workers||[]).filter(w=>!w.online).length+' 台离线设备':'所有设备在线'):'采样暂时中断';
+  $('capacity').textContent=fresh?('有效槽位 '+summary.capacity+'（计入 IP 限制）'):'等待有效采样';
+  $('live').textContent=fresh?'● 设备状态已连接':'状态暂不可用';
+  $('notice').hidden=fresh;
+  $('notice').textContent=fresh?'':(d.error||'设备状态暂时不可用。');
+  const warning=alertFor(d);
+  $('alert').hidden=!warning;
+  if(warning){$('alert').className='alert '+warning[0];$('alert').textContent=warning[1]}
+  const now=(d.generated_at||Date.now()/1000);
+  const known=ingest.last_saved_at!==null&&ingest.last_saved_at!==undefined;
+  $('lastKpi').className='kpi'+(known&&ingest.age_seconds>1800?' stale':'');
+  $('lastAge').textContent=known?rel(ingest.age_seconds):'—';
+  $('lastMeta').textContent=known?(stamp(ingest.last_saved_at)+' 入库 · 近 1 小时 '+(ingest.count_1h||0)+' 场 · 近 24 小时 '+(ingest.count_24h||0)+' 场'):'暂无入库记录';
+
+  const rows=(d.workers||[]).filter(w=>(filter==='all'||w.online===(filter==='online'))&&(!query||(''+w.name+' '+w.ip).toLowerCase().includes(query)));
+  $('deviceCount').textContent='显示 '+rows.length+' / '+(d.workers||[]).length;
+  $('devices').replaceChildren();
+  for(const w of rows){
+    const card=el('article',undefined,'device'),head=el('div',undefined,'devicehead');
+    head.append(el('div',w.name,'name'),el('span',fresh?(w.online?'在线':'离线'):'旧采样',w.online&&fresh?'badge':'badge off'));
+    card.append(head,el('div',w.ip==='127.0.0.1'?'127.0.0.1 · 服务器本机':(w.ip||'出口未知'),'ip'));
+    const line=el('div',undefined,'capacity');line.append(el('span',fresh&&w.online?'在线容量占用':'上次容量记录'),el('b',w.active+' / '+w.capacity));
+    card.append(line,track(w.active,w.capacity));
+    card.append(el('div','客户端自报活跃：'+(w.client_reported_active??'未提供')+'；服务器有效任务：'+(w.server_active??'未提供'),'sub'));
+    card.append(el('div','最近心跳：'+stamp(w.seen)+'；状态采样：'+stamp(w.sampled_at||d.status_at),'sub'));
+    if(!fresh)card.append(el('div','旧采样，不能据此判断当前是否在录制','sub'));
+    else if(!w.online)card.append(el('div','心跳已过期；离线记录不占用同IP并发名额','sub'));
+    else if(w.active>0&&!(d.rooms||[]).some(r=>r.worker===w.name))card.append(el('div','客户端仍报告录制任务；服务器当前没有对应房间分配，可能为重启前任务','sub'));
+    for(const r of (d.rooms||[]).filter(r=>r.worker===w.name)){
+      const room=el('div',undefined,'sub');
+      room.append(el('b',r.title||r.room||'房间未知'));
+      if(r.players&&r.players.length)room.append(el('span',' · '+r.players.join(' / ')));
+      if(r.room&&r.title&&r.title!==r.room)room.append(el('span',' · '+r.room,'roomkey'));
+      room.append(el('span',r.uploaded>0?(' · 已回传 '+r.uploaded+' 个'):' · 未回传',r.uploaded>0?'ok':'mut'));
+      card.append(room);
+    }
+    $('devices').append(card);
+  }
+  if(!rows.length)$('devices').append(el('div',(d.workers||[]).length?'没有符合条件的设备':'尚未取得设备记录','empty'));
+
+  $('ips').replaceChildren();
+  for(const ip of (d.ips||[])){
+    const row=el('div',undefined,'iprow'),meta=el('div',undefined,'meta');
+    meta.append(el('span',ip.devices+' 台设备'),el('span',ip.active+' / '+ip.limit+' 槽位'));
+    row.append(el('code',ip.ip==='127.0.0.1'?'127.0.0.1 · 本机':(ip.ip||'未知')),track(ip.active,ip.limit),meta);
+    $('ips').append(row);
+  }
+  if(!(d.ips||[]).length)$('ips').append(el('p','暂无在线出口','empty'));
+
+  renderHours(ingest);
+
+  const allRooms=d.rooms||[];
+  const rooms=allRooms.filter(r=>!query||(''+r.worker+' '+r.room+' '+r.title+' '+(r.players||[]).join(' ')).toLowerCase().includes(query));
+  $('roomCount').textContent='显示 '+rooms.length+' / '+allRooms.length+' 间';
+  $('rooms').replaceChildren();
+  for(const r of rooms){
+    const tr=el('tr');
+    tr.append(el('td',r.worker||'来源未知'));
+    const match=el('td');
+    match.append(el('div',r.title||r.room||'房间未知'));
+    if(r.players&&r.players.length)match.append(el('div',r.players.join('  /  '),'players'));
+    if(r.room&&r.title&&r.title!==r.room)match.append(el('div',r.room,'roomkey'));
+    tr.append(match);
+    tr.append(el('td',r.uploaded>0?('已回传 '+r.uploaded+' 个'):'未回传',r.uploaded>0?'ok':'mut'));
+    const last=el('td');
+    last.append(el('div',r.last_upload_at?stamp(r.last_upload_at):'—'));
+    if(r.last_upload_at)last.append(el('small',rel(ageOf(r.last_upload_at,now))));
+    tr.append(last);
+    tr.append(el('td',r.claimed_at?span(now-r.claimed_at):'—'));
+    tr.append(el('td',r.uploaded>0?'已有回传':(fresh?'观战中':'旧采样'),r.uploaded>0?'ok':''));
+    $('rooms').append(tr);
+  }
+  if(!rooms.length){const tr=el('tr'),td=el('td','暂无已认领的观战任务');td.colSpan=6;tr.append(td);$('rooms').append(tr)}
+  const allEnded=d.ended||[];
+  const ended=allEnded.filter(r=>!query||(''+r.worker+' '+r.room+' '+r.title+' '+(r.players||[]).join(' ')).toLowerCase().includes(query));
+  $('endedCount').textContent='显示 '+ended.length+' / '+allEnded.length+' 间';
+  $('ended').replaceChildren();
+  for(const r of ended){
+    const tr=el('tr');
+    tr.append(el('td',r.worker||'来源未知'));
+    const match=el('td');
+    match.append(el('div',r.title||r.room||'房间未知'));
+    if(r.players&&r.players.length)match.append(el('div',r.players.join('  /  '),'players'));
+    if(r.room&&r.title&&r.title!==r.room)match.append(el('div',r.room,'roomkey'));
+    tr.append(match);
+    tr.append(el('td',r.verdict||(r.uploaded>0?'已回传':'未能传回录像'),r.uploaded>0?'ok':'bad'));
+    const when=el('td');when.append(el('div',stamp(r.ended_at)));when.append(el('small',rel(ageOf(r.ended_at,now))));
+    tr.append(when);
+    tr.append(el('td',r.claimed_at?span(r.ended_at-r.claimed_at):'—'));
+    $('ended').append(tr);
+  }
+  if(!ended.length){const tr=el('tr'),td=el('td','暂无已结束的房间记录');td.colSpan=5;tr.append(td);$('ended').append(tr)}
+  $('roomNote').textContent=(allRooms.length||allEnded.length)?'“已回传”是服务端实际收到的录像数；“未能传回录像”是按并发列表消失且没有回执推断的（服务端不解析打到第几局）。':'当前没有观战记录。';
+
+  $('records').replaceChildren();
+  const games=historyRows.filter(g=>!query||(''+[...(g.players||[]),...(g.focus||[]),g.source||'']).toLowerCase().includes(query));
+  for(const g of games){
+    const tr=el('tr');
+    tr.append(el('td',(g.players||[]).join('  /  ')||'玩家信息未记录'));
+    tr.append(el('td',(g.focus||[]).join('、')));
+    tr.append(el('td',g.source||'来源未记录'));
+    tr.append(el('td',g.game_no?'第'+g.game_no+'局':'局次未确认'));
+    const labels={win:'胜',loss:'负',draw:'平',unknown:'未知'};
+    tr.append(el('td',(g.players||[]).map(p=>p+'：'+(labels[(g.outcomes||{})[p]]||'未知')).join(' / ')));
+    const recorded=el('td');recorded.append(el('div',stamp(g.recorded_at)),el('small',rel(ageOf(g.recorded_at,now))));
+    const saved=el('td');saved.append(el('div',stamp(g.saved_at)),el('small',rel(ageOf(g.saved_at,now))));
+    tr.append(recorded,saved,el('td','已入库','ok'));
+    const dl=el('td');
+    if(g.id){const link=el('a','下载 .yrp');link.href='/statistics/replay/'+g.id;link.setAttribute('download','');dl.append(link)}
+    else{dl.textContent='—'}
+    tr.append(dl);
+    $('records').append(tr);
+  }
+  $('recordNote').textContent=d.recordings_ok===false?'录像记录读取失败，请稍后刷新。':(!games.length?'暂无符合条件的入库记录。':'同一录像的多个收录对象合并显示；设备在线不等于上传完成。向下滚动查看已加载录像，点击“加载更早录像”继续查看；自动刷新保留已加载历史。');
+
+  $('older').disabled=historyBusy||historyEnded;
+  $('historyStatus').textContent='已加载 '+historyRows.length+' 场'+(historyEnded?' · 已到当前可用记录末尾':'');
+  $('updated').textContent='状态采样：'+stamp(d.status_at)+'（'+rel(ageOf(d.status_at,now))+'）';
+  const s=d.stats||{};
+  $('counters').textContent='本轮：派发 '+(s.offered||0)+' · 认领 '+(s.claimed||0)+' · 上报 '+(s.reported||0)+' · 上传 '+(s.uploaded||0)+' · 失败 '+(s.failed||0);
+}
+
+async function load(){
+  if(busy)return;busy=true;$('refresh').disabled=true;
+  try{
+    const r=await fetch('/statistics/api/devices',{cache:'no-store'});
+    if(!r.ok)throw new Error(r.status===403?'登录已失效，请重新使用管理员入口打开。':'状态读取失败，请稍后刷新。');
+    render(await r.json());
+  }catch(e){
+    if(snapshot)snapshot={...snapshot,remote_ok:false,error:e.message};
+    $('notice').hidden=false;$('notice').textContent=e.message;$('live').textContent='刷新失败，保留上次画面';
+    for(const id of ['online','active','pending','lastAge'])$(id).textContent='—';
+  }finally{
+    busy=false;$('refresh').disabled=false;
+    if($('auto').checked&&!document.hidden){clearTimeout(timer);timer=setTimeout(load,Math.max(5,Number($('interval').value)||10)*1000)}
+  }
+}
+$('older').onclick=async()=>{
+  if(historyBusy||historyEnded)return;
+  historyBusy=true;$('older').disabled=true;$('historyStatus').textContent='正在加载更早录像…';
+  const before=historyRows.length?Math.min(...historyRows.map(g=>g.id)):0;
+  try{const r=await fetch('/statistics/api/devices?before_id='+before,{cache:'no-store'});if(!r.ok)throw new Error('历史读取失败，请重试');
+    const page=await r.json();keepHistory(page.recordings||[]);historyEnded=!(page.recordings||[]).length;
+    if(snapshot)render(snapshot);
+  }catch(e){$('historyStatus').textContent=e.message}
+  finally{historyBusy=false;$('older').disabled=historyEnded}
+};
+$('refresh').onclick=()=>{clearTimeout(timer);load()};
+$('search').oninput=()=>{if(snapshot)render(snapshot)};
+$('filter').onchange=()=>{if(snapshot)render(snapshot)};
+$('auto').onchange=()=>{clearTimeout(timer);if($('auto').checked)load()};
+$('interval').onchange=()=>{clearTimeout(timer);if($('auto').checked)load()};
+document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden&&$('auto').checked)load()});
+load();
+</script><script src="/statistics/assets/statistics_nav.js"></script></body></html>

@@ -196,6 +196,11 @@ const HAND_TRAP_PRESET = [
   { code: 26084285, name: '守墓的监视者' },
   { code: 97462632, name: '栗球兽卫' },
   { code: 59438930, name: '幽鬼兔' },
+  { code: 70088809, name: '调和之天救龙' },
+  { code: 40366667, name: '灵王的波动' },
+  { code: 97045737, name: '圣王的粉碎' },
+  { code: 6325660, name: '霆王的闪光' },
+  { code: 42091632, name: '命王的螺旋' },
 ];
 const HAND_TRAP_COMBO_PRESET = [
   [{ code: 38814750, name: 'PSY骨架装备·γ' }, { code: 49036338, name: 'PSY骨架驱动者' }],

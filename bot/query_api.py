@@ -1,8 +1,10 @@
 """Mobile query routes, separate from watch authorization and task lifecycle."""
+import hashlib
 import hmac
 import ipaddress
 import json
 import sqlite3
+import time
 from urllib.parse import parse_qs, unquote
 from .query_core import PortalBusy, PortalUnavailable
 
@@ -190,6 +192,35 @@ const unlock=k=>act('unlock',{key:k});
             self._passthrough(lambda: fn(q))
             return
         seg = path.split("/")
+        # 认证下载：旧安卓 QueryApi.downloadBytes() 会带 Bearer 令牌请求这个 URL。
+        # 取代公开 /s/ 分享链接，不再依赖 share.public_base_url，也不写 share_links。
+        if len(seg) == 4 and seg[2] == "replay":
+            code = seg[3]
+            if not code.isdigit() or not 0 < int(code) <= 2 ** 62:
+                self._send(400, dict(ok=False, error="bad_replay_id"))
+                return
+            # 新安卓“复制链接/浏览器打开”不会带 Bearer，只认 URL 里的短期签名；
+            # 查询 API 下载仍可用 Bearer。两种任一通过即可。
+            if not self._replay_signed_ok(int(code), parts.query):
+                if self._query_identity() is None:
+                    return
+            found = core.replay_file(int(code))
+            if found is None:
+                self._send(404, dict(ok=False, error="replay_missing"))
+                return
+            file_path, _row = found
+            try:
+                data = file_path.read_bytes()
+            except OSError:
+                self._send(404, dict(ok=False, error="replay_missing"))
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if len(seg) == 4 and seg[2] == "card":
             code = seg[3]
             if not code.isdigit() or not 0 < int(code) <= 4294967295:
@@ -222,12 +253,76 @@ const unlock=k=>act('unlock',{key:k});
                 self._send(404, dict(ok=False, error="not_found"))
                 return
             if seg[4] == "replays":
-                # /s/ 链接按身份建（share_links.user_id），与 QQ 端同机制。
-                self._passthrough(lambda: core.player_replays(name, info["identity"]))
+                # 列表项的下载 URL 转成绝对地址：新版安卓会直接复制/浏览器打开 item.url，
+                # 相对路径会变成无效链接；downloadBytes 对两种形式都兼容。
+                try:
+                    data = core.player_replays(name, info["identity"])
+                except PortalUnavailable:
+                    self._send(503, dict(ok=False, error="query_unavailable"))
+                    return
+                self._send(200, dict(ok=True, data=self._absolute_replay_urls(data)))
                 return
             self._passthrough(lambda: fn(name))
             return
         self._send(404, dict(ok=False, error="not_found"))
+
+    def _replay_secret(self) -> str:
+        app = self.server
+        return str(getattr(app, "token", "") or getattr(app, "admin_token", "") or "")
+
+    def _signed_replay_url(self, base: str, replay_id) -> str:
+        try:
+            rid = int(replay_id)
+        except (TypeError, ValueError):
+            return f"{base}/query-api/replay/{replay_id}"
+        secret = self._replay_secret()
+        if not secret:
+            return f"{base}/query-api/replay/{rid}"
+        exp = int(time.time()) + 5 * 3600  # 与旧分享链接默认 5h 对齐
+        msg = f"{rid}.{exp}".encode("ascii")
+        sig = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+        return f"{base}/query-api/replay/{rid}?exp={exp}&sig={sig}"
+
+    def _replay_signed_ok(self, replay_id: int, query: str) -> bool:
+        secret = self._replay_secret()
+        if not secret:
+            return False
+        args = parse_qs(query)
+        exp = (args.get("exp") or [""])[0]
+        sig = (args.get("sig") or [""])[0]
+        if not exp.isdigit() or not sig or int(exp) < int(time.time()):
+            return False
+        msg = f"{int(replay_id)}.{int(exp)}".encode("ascii")
+        expected = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, expected)
+
+    def _query_base_url(self) -> str:
+        host = str(self.headers.get("Host") or "").strip()
+        if not host:
+            return ""
+        proto = str(self.headers.get("X-Forwarded-Proto") or "").strip().lower()
+        if proto not in ("http", "https"):
+            bare = host.rsplit(":", 1)[0].strip("[]").lower()
+            proto = "http" if bare in ("127.0.0.1", "localhost", "::1") else "https"
+        return f"{proto}://{host}".rstrip("/")
+
+    def _absolute_replay_urls(self, data):
+        if not isinstance(data, dict):
+            return data
+        base = self._query_base_url()
+        if not base:
+            return data
+        # 不修改 QueryCore 的 30s 缓存对象：不同 Host（直连/域名）不能互相污染。
+        out = dict(data)
+        out["items"] = [dict(item) if isinstance(item, dict) else item
+                        for item in (data.get("items") or [])]
+        for item in out["items"]:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "")
+            if url.startswith("/"):
+                item["url"] = self._signed_replay_url(base, item.get("id"))
+        return out
 
     def _passthrough(self, fn) -> None:
         try:

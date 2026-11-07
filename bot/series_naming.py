@@ -819,11 +819,50 @@ def all_builds(db):
     return [row[0] for row in db.execute('SELECT fingerprint FROM stat_builds')]
 
 
+def outside_roster_main_builds(db, now):
+    """榜外玩家每人最新一场的首局（主卡组）构筑，与 latest_views 同一口径。
+
+    population() 只覆盖当前前 100 名单；榜外玩家原来只有 latest_builds 的
+    “每人最新一个视角”，同一场多局陆续入库后，首局构筑永远不是最新视角，
+    于是首页显示的这套构筑从来没进过命名候选（2026-11-06 定位）。这里按
+    同一套“最新一场 + 优先 game_no=1”规则把它们补进候选；只选构筑，不改命名规则。
+    """
+    from .statistics_match_identity import capture_metadata
+    from .statistics_population import latest_views
+    rows = [dict(row) for row in db.execute(
+        'SELECT v.player,v.digest,v.build,g.recorded_at,g.received_at,g.expires_at '
+        'FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
+        'WHERE g.expires_at>? '
+        'AND NOT EXISTS(SELECT 1 FROM stat_current_top100 t WHERE t.player=v.player)',
+        (float(now),))]
+    if not rows:
+        return []
+    metadata = capture_metadata(db, {row['digest'] for row in rows})
+    for row in rows:
+        meta = metadata.get(row['digest'])
+        # latest_views 只把“确认为首局”的行当主卡组，与玩家页显示口径一致。
+        row['observed_session_id'] = meta[0] if meta else None
+        row['observed_game_no'] = meta[1] if meta else None
+        row['observed_captured_from_start'] = bool(meta[2]) if meta else False
+        row['observed_identity_confirmed'] = bool(meta[2]) if meta else False
+    builds, seen = [], set()
+    for view in latest_views({'views': rows}).values():
+        build = view.get('build')
+        if build and build not in seen:
+            seen.add(build)
+            builds.append(build)
+    return builds
+
+
 def latest_main_builds(db, replay_root, now):
     """每人最新一场的 game1 构筑（与玩家页/饼图同一套选择）。"""
     from .statistics_dashboard import population
     _basis, latest, _people = population(db, Path(replay_root), float(now), resolve_rank=False)
     builds = [row['build'] for row in latest.values() if row.get('build')]
+    # 榜外玩家不在 population 名单里，单独按同一口径补首局构筑。
+    for build in outside_roster_main_builds(db, now):
+        if build not in builds:
+            builds.append(build)
     # 详情弹窗用的是 SQL 最新视角；把它也纳入，避免弹窗里的构筑没名字。
     for build in latest_builds(db, now):
         if build not in builds:

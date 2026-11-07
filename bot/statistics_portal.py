@@ -17,6 +17,16 @@ COOKIE='qqstats_owner'
 SESSION_SECONDS=5*3600
 QUERY_WAIT_SECONDS=8.0
 QUERY_CACHE_MAX_BYTES = 8 * 1024 * 1024
+PRECOMPUTED_ROSTER_SECONDS = 900.0
+
+
+def _trim_heap():
+    """Return freed arenas to the OS after a heavy build (glibc only)."""
+    try:
+        import ctypes
+        ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
 CACHED_API_PATHS=frozenset('/statistics/api/'+name for name in (
     'recordings','deck-naming/groups','card-table','cards-extra','card-combo',
     'card-report','roster','build','matrix','side-analysis'))
@@ -647,8 +657,36 @@ class StatisticsPortal:
             except Exception:
                 pass
 
+    def _precomputed_roster(self):
+        """Serve the roster built by tools/roster_precompute.py.
+
+        Keeps the 30-90 s build and its 250-300 MB intermediate out of this
+        process, so _query_compute_lock is not held and query 503s drop.
+        """
+        try:
+            path = self.database.parent / 'cache' / 'roster.json'
+            item = json.loads(path.read_text(encoding='utf8'))
+            saved = float(item['saved'])
+            if not 0.0 <= float(self.clock()) - saved <= PRECOMPUTED_ROSTER_SECONDS:
+                return None
+            if int(item['status']) != 200:
+                return None
+            body = str(item['body'])
+            if not body or len(body) > 4 * 1024 * 1024:
+                return None
+            headers = dict(item.get('headers') or {})
+            headers['X-Statistics-State'] = 'precomputed'
+            headers['X-Statistics-Saved-At'] = str(int(saved))
+            return 200, str(item['kind']), body.encode('utf8'), headers
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+
     def _roster_reply(self, force=False, background=False):
         """榜首查询的唯一入口：route 与后台保活共用，保证缓存键一致。"""
+        if not force:
+            precomputed = self._precomputed_roster()
+            if precomputed is not None:
+                return precomputed
         from .statistics_dashboard import query
         return self._cached_query_reply(('roster',), lambda db:query(db,self.replay_root,float(self.clock()),None), ttl=300.0, stamp_seconds=86400, force=force, background=background)
 
@@ -742,6 +780,8 @@ class StatisticsPortal:
         try:disk_identity=response_identity(self.database,key)
         except OSError:disk_identity=None
         result=self._query_reply(callback)
+        if key and key[0] in ('roster','matrix','card-report','recordings'):
+            _trim_heap()
         try:
             if disk_identity is not None and disk_identity==response_identity(self.database,key):
                 response_put(disk_identity,result)

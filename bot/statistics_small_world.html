@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>小世界 · Arena Observatory</title>
+<link rel="stylesheet" href="/statistics/assets/statistics_nav.css">
+<link rel="stylesheet" href="/statistics/assets/statistics_small_world.css">
+<script defer src="/statistics/assets/statistics_nav.js"></script>
+<script defer src="/statistics/assets/small_world_engine.js"></script>
+<script defer src="/statistics/assets/statistics_small_world.js"></script>
+</head><body>
+<nav class="main-nav" aria-label="主导航"><a href="/statistics">玩家排名</a><a href="/statistics/cards-report">卡片统计</a><a href="/statistics/recordings">录像筛选</a><a href="/statistics/small-world" data-small-world="1" aria-current="page">小世界</a></nav>
+<main>
+  <header><p class="eyebrow">ARENA OBSERVATORY / DECK TOOLS</p><h1>小世界</h1><p class="intro">导入卡组，找出怪兽之间的检索路径，挑选更合适的中转卡。</p></header>
+  <section class="panel import-panel" aria-labelledby="importTitle">
+    <div><h2 id="importTitle">从你的卡组开始</h2><p>选择 .ydk 文件，或将卡组内容粘贴到下方。只分析主卡组怪兽。</p></div>
+    <div class="actions"><label class="file-button" for="ydkFile">选择 YDK 文件<input id="ydkFile" type="file" accept=".ydk" aria-label="选择 YDK 文件"></label><button id="demo" type="button" class="secondary">试用示例</button></div>
+    <details id="pasteBox"><summary>粘贴 YDK 内容</summary><label for="ydkText" class="sr-only">YDK 内容</label><textarea id="ydkText" rows="7" spellcheck="false" placeholder="#main&#10;14558127&#10;97268402&#10;27204311&#10;#extra&#10;!side"></textarea><button id="analyze" type="button">分析卡组</button></details>
+    <p class="privacy">卡组内容只在当前浏览器中处理，不上传或保存。</p>
+  </section>
+  <p id="status" role="status" aria-live="polite">导入 YDK 后开始分析。</p>
+  <p id="error" class="error" role="alert" hidden></p>
+  <section id="results" hidden>
+    <div class="summary"><div><span>主卡组</span><strong id="mainCount">—</strong></div><div><span>不同怪兽</span><strong id="monsterCount">—</strong></div><div><span>现有路径覆盖</span><strong id="coverage">—</strong></div></div>
+    <p id="deckNote" class="note"></p><p id="unknown" class="warning" hidden></p>
+    <section class="panel" aria-labelledby="pathsTitle">
+      <div class="section-head"><div><p class="eyebrow">01 / FIND A PATH</p><h2 id="pathsTitle">牌组里的检索路径</h2></div><span class="tag">手牌 → 中转 → 目标</span></div>
+      <div class="controls"><label>手牌怪兽<select id="start"></select></label><span class="arrow" aria-hidden="true">→</span><label>想检索的怪兽<select id="target"></select></label></div>
+      <div id="paths" class="paths" aria-live="polite"></div>
+      <p class="note">每一段都要求种族、属性、等级、攻击力、守备力中恰好一项相同。这里只列已经在主卡组中的中转卡。</p>
+    </section>
+    <section class="panel" aria-labelledby="recommendTitle">
+      <div class="section-head"><div><p class="eyebrow">02 / DISCOVER BRIDGES</p><h2 id="recommendTitle">推荐加入的中转卡</h2></div><span id="recommendCount" class="tag"></span></div>
+      <div class="controls"><label>重点检索目标<select id="focus"><option value="">不限目标，优先整体覆盖</option></select></label><button id="rerank" class="secondary" type="button">重新推荐</button></div>
+      <p class="note">按加入一张中转卡后的理论路径覆盖排序；已投入的怪兽不重复推荐。同名异画合并，投入张数不加权。</p>
+      <div id="candidateDetail" class="candidate-detail" hidden></div>
+      <div class="table-wrap"><table><thead><tr><th scope="col">中转怪兽</th><th scope="col">直接连接</th><th scope="col">加入后覆盖</th><th scope="col">查看</th></tr></thead><tbody id="recommendations"></tbody></table></div>
+      <button id="more" class="secondary more" type="button" hidden>显示更多</button>
+    </section>
+    <footer><p>覆盖率按不同怪兽之间的起点与目标组合计算，包含同名另一张的情况；不是起手概率。结果依赖本地卡库，未校验当前禁限表、卡组合法性或对局中的效果限制。</p><p>算法来源：<a href="https://github.com/KennethJAllen/ygo-small-world" target="_blank" rel="noopener noreferrer">KennethJAllen / ygo-small-world</a> · MIT License</p></footer>
+  </section>
+</main></body></html>
