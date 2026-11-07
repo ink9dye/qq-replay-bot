@@ -291,7 +291,7 @@ OTHER_NAME = '其他'
 
 
 def _pct(players, total):
-    return round(100.0 * players / total, 1) if total else 0.0
+    return round(100.0 * players / total, 2) if total else 0.0
 
 
 def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
@@ -377,7 +377,7 @@ def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
         for name in cats:
             weights[name] += share
     for item in slices:
-        players = int(round(weights.get(item['name'], item['players'])))
+        players = round(weights.get(item['name'], item['players']), 2)
         item['players'] = players
         item['percent'] = _pct(players, total)
 

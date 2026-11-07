@@ -239,8 +239,8 @@ def _render_single_payload(payload):
                           percent=other['percent'], color=other.get('color') or '#7A8B99',
                           image=other.get('image'), kind='other', bands=[], decks=[],
                           parts=other.get('parts') or []))
-    # 与网页一致：按当前人数降序，其他最后。
-    items.sort(key=lambda item: (item['kind'] == 'other', -item['players'], item['name']))
+    # 与网页一致：沿用后端切片顺序，只把「其他」移到最后。
+    items = [item for item in items if item['kind'] != 'other'] + [item for item in items if item['kind'] == 'other']
 
     W, H = 980, 780
     cx, cy, R = 490, 390, 300
@@ -280,10 +280,14 @@ def _render_single_payload(payload):
         if players:
             width = players * unit
             steps[index] = (left['a1'] - width / 2, left['a1'] + width / 2)
-            label = f"{left['name']}∩{right['name']}"
-            if not any(b.get('kind') == 'overlap' and b.get('name') == label for b in left['bands']):
-                left['bands'].append(dict(kind='overlap', name=label, players=players,
-                                          partner=right['name'], side='right'))
+            pair = {f"{left['name']}∩{right['name']}", f"{right['name']}∩{left['name']}"}
+            def has_pair(item):
+                return any(b.get('kind') == 'overlap' and b.get('name') in pair for b in item['bands'])
+            if not has_pair(left) and not has_pair(right):
+                left['bands'].append(dict(kind='overlap', name=f"{left['name']}∩{right['name']}",
+                                          players=players, partner=right['name'], side='right'))
+                right['bands'].append(dict(kind='overlap', name=f"{right['name']}∩{left['name']}",
+                                           players=players, partner=left['name'], side='left'))
 
     def pt(r, deg):
         t = math.radians(deg)
@@ -298,12 +302,9 @@ def _render_single_payload(payload):
 
     def slice_path(index):
         s = items[index]
-        left = steps.get(index - 1)
-        right = steps.get(index)
-        oa0 = left[1] if left else s['a0']
-        oa1 = right[1] if right else s['a1']
-        ia1 = right[0] if right else s['a1']
-        ia0 = left[0] if left else s['a0']
+        # 圆环保持连续，不按交集挖缺口；交集用白色「5」字线画在上面。
+        oa0 = ia0 = s['a0']
+        oa1 = ia1 = s['a1']
         d = "M" + fmt(pt(r1, oa0)) + arc(r1, oa0, oa1, True)
         if right:
             d += " L" + fmt(pt(b0, oa1)) + arc(b0, oa1, ia1, False)
@@ -409,6 +410,20 @@ def _render_single_payload(payload):
                 shapes.append(b_art)
             shapes.append(f'<path d="{b_path}" fill="none" stroke="#ffffff" stroke-width="1.1"/>')
             band_cursor += band_width
+
+    # 交集「5」字白线：从内半径沿一侧到环厚一半，横拐，再沿另一侧到外半径。
+    for index, step in steps.items():
+        width = step[1] - step[0]
+        if width <= 0:
+            continue
+        left_angle = step[1] - width
+        right_angle = step[1]
+        p1 = pt(r0, left_angle)
+        p2 = pt(b0, left_angle)
+        p3 = pt(b0, right_angle)
+        p4 = pt(r1, right_angle)
+        points = " ".join(f"{q[0]:.1f},{q[1]:.1f}" for q in (p1, p2, p3, p4))
+        shapes.append(f'<polyline points="{points}" fill="none" stroke="#ffffff" stroke-width="2.2"/>')
 
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">'
            f'<rect width="{W}" height="{H}" fill="white"/><defs>{"".join(defs)}</defs>'
