@@ -128,7 +128,7 @@ enderSinglePie）的切片顺序原本按人数降序。现改为**交集优先�
 
 - 口径：单环的**大类**=命名组字段；**小类**=大类内 >4% 的**具体卡组**（与旧“内环大类/外环卡组”一致）。
 - 问题：小类（嵌套卡组）的代表卡原先由 deck_pie.layers 取“全局覆盖人数最多的字段”的代表卡，例：米底乌斯无垢大艺术狱神耀圣 落到「幻狱神 米底丘利乌斯」（狱神 70488851）。
-- 改动：statistics_dashboard.query 按 series_membership 汇总每个卡组名的字段卡数（主卡+额外），传给 deck_pie；layers 取该卡组内**卡数最多字段**的代表卡（并列按字段名长度）。
+- 改动：statistics_dashboard.query 按 series_membership 汇总每个卡组名的字段卡数（主卡+额外），传给 deck_pie；layers 取该卡组内**卡数最多且不等于本大类字段**的字段的代表卡（并列按字段名长度）。两个小类若因此取到同一张代表卡，前端沿用既有“相邻同卡图合并”规则只贴一次卡图、不画白线。
 - 实测：该卡组 耀圣 133 张 > 狱神 82 > 无垢 64，线上 roster 的 deck_pie.outer.image 与 deck_single 嵌套 band image 均变为 **5559570（耀圣）**。
 - 运维注意：roster 结果有 300s 缓存且版本戳不含 Python 代码；部署后需清 data/query-cache/last-success/*.json 并重启（或等缓存过期），否则会继续返回旧图。回滚：/root/last-pie-fieldrep-backup。
 

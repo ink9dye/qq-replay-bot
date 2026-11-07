@@ -247,7 +247,8 @@ def layers(distribution, groups, threshold=THRESHOLD, representatives=None, deck
         field_copies = (deck_fields or {}).get(name) or {}
         if field_copies:
             best = max(((field, copies) for field, copies in field_copies.items()
-                        if field in matches[name]), key=lambda pair: (pair[1], len(pair[0])), default=None)
+                        if field in matches[name] and field != primary),
+                       key=lambda pair: (pair[1], len(pair[0])), default=None)
             if best:
                 image = (representatives or {}).get(best[0])
         if not image:
