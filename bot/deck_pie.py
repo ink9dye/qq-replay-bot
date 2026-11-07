@@ -376,6 +376,13 @@ def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
         share = row['players'] / len(cats)
         for name in cats:
             weights[name] += share
+    # 人头按“参与该字段的玩家数”：中间层 primary / extras 命中都算。
+    middle_rows = base.get('middle') or []
+    for item in slices:
+        involved = sum(row.get('players') or 0 for row in middle_rows
+                       if row.get('primary') == item['name']
+                       or item['name'] in (row.get('extras') or []))
+        item['headcount'] = int(round(involved)) if involved else int(round(item['players']))
     for item in slices:
         players = round(weights.get(item['name'], item['players']), 2)
         item['players'] = players
