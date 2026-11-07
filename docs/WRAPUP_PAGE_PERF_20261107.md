@@ -40,6 +40,13 @@
 
 `statistics_portal.py e8d77d63`、`statistics_portal.html 5f3f642d`（UI 分支）、`statistics_dashboard.py d85c46df`（UI 分支）、`statistics_matrix.py 26de2d49`、`statistics_matrix.html 8b1d5146`、`statistics_prewarm.py 4c7a2245`、`statistics_server.py ff02e553`、`statistics_refresh.py 5935234f`、`top100.py 1288a888`、`card_series.py 6e5fe2b6`。
 
+## 4.5 系列标注缓存（2026-11-07 上午）
+
+- **改动**：ot/card_series.py —— 按构筑缓存系列标注并**落盘** data/cache/build-series.json（按 catalog revision 剪枝，约 7.2MB/5348 条）；nnotate() 增加“全命中快路径”，已缓存的构筑不再执行 stat_build_series/stat_build_cards 查询与逐卡循环。
+- **实测**（同库同时刻，输出逐项一致）：roster 26.6s → **3.95s**（进程内二次 1.37s）；矩阵 200/200 58.6s → **6.66s**（cells 538、perspectives 1506 相同）；录像 100/100 4.26s → **2.86s**（total/samples 相同）。
+- **性质**：纯缓存/耗时优化，不改数据源、分类规则、字段、资格与 TTL。
+- **回滚**：/root/last-series-fastpath2-backup；缓存文件可直接删除（只会让下次计算变慢）。
+
 ## 5. QQ 机器人同步
 
 - QQ 的 前百饼图 走 	op100_pie.render，数据源同样是 statistics_dashboard.query（与网页同口径），卡图优先本地卡库、其次 ygopro/pics；本次网页侧优化（deck 图缓存、单玩家）自动受益。
