@@ -411,6 +411,22 @@ def _render_single_payload(payload):
             shapes.append(f'<path d="{b_path}" fill="none" stroke="#ffffff" stroke-width="1.1"/>')
             band_cursor += band_width
 
+    # 交集边界：白色阶梯线（内段一个角度、外段另一个角度，在 b0 处横拐），
+    # 与网页一致；环内卡图保持连续，不做缺口。
+    for index, step in steps.items():
+        width = step[1] - step[0]
+        if width <= 0:
+            continue
+        boundary = step[1]
+        inner = boundary - width / 2
+        outer = boundary + width / 2
+        points = []
+        for radius, angle in ((r0, inner), (b0, inner), (b0, outer), (r1, outer)):
+            q = pt(radius, angle)
+            points.append(f"{q[0]:.1f},{q[1]:.1f}")
+        shapes.append('<polyline points="' + " ".join(points) +
+                      '" fill="none" stroke="#ffffff" stroke-width="1.6"/>')
+
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">'
            f'<rect width="{W}" height="{H}" fill="white"/><defs>{"".join(defs)}</defs>'
            f'{"".join(shapes)}'
