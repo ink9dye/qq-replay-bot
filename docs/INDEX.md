@@ -1,4 +1,4 @@
-# 文档索引（唯一导航入口）
+﻿# 文档索引（唯一导航入口）
 
 > 更新时间：2026-11-07 10:30。**新对话先读本页**，再按顺序读核心文档；历史报告只作证据，不作为现状依据。
 
@@ -41,6 +41,7 @@
 | [`REPLAY_LIBRARY_20261106.md`](REPLAY_LIBRARY_20261106.md) | 录像库检索/整场下载、限速、客户端 v1.1–v1.5 |
 | [`SIDE_ANALYSIS_20261106.md`](SIDE_ANALYSIS_20261106.md) | Side 换入换出分析：入口、口径、算法候选、验收 |
 | [`WRAPUP_WEB_LATENCY_20261107.md`](WRAPUP_WEB_LATENCY_20261107.md) | **网页耗时优化全量记录**：措施、实测、饼图最终口径、卡图管线、回滚 |
+| [WRAPUP_PIE_LEGEND_20261107.md](WRAPUP_PIE_LEGEND_20261107.md) | **前百饼图/图例收尾（2026-11-07）**：网页逐项对齐、网站生成保存饼图+图例、机器人取图、验证与回滚 |
 | [`STATISTICS_QUERY_OPTIMIZATION_PLAN_20261106.md`](STATISTICS_QUERY_OPTIMIZATION_PLAN_20261106.md) | 查询链路优化方案（P1b/P2/P3） |
 | [`STATISTICS_QUERY_FINAL_PLAN_20261106.md`](STATISTICS_QUERY_FINAL_PLAN_20261106.md) | 查询优化最终执行计划与结论 |
 | [`WEB_PERFORMANCE_NIGHT_20261106.md`](WEB_PERFORMANCE_NIGHT_20261106.md) | 2026-11-06 夜间网页性能专项（首屏/缓存/CPU 隔离） |
