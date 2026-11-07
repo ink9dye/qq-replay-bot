@@ -147,6 +147,15 @@ enderPie() 原本只画内环（主大类）与外环（具体卡组），pie.mi
 - 图片构成：单环（0.30–0.94R、>4% 小类嵌套、相邻交集「5」字缺口、同图小类不单独成块）、彩色圆点标签、完整图例（全部卡组 ◆/·、交集行、其他 parts）。
 - 回滚：`/root/last-deck-pie-image-backup`（portal + top100_pie）。
 
+## 4.10 饼图最终形态：网站生成两张图（饼图 + 图例），QQ 只发图（2026-11-07 13:15）
+
+- 网站：`/statistics/api/deck-pie.png` 用**网页当前缓存 roster**（`_roster_reply()`）生成整图并缓存 `data/cache/deck-pie/latest.png`，同时写 `latest.json`（人数/类别元数据）。
+- 图片内容：单环（人数降序、其他最后；>4% 小类嵌套；同图小类不单独成块；相邻交集「5」字缺口，含 `混沌∩时黑` 这类由 `deck_pie.middle` 补出的当前相邻对）。
+- QQ：`top100_pie.render` → `statistics_pie_image.render_parts`，把整图拆成 `pie`（1600×1600）与 `legend`（1600 宽）两张，QQ 一条消息发两张；缓存命中时 1–2s。
+- 缓存 key 带 `RENDER_VERSION`，改渲染代码会自动失效；元数据 sidecar 保证缓存命中时仍能给出“有档案/已识别”文案。
+- 部署：`statistics_pie_image a4c89a2e`、`top100_pie ab64027d`、`service.py f2bb6abc`、`qq.py 98411c5a`、`card_search.py e503e0a7`；web/qq 均已重启（qq PID 764582，online）。
+- 回滚：`/root/last-qq-two-pies-backup`、`/root/last-deck-pie-image-backup`。
+
 ## 5. 仍未做（按优先级）
 
 1. **卡片统计**：瓶颈已定位为“32 个分桶重建（最多 8.7s）+ 实时名次核验（约 5s）+ 存活检查（2–3s）”，不是缺索引；下一步是“资格快照单槽缓存（约 40MB）+ 名次短时效磁盘缓存（需确认 120s 语义）”；

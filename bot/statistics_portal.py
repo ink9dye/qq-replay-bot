@@ -254,9 +254,10 @@ class StatisticsPortal:
             return status,kind,image.read_bytes(),extra
         if parts==['statistics','api','deck-pie.png']:
             # 网站自己生成并缓存饼图 PNG；QQ「前百饼图」直接复用这张图。
-            from .statistics_pie_image import render as deck_pie_image
+            from .statistics_pie_image import render_from_roster
             try:
-                blob,_=deck_pie_image(self.database,self.replay_root,float(self.clock()))
+                reply=self._roster_reply()
+                blob=render_from_roster(self.database, json.loads(reply[2]))
             except ValueError:
                 return self._reply(503,'暂无卡组档案。')
             except Exception:

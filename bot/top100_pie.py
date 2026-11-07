@@ -208,6 +208,15 @@ def _draw_top_legend(draw, inner, width, font):
         x += text_width + 50
 
 
+def _pct_text(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    text = ('%.1f' % number)
+    return text.rstrip('0').rstrip('.') if '.' in text else text
+
+
 def _render_single_payload(payload):
     """直接复用网页 renderSinglePie 的几何：SVG 画环（含交集阶梯缺口），rsvg 转 PNG，再叠文字。"""
     import base64
@@ -230,7 +239,8 @@ def _render_single_payload(payload):
                           percent=other['percent'], color=other.get('color') or '#7A8B99',
                           image=other.get('image'), kind='other', bands=[], decks=[],
                           parts=other.get('parts') or []))
-    items = [item for item in items if item['kind'] != 'other'] + [item for item in items if item['kind'] == 'other']
+    # 与网页一致：按当前人数降序，其他最后。
+    items.sort(key=lambda item: (item['kind'] == 'other', -item['players'], item['name']))
 
     W, H = 980, 780
     cx, cy, R = 490, 390, 300
@@ -254,11 +264,26 @@ def _render_single_payload(payload):
         return None
 
     steps = {}
+    middle_rows = (payload.get('pie') or {}).get('middle') or []
     for index in range(len(items) - 1):
-        band = find_overlap(items[index], items[index + 1])
-        if band:
-            width = band['players'] * unit
-            steps[index] = (items[index]['a1'] - width / 2, items[index]['a1'] + width / 2)
+        left, right = items[index], items[index + 1]
+        band = find_overlap(left, right)
+        players = band.get('players') if band else None
+        if not players:
+            # 单环 bands 只记录旧顺序的相邻对；用 deck_pie.middle 补当前相邻对。
+            for row in middle_rows:
+                extras = row.get('extras') or []
+                if row.get('primary') == left['name'] and right['name'] in extras:
+                    players = row.get('players'); break
+                if row.get('primary') == right['name'] and left['name'] in extras:
+                    players = row.get('players'); break
+        if players:
+            width = players * unit
+            steps[index] = (left['a1'] - width / 2, left['a1'] + width / 2)
+            label = f"{left['name']}∩{right['name']}"
+            if not any(b.get('kind') == 'overlap' and b.get('name') == label for b in left['bands']):
+                left['bands'].append(dict(kind='overlap', name=label, players=players,
+                                          partner=right['name'], side='right'))
 
     def pt(r, deg):
         t = math.radians(deg)
@@ -421,7 +446,7 @@ def _render_single_payload(payload):
         draw.ellipse((dot_x - 4, dot_y - 4, dot_x + 4, dot_y + 4), fill=_rgb(item['color']))
         x = center[0] + math.cos(mid) * (r1 * scale + 26)
         y = center[1] + math.sin(mid) * (r1 * scale + 20)
-        draw.text((x, y), f"{item['name']}  {item['percent']}%", font=text_font,
+        draw.text((x, y), f"{item['name']}  {_pct_text(item['percent'])}%", font=text_font,
                   fill='#2f4138', anchor='lm' if right else 'rm')
 
     columns = [(60, 500), (560, 500), (1060, 500)]
@@ -432,7 +457,7 @@ def _render_single_payload(payload):
     line_height = 21
     max_y = height - 60
     for item in items:
-        lines = [f"{item['name']}  {item['players']}人 · {item['percent']}%"]
+        lines = [f"{item['name']}  {item['players']}人 · {_pct_text(item['percent'])}%"]
         for deck in item.get('decks') or []:
             if deck.get('name') == item['name'] and deck.get('players') == item['players']:
                 continue
@@ -507,7 +532,7 @@ def _render_payload(payload):
                 _paste_wedge(image, center, radius * 0.94, radius * 0.56,
                              cursor, o_end, code, item['color'], thumb=True)
             o_mid = math.radians((cursor + o_end) / 2)
-            labels.append((o_mid, f"{item['name']}  {item['percent']}%", _rgb(item['color'])))
+            labels.append((o_mid, f"{item['name']}  {_pct_text(item['percent'])}%", _rgb(item['color'])))
             cursor = o_end
         angle = cursor
     hole = radius * 0.56
