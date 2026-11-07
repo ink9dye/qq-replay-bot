@@ -7,6 +7,7 @@ import asyncio
 import base64
 import hashlib
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -39,6 +40,24 @@ from .watch_core import (
     safe_filename_part,
     serve,
 )
+
+
+_UPLOAD_FOLDER_UNSAFE = re.compile(r"[^0-9A-Za-z._\-()\u4e00-\u9fff ]+")
+
+
+def upload_folder_part(text: str, fallback: str = "unknown") -> str:
+    """上传接口（bot/watch_api.py 的 _safe_part）写录像目录时的同名口径。
+
+    上传端会把 @、引号、假名等替换成 "_" 并按 80 字截断，与本地保存用的
+    watch.safe_filename_part 不同；查找已存在的录像目录时两种口径都要认。
+    """
+    cleaned = _UPLOAD_FOLDER_UNSAFE.sub("_", str(text or "")).strip(" .")
+    return cleaned[:80] or fallback
+
+
+def player_folders(name: str) -> tuple[str, ...]:
+    """同一玩家可能出现的录像目录名：本地保存口径与上传接口口径。"""
+    return tuple(dict.fromkeys((safe_filename_part(name), upload_folder_part(name))))
 
 
 def system_clock() -> float:
@@ -598,10 +617,10 @@ class BotService:
         if op == "query_enroll":
             from .watch_token_command import confidential_allowed
             if conversation.startswith("group:"):
-                # 群聊不暴露该功能：名单内群只提示私聊，名单外群静默（同「观战设备」）。
+                # 保密名单内的群：结果由 on_qq_event 私聊发给指令发送者；名单外群静默。
                 if not confidential_allowed(self, user, conversation):
                     return None
-                return "请私聊我发送“开通查询”，激活码只在私聊中发放。"
+                return self._query_enroll(user)
             if not confidential_allowed(self, user, conversation):
                 return "开通查询只对保密名单开放；如需使用请联系管理员。"
             return self._query_enroll(user)
@@ -983,21 +1002,25 @@ class BotService:
         if len(relative.parts) < 2:
             return ""
         folder = relative.parts[0]
-        for sub in self.store.list_subscriptions():
-            if safe_filename_part(sub["player"]) == folder:
-                return sub["player"]
+        subscribed = list(dict.fromkeys(
+            sub["player"] for sub in self.store.list_subscriptions()
+            if folder in player_folders(sub["player"])))
+        if len(subscribed) == 1:
+            return subscribed[0]
         # 独立名单及未来前100采集不要求QQ订阅；用录像内真实玩家校验目录。
         # 这里只建立事实索引，查询授权仍由订阅/分享范围独立判断。
         try:
             if path.stat().st_size <= 2 * 1024 * 1024:
-                for name, _main, _extra in decks_from_replay(path.read_bytes()):
-                    if name and name != '[Server]' and safe_filename_part(name) == folder:
-                        return name
+                matches = [name for name, _main, _extra in decks_from_replay(path.read_bytes())
+                           if name and name != '[Server]' and folder in player_folders(name)]
+                # 上传端会把假名等压成 "_"，多个玩家可能共用一个目录；此时不猜。
+                if len(matches) == 1:
+                    return matches[0]
         except (OSError, ValueError):
             pass
         return ""
 
-    def _index_replay_file(self, path: Path, focus: str) -> bool:
+    def _index_replay_file(self, path: Path, focus: str, *, require_player: bool = False) -> bool:
         """把一个录像文件加入索引，返回是否新增。"""
         try:
             relative = path.resolve().relative_to(self.replay_root.resolve())
@@ -1011,6 +1034,8 @@ class BotService:
         decks = decks_from_replay(blob)
         players = [name for name, _, _ in decks if name and name != "[Server]"]
         if not players:
+            return False
+        if require_player and focus not in players:
             return False
         mtime = path.stat().st_mtime
         when = replay_recorded_time(blob)
@@ -1028,9 +1053,17 @@ class BotService:
         return True
 
     def index_player_replays(self, player: str) -> int:
-        """查询时按目录补齐某玩家目录里的录像索引，让列表直接反映磁盘内容。"""
-        directory = self.replay_root / safe_filename_part(player)
-        if not directory.is_dir():
+        """查询时按目录补齐某玩家目录里的录像索引，让列表直接反映磁盘内容。
+
+        本地保存与上传接口的目录名口径不同（@、引号、假名等），两种目录都要查；
+        目录也可能被多个玩家共用（例如都压成 "_"），只收该玩家确实在场的文件。
+        """
+        directories = []
+        for part in player_folders(player):
+            directory = self.replay_root / part
+            if directory.is_dir() and directory not in directories:
+                directories.append(directory)
+        if not directories:
             return 0
         now = time.monotonic()
         if now - self._known_replays_at > 5:
@@ -1038,16 +1071,17 @@ class BotService:
             self._known_replays_at = now
         known = self._known_replays
         indexed = 0
-        for path in sorted(directory.glob("*.yrp")):
-            try:
-                relative = path.resolve().relative_to(self.replay_root.resolve())
-            except ValueError:
-                continue
-            if str(relative) in known:
-                continue
-            if self._index_replay_file(path, player):
-                indexed += 1
-                known.add(str(relative))
+        for directory in directories:
+            for path in sorted(directory.glob("*.yrp")):
+                try:
+                    relative = path.resolve().relative_to(self.replay_root.resolve())
+                except ValueError:
+                    continue
+                if str(relative) in known:
+                    continue
+                if self._index_replay_file(path, player, require_player=True):
+                    indexed += 1
+                    known.add(str(relative))
         return indexed
 
     def index_collector_data(self) -> None:
@@ -1308,6 +1342,17 @@ class BotService:
         forward = self.qq.send_group_forward if is_group else self.qq.send_private_forward
         conversation = "group:" + str(receiver) if is_group else ""
         parsed_command = parse_command(text)
+        # 保密名单群里的「开通查询」「令牌分发」：结果只私聊发给指令发送者，群里不回显。
+        if is_group and parsed_command.get("op") in ("query_enroll", "watch_token"):
+            from .watch_token_command import confidential_allowed
+            if confidential_allowed(self, user_id, conversation):
+                private_reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+                if private_reply:
+                    delivered = await self.qq.send_private(user_id, private_reply)
+                    if not delivered:
+                        self.write_log("保密名单指令私聊发送失败，未在群内回退发送。")
+                        await send(receiver, "私聊发送失败，请私聊我重发一次。")
+                return
         answer = str(text or '').strip()
         pending_key = conversation + ':' + str(user_id) if conversation else str(user_id)
         pending = self._top100_deck_candidates.get(pending_key)
