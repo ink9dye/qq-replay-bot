@@ -60,21 +60,31 @@ def monthly_stats(player, rows, now):
     return athletic_stats(player, rows, now, since=start)
 
 
+def _cjk_font():
+    from matplotlib.font_manager import FontProperties
+    # Linux 生产机没有 Windows 雅黑；显式选一个已安装的中文字体，避免标题/轴标签变方框。
+    font_candidates = (
+        Path('C:/Windows/Fonts/msyh.ttc'),
+        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
+        Path('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'),
+        Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'),
+    )
+    font_path = next((path for path in font_candidates if path.is_file()), None)
+    return FontProperties(fname=str(font_path)) if font_path else FontProperties()
+
+
+def _figure_png(fig, facecolor='white'):
+    output = io.BytesIO()
+    fig.savefig(output, format='png', facecolor=facecolor)
+    return output.getvalue()
+
+
 def chart_png(player, stats, now):
     # Agg无需桌面窗口；Figure对象与全局绘图锁保证并发QQ查询安全。
     with _PLOT_LOCK:
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_agg import FigureCanvasAgg
-        from matplotlib.font_manager import FontProperties
-        # Linux 生产机没有 Windows 雅黑；显式选一个已安装的中文字体，避免标题/轴标签变方框。
-        font_candidates = (
-            Path('C:/Windows/Fonts/msyh.ttc'),
-            Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
-            Path('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'),
-            Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'),
-        )
-        font_path = next((path for path in font_candidates if path.is_file()), None)
-        font = FontProperties(fname=str(font_path)) if font_path else FontProperties()
+        font = _cjk_font()
         fig = Figure(figsize=(10, 5), dpi=100, facecolor='white')
         FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
@@ -88,19 +98,47 @@ def chart_png(player, stats, now):
             ax.set_xlim(0.5, len(points) + 0.5)   # 与参考图一致：横轴从第1局开始
         ax.grid(True)
         fig.subplots_adjust(left=.09, right=.97, top=.92, bottom=.13)
-        output = io.BytesIO()
-        fig.savefig(output, format='png', facecolor='white')
-        return output.getvalue()
+        return _figure_png(fig)
+
+
+def monthly_chart_png(player, stats, now):
+    """当月积分走势：0 为当月首场赛前积分，之后每点为一局结算积分。"""
+    with _PLOT_LOCK:
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        font = _cjk_font()
+        fig = Figure(figsize=(10, 5), dpi=100, facecolor='white')
+        FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
+        points = list(stats['points'])
+        xs = list(range(len(points)))
+        ax.plot(xs, points, color='blue', marker='o', markersize=4, linewidth=1.2)
+        ax.set_title(f'{player} {now.month}月积分走势', fontproperties=font, fontsize=13)
+        ax.set_xlabel('局数（0 为当月首场赛前积分）', fontproperties=font)
+        ax.set_ylabel('积分', fontproperties=font)
+        if points:
+            pad = max(1.0, len(points) * .03)
+            ax.set_xlim(-pad, len(points) - 1 + pad)
+            ax.annotate(f'{points[0]:.2f}', (0, points[0]), xytext=(4, 8),
+                        textcoords='offset points', fontsize=9)
+            ax.annotate(f'{points[-1]:.2f}', (xs[-1], points[-1]), xytext=(-4, 10),
+                        ha='right', textcoords='offset points', fontsize=10, fontweight='bold')
+        ax.grid(True)
+        fig.subplots_adjust(left=.09, right=.97, top=.92, bottom=.13)
+        return _figure_png(fig)
 
 
 class PlayerHistory:
     # 成功结果额外留一份"旧数据"，用于接口抖动时先给数、再说明是缓存。
     STALE_SECONDS = 6 * 3600
+    PAGE_SIZE = 50
+    MONTH_MAX_PAGES = 8       # 最多 8 页（400 局）；更多时明确说明不返回不完整统计
 
-    def __init__(self, fetch=None, now=None, render=None, log=None):
+    def __init__(self, fetch=None, now=None, render=None, log=None, render_monthly=None):
         self.fetch = fetch or self._fetch
         self.now = now or (lambda: datetime.now(CST))
         self.render = render or chart_png
+        self.render_monthly = render_monthly or monthly_chart_png
         self.log = log
         self.cache = OrderedDict()
         self.last_good = OrderedDict()
@@ -317,6 +355,159 @@ class PlayerHistory:
             return '萌卡历史查询失败或超时，请稍后重试。'
         finally:
             self.lock.release()
+
+    def handle_monthly(self, player):
+        """北京时间当月：场次、胜率、当前分数/排名与积分走势图。"""
+        if not player or len(player) > 100:
+            return '格式：当月历史 玩家名，例如：当月历史 花无十日红。'
+        if not self.lock.acquire(timeout=1):
+            return '当月历史查询正在处理中，请稍后再试。'
+        started = time.monotonic()
+        key = None
+        errors = {}
+        try:
+            now = self.now().astimezone(CST)
+            key = ('monthly', player, now.year, now.month)
+            cached = self.cache.get(key)
+            if cached and time.monotonic() - cached[0] < 300:
+                self.cache.move_to_end(key)
+                return cached[1]
+            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            deadline = time.monotonic() + 40
+
+            def request(endpoint, params, budget=12, retries=1):
+                seen = []
+                for attempt in range(retries + 1):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        errors[endpoint] = 'deadline'
+                        raise TimeoutError()
+                    try:
+                        return self.fetch(endpoint, params, min(budget, remaining))
+                    except (OSError, TimeoutError, ValueError) as exc:
+                        seen.append(type(exc).__name__)
+                        if attempt >= retries:
+                            errors[endpoint] = '/'.join(seen)
+                            raise
+
+            # 资料与历史并行取；历史要翻到月初，不能只看最近一页。
+            from concurrent.futures import ThreadPoolExecutor
+            pool = ThreadPoolExecutor(max_workers=2)
+            try:
+                user_future = pool.submit(request, 'user', {'username': player}, 5, 1)
+                rows, complete = self._month_rows(player, start, request)
+                try:
+                    user = user_future.result()
+                except Exception:
+                    user = {}
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+            if not isinstance(user, dict):
+                user = {}
+            if not any(field in user for field in ('athletic_all', 'athletic_win', 'arena_rank', 'pt')):
+                user = {}
+            if not complete:
+                self._log('当月历史未能完整取得：玩家=%s，失败腿=%s' % (
+                    player, self._errors_text(errors)))
+                return ('该玩家当月对局过多或接口异常，未能完整取得历史；'
+                        '为避免错误胜率，本次不返回场次统计，请稍后重试。')
+            stats = monthly_stats(player, rows, now)
+            rank = int(user.get('arena_rank') or 0)
+            score = stats['points'][-1] if stats['points'] else None
+            if score is None:
+                try:
+                    score = number(user.get('pt'))
+                except (TypeError, ValueError):
+                    score = None
+            rate = f'{stats["rate"]:.2f}%' if stats['count'] else '暂无'
+            if score is None:
+                score_line = '当前分数：暂未取到'
+            elif float(score).is_integer():
+                score_line = f'当前分数：{score:.0f}'
+            else:
+                score_line = f'当前分数：{score:.2f}'
+            if rank > 0:
+                rank_line = f'当前排名：{rank}'
+            elif user:
+                rank_line = '当前排名：未上榜'
+            else:
+                rank_line = '当前排名：暂未取到'
+            text = '\n'.join([f'玩家：{player}', f'{now.month}月场次：{stats["count"]}',
+                              f'{now.month}月胜率：{rate}', score_line, rank_line])
+            if stats['count']:
+                try:
+                    png = self.render_monthly(player, stats, now)
+                    reply = CardReply(text, 'base64://' + base64.b64encode(png).decode('ascii'))
+                    reply.image_fallback = '\n积分走势图发送失败，请稍后重新查询。'
+                except Exception:
+                    reply = text + '\n积分走势图生成失败，统计结果仍可查看。'
+            else:
+                reply = text + '\n本月暂无竞技记录，无法绘制走势图。'
+            self.cache[key] = (time.monotonic(), reply)
+            self.cache.move_to_end(key)
+            while len(self.cache) > 16:
+                self.cache.popitem(last=False)
+            self._remember_good(key, reply)
+            if errors:
+                self._log('当月历史部分降级：玩家=%s，耗时 %.1f 秒，失败腿=%s' % (
+                    player, time.monotonic() - started, self._errors_text(errors)))
+            return reply
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            stale = self._stale_reply(key)
+            if stale is not None:
+                cached_reply, age = stale
+                minutes = max(1, int(age // 60))
+                reply = self._with_note(
+                    cached_reply,
+                    f'\n（以上为 {minutes} 分钟前的缓存；刚才萌卡接口失败或超时，本次查询 {elapsed:.0f} 秒）')
+                self._log('当月历史查询失败，已返回缓存：玩家=%s，耗时 %.1f 秒，失败腿=%s，缓存 %d 分钟' % (
+                    player, elapsed, self._errors_text(errors), minutes))
+                return reply
+            self._log('当月历史查询失败：玩家=%s，耗时 %.1f 秒，失败腿=%s，异常=%s' % (
+                player, elapsed, self._errors_text(errors), type(exc).__name__))
+            return '萌卡历史查询失败或超时，请稍后重试。'
+        finally:
+            self.lock.release()
+
+    def _month_rows(self, player, start, request):
+        """翻页到月初：返回（原始行，是否完整）。接口忽略 from_date，只能按页取。"""
+        rows, seen, complete = [], set(), False
+        for page in range(1, self.MONTH_MAX_PAGES + 1):
+            payload = request('history', {'username': player, 'type': 1,
+                                          'page_num': self.PAGE_SIZE, 'page': page})
+            batch = payload.get('data')
+            if not isinstance(batch, list):
+                raise ValueError('invalid history rows')
+            if not batch:
+                complete = True
+                break
+            rows.extend(batch)
+            fresh, stamps = 0, []
+            for row in batch:
+                row_key = (row.get('usernamea'), row.get('usernameb'),
+                           row.get('start_time'), row.get('end_time'))
+                if row_key in seen:
+                    continue
+                seen.add(row_key)
+                fresh += 1
+                try:
+                    stamps.append(moment(row['start_time']))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if fresh < len(batch):
+                break                     # 接口重复返回同一页，继续只会死循环
+            total = payload.get('total')
+            if total is not None and page * self.PAGE_SIZE >= int(total):
+                complete = True
+                break
+            if len(batch) < self.PAGE_SIZE:
+                complete = True
+                break
+            if stamps and min(stamps) < start:
+                complete = True           # 已翻到月初之前，当月对局都在手上
+                break
+        return rows, complete
 
     @staticmethod
     def _errors_text(errors: dict) -> str:

@@ -631,6 +631,8 @@ class BotService:
         if op == "error":
             return command["message"]
         if op == "player_history":
+            if command.get("monthly"):
+                return self.player_history.handle_monthly(command["player"])
             return self.player_history.handle(command["player"])
         if op == "daily_card":
             # 绑定 QQ 号（user），不是群/会话：同一人换群或私聊都是当天同一张。
@@ -1387,7 +1389,8 @@ class BotService:
             task.add_done_callback(self._deck_tasks.discard)
             return
         if parsed_command.get('op') == 'player_history':
-            await send(receiver, "历史查询中，完成后把结果发到这里。")
+            await send(receiver, "当月历史查询中，完成后把结果发到这里。" if parsed_command.get('monthly')
+                       else "历史查询中，完成后把结果发到这里。")
             task = asyncio.create_task(self._history_job(user_id, text, conversation, receiver, send))
             self._history_tasks.add(task)
             task.add_done_callback(self._history_tasks.discard)

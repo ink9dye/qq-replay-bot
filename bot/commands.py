@@ -71,11 +71,14 @@ def parse_command(text: str) -> dict:
         return {"op": "error", "message": "直接发送“观战设备”即可。"} if rest else {"op": "watch_devices"}
     if head in ("令牌分发", "观战令牌", "接口令牌", "端口令牌"):
         return {"op": "watch_token", "args": list(rest)}
-    if head == "历史":
+    if head in ("历史", "当月历史"):
         player = " ".join(rest).strip()
         if not player or len(player) > 100:
-            return {"op": "error", "message": "格式：历史 玩家名，例如：历史 花无十日红。"}
-        return {"op": "player_history", "player": player}
+            return {"op": "error", "message": f"格式：{head} 玩家名，例如：{head} 花无十日红。"}
+        command = {"op": "player_history", "player": player}
+        if head == "当月历史":
+            command["monthly"] = True
+        return command
     if head == "构筑":
         player = " ".join(rest).strip()
         if not player or len(player) > 100:
