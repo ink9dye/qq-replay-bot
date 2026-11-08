@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh YGO statistics roster every 4 minutes
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=4min
+AccuracySec=20s
+RandomizedDelaySec=20s
+Unit=ygobot-roster-precompute.service
+
+[Install]
+WantedBy=timers.target

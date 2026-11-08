@@ -12,6 +12,12 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from . import statistics_quality
+import threading
+
+_ALIVE_CACHE = {}
+_ALIVE_FILES = {'at': 0.0, 'paths': None}
+_ALIVE_TTL = 60.0
+_ALIVE_LOCK = threading.Lock()
 
 SOURCE='https://sapi.moecube.com:444/ygopro/arena/users?o=pt'
 REFRESH_SECONDS=120
@@ -154,16 +160,34 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
         diagnostics['quality_filter']=dict(enabled=True,excluded_digests=len(excluded),
             excluded_views=before_quality-len(rows))
     if check_files:
-        file_paths={}
-        for file_row in db.execute('SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
-            file_paths.setdefault(file_row['digest'],[]).append(file_row['rel_path'])
+        now_mono=time.monotonic()
+        with _ALIVE_LOCK:
+            cached_paths=_ALIVE_FILES['paths'] if now_mono-_ALIVE_FILES['at']<=_ALIVE_TTL else None
+            cached_alive=dict(_ALIVE_CACHE)
+        if cached_paths is None:
+            cached_paths={}
+            for file_row in db.execute('SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
+                cached_paths.setdefault(file_row['digest'],[]).append(file_row['rel_path'])
+            with _ALIVE_LOCK:
+                _ALIVE_FILES.update(at=now_mono,paths=cached_paths)
+        file_paths=cached_paths
         alive={}
         root_resolved=replay_root.resolve();dir_cache={}
+        fresh={}
         for row in rows:
             digest=row['digest']
-            if digest not in alive:
-                alive[digest]=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
-                                  for rel_path in file_paths.get(digest,()))
+            if digest in alive:continue
+            hit=cached_alive.get(digest)
+            if hit is not None and 0.0<=now_mono-hit[0]<=_ALIVE_TTL:
+                alive[digest]=hit[1];continue
+            ok=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
+                   for rel_path in file_paths.get(digest,()))
+            alive[digest]=ok;fresh[digest]=(now_mono,ok)
+        if fresh:
+            with _ALIVE_LOCK:
+                _ALIVE_CACHE.update(fresh)
+                if len(_ALIVE_CACHE)>40000:
+                    _ALIVE_CACHE.clear();_ALIVE_CACHE.update(fresh)
     else:
         alive={row['digest']: True for row in rows}
     if annotate_series:

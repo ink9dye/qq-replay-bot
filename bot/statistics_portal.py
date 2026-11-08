@@ -17,6 +17,8 @@ COOKIE='qqstats_owner'
 SESSION_SECONDS=5*3600
 QUERY_WAIT_SECONDS=8.0
 QUERY_CACHE_MAX_BYTES = 8 * 1024 * 1024
+CARD_SAMPLES_LIMIT = 200
+CARD_METRICS_CACHE_SECONDS = 600.0
 PRECOMPUTED_ROSTER_SECONDS = 900.0
 
 
@@ -48,6 +50,8 @@ class StatisticsPortal:
         self.database=Path(database);self.replay_root=Path(replay_root);self.clock=clock;self.secret=secret
         self._query_cache={}
         self._query_cache_lock=threading.Lock()
+        self._card_metrics_cache={}
+        self._card_metrics_lock=threading.Lock()
         self._query_compute_lock=threading.RLock()
         self._refresh=None
         if background:
@@ -443,11 +447,14 @@ class StatisticsPortal:
                 if any(len(v)>100 or any(s is not None and (not isinstance(s,str) or len(s)>128) for s in v) for v in values):raise ValueError()
             except ValueError:return self._reply(400,'卡号或筛选条件无效。')
             filters=Filters(*(tuple(v) for v in values),None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1')
+            full_request=(args.get('full',['0'])[0]=='1'
+                          or 'Python-urllib' not in (headers.get('User-Agent') or ''))
             def run(db):
                 from .statistics_investment import query as player_investment
                 snapshot_now=float(self.clock())
                 result=card_query(db,self.replay_root,code,partition,snapshot_now,filters)
-                result['investment']=player_investment(db,self.replay_root,code,snapshot_now,filters.deck_types,filters.series,basis=investment_basis)
+                if full_request:
+                    result['investment']=player_investment(db,self.replay_root,code,snapshot_now,filters.deck_types,filters.series,basis=investment_basis)
                 digests=sorted({s['digest'] for s in result['samples']})
                 times={}
                 for start in range(0,len(digests),400):
@@ -457,8 +464,18 @@ class StatisticsPortal:
                     f'SELECT digest,recorded_at FROM stat_games WHERE digest IN ({marks})',chunk)})
                 for row in result['samples']:row['recorded_at']=times[row['digest']]
                 result['generated_at']=snapshot_now;result['samples'].sort(key=lambda s:s['recorded_at'],reverse=True)
+                if args.get('full',['0'])[0]!='1' and len(result['samples'])>CARD_SAMPLES_LIMIT:
+                    result['samples']=result['samples'][:CARD_SAMPLES_LIMIT]
+                    result['samples_truncated']=True
                 return result
-            return self._query_reply(lambda db:scoped_query(ranges,lambda:run(db)))
+            cached=self._card_metrics_cache_get(parsed.query)
+            if cached is not None:
+                return cached
+            reply=self._query_reply(lambda db:scoped_query(ranges,lambda:run(db)))
+            if reply[0]==200:
+                self._card_metrics_cache_put(parsed.query,reply)
+            _trim_heap()
+            return reply
         if parts==['statistics','api','matrix']:
             from .statistics_matrix import query as matrix
             from .statistics_rank_scope import parse_ranges,scoped_query
@@ -732,6 +749,27 @@ class StatisticsPortal:
             return self._cached_query_reply_locked(key,callback,ttl,stamp_seconds,force)
         finally:
             self._query_compute_lock.release()
+
+    def _card_metrics_cache_get(self,key,ttl=CARD_METRICS_CACHE_SECONDS):
+        now=time.monotonic()
+        with self._card_metrics_lock:
+            item=self._card_metrics_cache.get(key)
+            if item is not None and 0.0<=now-item[0]<=ttl:
+                return item[1]
+            if item is not None:
+                self._card_metrics_cache.pop(key,None)
+        return None
+
+    def _card_metrics_cache_put(self,key,reply,limit=32,max_bytes=12*1024*1024):
+        body=reply[2] if len(reply)>2 else b''
+        size=len(body) if isinstance(body,(bytes,bytearray)) else 0
+        if size>max_bytes//4:return
+        with self._card_metrics_lock:
+            self._card_metrics_cache[key]=(time.monotonic(),reply,size)
+            total=sum(item[2] for item in self._card_metrics_cache.values())
+            while len(self._card_metrics_cache)>limit or (total>max_bytes and len(self._card_metrics_cache)>1):
+                oldest=min(self._card_metrics_cache,key=lambda k:self._card_metrics_cache[k][0])
+                total-=self._card_metrics_cache.pop(oldest)[2]
 
     def _query_busy_reply(self):
         return self._reply(503,json.dumps(dict(error='统计正在计算，请稍后重试。',

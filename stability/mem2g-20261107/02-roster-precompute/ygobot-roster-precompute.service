@@ -1,0 +1,16 @@
+[Unit]
+Description=Precompute YGO statistics roster to data/cache/roster.json
+After=network.target ygo-web.service
+
+[Service]
+Type=oneshot
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+Environment=TZ=Asia/Shanghai PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/ygobot/tools/roster_precompute.py --root /opt/ygobot
+TimeoutStartSec=900
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryMax=800M
