@@ -53,6 +53,7 @@
 | [`STRESS_ANDROID_20261107.md`](STRESS_ANDROID_20261107.md) | 安卓端容量上限与带宽结论：查询 1–2 人、观战 30–50 台、带宽峰值 2%；瓶颈是内存与全局锁 |
 | [`STRESS_RESULT_20261107.md`](STRESS_RESULT_20261107.md) | 受控压测结果（1/2/4 用户）：4 用户 0.94 Mbps、卡牌占 92%；卡牌 608 KB 是带宽大头 |
 | [`WRAPUP_MEM2G_20261108.md`](WRAPUP_MEM2G_20261108.md) | **2 GB 内存治理 + 查询性能收尾**：A/B/C/D 四步、实测、版本、回滚、遗留 |
+| [`WRAPUP_PLAYER_HISTORY_20261108.md`](WRAPUP_PLAYER_HISTORY_20261108.md) | **QQ「当月历史」收尾**：北京时间当月场次/胜率/分数排名 + 积分图；改动、验证、部署、回滚 |
 | [`CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md`](CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md) | 卡图与设备下载（补充；卡图现行逻辑见 WRAPUP §10） |
 | [`QQ_OBSERVATION_PERIOD_RULES.md`](QQ_OBSERVATION_PERIOD_RULES.md) | QQ 账号观察期纪律、掉线 SOP、换号判据 |
 | [`QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md`](QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md) | 发送守卫与登录证据计划 |
