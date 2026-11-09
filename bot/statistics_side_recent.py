@@ -2,6 +2,8 @@
 
 口径（2026-11-09 用户确认）：
 - 只统计当前构筑（主卡相同，build_detail scope=build）的场次；
+- **只统计对手在当前前 200 名内的场次**（当前榜单前100 + 名次快照，名次未核验的对手不计入）；
+  对手卡组和“共 N 场”都只按这些场次算；
 - 对手卡组按该构筑遇到的场次从多到少取前 6；
 - 每个对手只取最近 5 场，使用这些场里所有有完整卡表的第 2/3 局；
 - 有效换边局少于 3 个时标记 sample_low，不拒绝展示；
@@ -21,6 +23,7 @@ MIN_SIDE_GAMES = 3
 MAX_CARDS_PER_DIRECTION = 10
 DECKS_PER_PAGE = 3
 UNKNOWN_DECK = '未识别'
+OPPONENT_RANK_LIMIT = 200
 
 
 def _game_label(game: dict) -> str:
@@ -70,6 +73,45 @@ def _seat(first_game: dict):
     if value == 0:
         return 'second'
     return None
+
+
+def _rank_map(db, now) -> dict:
+    """对手名次：当前榜单前100 + 两份只读名次快照；名字统一 strip 对齐。"""
+    from .statistics_rank_scope import stored_ranks
+    ranks = {}
+    for row in db.execute('SELECT player, rank FROM stat_current_top100'):
+        try:
+            rank = int(row['rank'])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if rank > 0:
+            ranks[str(row['player']).strip()] = rank
+    for name, hit in stored_ranks(db, now).items():
+        try:
+            rank = int(hit[0])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if rank > 0:
+            ranks.setdefault(str(name).strip(), rank)
+    return ranks
+
+
+def _scope_groups(groups: list[dict], ranks: dict, limit: int):
+    """只保留对手名次已知且 ≤ limit 的场次；名次未知的对手不猜、直接不计入。"""
+    kept, excluded, unverified = [], 0, 0
+    for group in groups:
+        first = _first_game(group)
+        name = (first or {}).get('opponent')
+        rank = ranks.get(str(name).strip()) if name else None
+        if rank is None:
+            unverified += 1
+            continue
+        if rank > limit:
+            excluded += 1
+            continue
+        kept.append(group)
+    return kept, dict(opponent_range=limit, excluded_matches=excluded,
+                      unverified_matches=unverified, matches_before_scope=len(groups))
 
 
 def _new_bucket() -> dict:
@@ -165,7 +207,8 @@ def _session_row(group: dict) -> dict:
 
 def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
                recent: int = RECENT_MATCHES,
-               min_side_games: int = MIN_SIDE_GAMES) -> dict:
+               min_side_games: int = MIN_SIDE_GAMES,
+               rank_scope: dict | None = None) -> dict:
     """从 build_detail.query 的结果生成换备计划（纯函数，便于测试）。"""
     top = max(1, min(int(top), 12))
     recent = max(1, min(int(recent), 10))
@@ -215,6 +258,12 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
 
     notes = ['只统计当前构筑（主卡相同）的场次；每个对手取最近 %d 场。' % recent,
              '先攻/后攻按该换边局（第2/3局）该玩家自己的实际座位；同一场多局同一张卡取最大张数。']
+    if rank_scope:
+        notes.insert(0, '只看对手前 %d（当前榜单／名次快照）：纳入 %d 场；另有 %d 场对手名次在前 %d 之外、'
+                        '%d 场名次未核验，均不计入。' % (
+                            rank_scope['opponent_range'], len(groups),
+                            rank_scope.get('excluded_matches', 0), rank_scope['opponent_range'],
+                            rank_scope.get('unverified_matches', 0)))
     if any(item['seat_unknown_games'] for item in opponents):
         notes.append('该玩家座位未知（first_player 缺失）的换边局不计入先/后攻，单独计数。')
     if any(item['sample_low'] for item in opponents):
@@ -236,17 +285,25 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
         min_side_games=max(1, int(min_side_games)),
         total_matches=len(groups),
         opponents=opponents,
+        rank_scope=rank_scope,
         notes=notes,
     )
 
 
 def query(db, replay_root, now, player, digest=None, top: int = MAX_TOP_DECKS,
-          recent: int = RECENT_MATCHES, min_side_games: int = MIN_SIDE_GAMES):
+          recent: int = RECENT_MATCHES, min_side_games: int = MIN_SIDE_GAMES,
+          opponent_range: int | None = OPPONENT_RANK_LIMIT):
     from .statistics_build_detail import query as build_query
     detail = build_query(db, replay_root, now, player, digest=digest, scope='build')
     if detail is None:
         return None
-    return build_plan(detail, top=top, recent=recent, min_side_games=min_side_games)
+    rank_scope = None
+    if opponent_range:
+        groups, rank_scope = _scope_groups(detail.get('match_groups') or [],
+                                           _rank_map(db, now), int(opponent_range))
+        detail = dict(detail, match_groups=groups)
+    return build_plan(detail, top=top, recent=recent, min_side_games=min_side_games,
+                      rank_scope=rank_scope)
 
 
 def _card_text(cards: list[dict], name_for: Callable[[int], str],
@@ -292,9 +349,12 @@ def format_text(plan: dict, name_for: Callable[[int], str],
     player = plan.get('player') or '未知玩家'
     deck = plan.get('deck') or '未识别'
     opponents = plan.get('opponents') or []
+    scope = plan.get('rank_scope') or {}
+    scope_text = ('对手限前%d，' % scope['opponent_range']) if scope.get('opponent_range') else ''
     header = ['换备 · %s' % player, '当前构筑：%s' % deck,
-              '口径：当前构筑最近14天，按对手场次取前%d；每个对手取最近%d场，只用有完整卡表的第2/3局，'
+              '口径：当前构筑最近14天，%s按对手场次取前%d；每个对手取最近%d场，只用有完整卡表的第2/3局，'
               '先攻/后攻按该局该玩家自己的座位；每方向最多列前%d张，完整明细见网页构筑页。' % (
+                  scope_text,
                   plan.get('top_decks') or MAX_TOP_DECKS,
                   plan.get('recent_matches') or RECENT_MATCHES,
                   max_cards)]

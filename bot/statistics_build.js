@@ -281,7 +281,8 @@ function renderRecent(){
   let item=opponents.find(value=>value.deck===$('sideOpponent').value)||opponents[0];
   if($('sideOpponent').value!==item.deck)$('sideOpponent').value=item.deck;
   const low=item.sample_low?'（样本少：完整换边局少于3个）':'';
-  $('sideRecentMeta').textContent=`${item.deck}：该对手共 ${item.matches} 场；本次取最近 ${item.recent_matches} 场，${item.side_games} 个Side局${low}。`;
+  const scope=recentData&&recentData.rank_scope;
+  $('sideRecentMeta').textContent=`${item.deck}：${scope?`对手限前${scope.opponent_range}；`:''}该对手共 ${item.matches} 场；本次取最近 ${item.recent_matches} 场，${item.side_games} 个Side局${low}。`;
   recentTable('recentFirstIn',item.first.added,item.recent_matches);
   recentTable('recentFirstOut',item.first.removed,item.recent_matches);
   recentTable('recentSecondIn',item.second.added,item.recent_matches);

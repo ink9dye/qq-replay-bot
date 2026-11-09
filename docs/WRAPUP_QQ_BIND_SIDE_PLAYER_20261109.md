@@ -126,3 +126,15 @@ systemctl restart ygo-web ygo-qq
 - 边界：第 3 局同样“对主卡局”取净差，若第 2 局换入的牌第 3 局保留，它会同时出现在两个方向（亚翁的 `尼比鲁×1` 即此），属“基于主卡局”口径的必然结果，不是重复计数。
 - 未改项：「全部历史」（`side-analysis`，含投入率/算法候选）与矩阵 Side 仍按**场次首局座位**筛先后攻，本次只统一「最近5场 / QQ 换备」；两处对同一场比赛的方向归属可能不同，要统一需另开改动（会触 Side 筛选冻结口径）。
 
+## 9. 2026-11-09 14:03 换备只看对手前 200（已上线）
+
+- 用户要求：`换备` 里列出的卡组应是“它打前 200 的卡组”，对局数量也只算前 200 的对手。
+- 实现：`statistics_side_recent.query` 取完 `build_detail`（当前构筑仍是该玩家最新构筑，不因过滤而退化）后，用 `_rank_map`（`stat_current_top100` + `statistics_rank_scope.stored_ranks` 的两份名次快照）给每场对手排名，`_scope_groups` 只保留名次已知且 ≤200 的场次；名次缺失的对手不猜、直接不计入，计数写进 `rank_scope`（`excluded_matches` / `unverified_matches` / `matches_before_scope`）。
+- 展示：QQ 首行口径加“对手限前200”；网页 `sideRecentMeta` 显示“对手限前200”，面板说明与 notes 同步；新增 `stored_ranks(db, now)` 公共只读封装（`statistics_rank_scope.py`，+5 行）。
+- 示例（亚翁，当前构筑）：50 场 → 23 场（26 场对手名次在前 200 之外、1 场未核验），前 6 卡组从“x剑削手…/三幻魔/盈彩月夜/烙印星辰/雷盟/死狱乡烙印”变为“x剑削手…(3)/三幻魔(3)/雷盟(3)/死狱乡烙印(2)/幕帘味美喵(2)/米底乌斯…(2)”；第 1 组 3 场 5 个 Side 局，先攻 2 局 / 后攻 3 局。
+- 验证：本机 16 项 `test_statistics_side_recent` 通过（新增 4 项：只留已知前200、无名次不计入、notes/rank_scope、文本含“对手限前200”）；服务器 `/tmp` 影子副本跑亚翁；上线后接口 `side-recent?player=亚翁` 返回 `rank_scope`、页面含“只统计对手在当前前200名内”、静态 JS 含“对手限前/rank_scope”。
+- 版本（sha256 前 16）：`statistics_side_recent 14e18590`、`statistics_rank_scope 6a7163ea`、`statistics_build.js ccab448a`、`statistics_build.html 1f36f381`；基线 `6b277e7c` / `6c88ad07` / `bddbcdd4`（LF 归一 `1aa2989b`）/ `fefe6b1d`。
+- 部署：2026-11-09 14:03:02 重启 `ygo-web`（MainPID 1243256）、`ygo-qq`（1243270）；8787/8788 health=200、QQ `online`、日志无 Traceback；备份 `data/config-backups/side-top200-20261109/`（4 文件 + before/after sha256）。
+- 回滚：`cp -a data/config-backups/side-top200-20261109/{statistics_side_recent.py,statistics_rank_scope.py,statistics_build.js,statistics_build.html} bot/` → `chown ygo:ygo` → `py_compile` → `systemctl restart ygo-web ygo-qq`。
+- 已知差异：`ygo-web` 开 quality filter、`ygo-qq` 不开，同一玩家网页显示 41→20、QQ 显示 50→23；两处都只算前200，但“共 N 场”的分母不同，属既有差异（本次未改 quality 开关）。
+

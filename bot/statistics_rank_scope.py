@@ -57,6 +57,11 @@ def _stored_ranks(data_dir,now):
     return result
 
 
+def stored_ranks(db,now):
+    """只读两份名次快照（dashboard 缓存 + rank-scope 索引），超过 7 天的快照按没有算。"""
+    return _stored_ranks(_data_dir(db),now)
+
+
 @contextmanager
 def population_scope(own='100',opponent='all'):
     if own not in ('100','200','all') or opponent not in ('100','200','all'):raise ValueError('invalid_side_range')

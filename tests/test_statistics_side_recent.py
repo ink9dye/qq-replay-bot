@@ -1,6 +1,6 @@
 import unittest
 
-from bot.statistics_side_recent import build_plan, format_text
+from bot.statistics_side_recent import build_plan, format_text, _scope_groups
 
 
 def card(code, copies=1, partition='main'):
@@ -131,6 +131,38 @@ class BuildPlanTests(unittest.TestCase):
         plan = build_plan(detail([]))
         self.assertEqual(plan['opponents'], [])
         self.assertIn('没有可用于 Side', plan['notes'][-1])
+
+
+class RankScopeTests(unittest.TestCase):
+    def match(self, opponent):
+        return dict(id='m-' + str(opponent), recorded_at=1, games=[dict(
+            game_no=1, first_player=1, opponent=opponent, opponent_match_deck_type='B',
+            changes=dict(status='first_game', added=[], removed=[]))])
+
+    def test_keeps_only_known_top_200_opponents(self):
+        groups = [self.match('a'), self.match('b'), self.match('c'), self.match('d'), self.match(None)]
+        kept, info = _scope_groups(groups, {'a': 52, 'b': 200, 'c': 500}, 200)
+        self.assertEqual([group['id'] for group in kept], ['m-a', 'm-b'])
+        self.assertEqual(info['excluded_matches'], 1)
+        self.assertEqual(info['unverified_matches'], 2)
+        self.assertEqual(info['matches_before_scope'], 5)
+
+    def test_no_rank_means_not_counted(self):
+        kept, info = _scope_groups([self.match('a')], {}, 200)
+        self.assertEqual(kept, [])
+        self.assertEqual(info['unverified_matches'], 1)
+
+    def test_plan_notes_and_scope(self):
+        plan = build_plan(detail([]), rank_scope=dict(
+            opponent_range=200, excluded_matches=3, unverified_matches=1))
+        self.assertEqual(plan['rank_scope']['excluded_matches'], 3)
+        self.assertIn('只看对手前 200', plan['notes'][0])
+
+    def test_text_mentions_opponent_limit(self):
+        groups = [group('B', 100, 1, ((2, [card(4)], []),))]
+        plan = build_plan(detail(groups), rank_scope=dict(opponent_range=200))
+        pages = format_text(plan, lambda code: f'卡{code}')
+        self.assertIn('对手限前200', pages[0])
 
 
 class FormatTests(unittest.TestCase):
