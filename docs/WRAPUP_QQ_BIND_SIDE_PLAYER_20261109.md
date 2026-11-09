@@ -124,4 +124,5 @@ systemctl restart ygo-web ygo-qq
 - 回滚：`cp -a data/config-backups/side-seat-20261109/statistics_side_recent.py data/config-backups/side-seat-20261109/statistics_build.js data/config-backups/side-seat-20261109/statistics_build.html bot/` → `chown ygo:ygo` → `py_compile` → `systemctl restart ygo-web ygo-qq`。
 - GitHub：`339a600`（`fix(side): 换备先/后攻按该换边局座位分列`，代码+测试+本文件 §8+DECK_BUILD_SIDE §2.6），已推送 `master`。
 - 边界：第 3 局同样“对主卡局”取净差，若第 2 局换入的牌第 3 局保留，它会同时出现在两个方向（亚翁的 `尼比鲁×1` 即此），属“基于主卡局”口径的必然结果，不是重复计数。
+- 未改项：「全部历史」（`side-analysis`，含投入率/算法候选）与矩阵 Side 仍按**场次首局座位**筛先后攻，本次只统一「最近5场 / QQ 换备」；两处对同一场比赛的方向归属可能不同，要统一需另开改动（会触 Side 筛选冻结口径）。
 

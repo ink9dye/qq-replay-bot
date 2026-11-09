@@ -72,6 +72,7 @@ Side 只使用“有证据的换入/换出”，不从卡组名或使用记录�
 - “太久远不考虑”：只使用最近 5 场，不再把 14 天内所有同构筑场次混在一起。
 - 网页构筑页 Side 面板默认使用同一份“最近 5 场”数据（`side-recent` 接口），对手下拉只列前 6；保留“全部历史”切换，切回后使用原有 `side-analysis` 聚合口径（含投入率/使用后胜率/算法候选）。
 - 矩阵格 Side 不变；仍按矩阵格样本和原有口径。
+- 「全部历史」（`side-analysis`）与矩阵 Side 仍按**场次首局座位**筛先后攻，本次未改；只有「最近5场/QQ 换备」按该换边局座位。两者对同一场比赛的方向归属可能不同，需要统一时另开改动（会触 `side-analysis` 冻结口径）。
 - 代码：`bot/statistics_side_recent.py`（只读汇总，不改 `infer_side`/排序/命名/取源）、`statistics_portal` 的 `/statistics/api/side-recent`、`statistics_build.js/html`、QQ `service._side_plan_text`。
 
 ## 3. 排序
