@@ -1,6 +1,7 @@
+import inspect
 import unittest
 
-from bot.statistics_side_recent import build_plan, format_text, _scope_groups
+from bot.statistics_side_recent import build_plan, format_text, _scope_groups, query as side_query
 
 
 def card(code, copies=1, partition='main'):
@@ -134,6 +135,10 @@ class BuildPlanTests(unittest.TestCase):
 
 
 class RankScopeTests(unittest.TestCase):
+    def test_query_default_is_top_200(self):
+        """网页/QQ 默认只看对手前 200 的“每个卡组最近五场”；None 可关闭。"""
+        self.assertEqual(inspect.signature(side_query).parameters['opponent_range'].default, 200)
+
     def match(self, opponent):
         return dict(id='m-' + str(opponent), recorded_at=1, games=[dict(
             game_no=1, first_player=1, opponent=opponent, opponent_match_deck_type='B',

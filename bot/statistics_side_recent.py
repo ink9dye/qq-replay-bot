@@ -2,11 +2,11 @@
 
 口径（2026-11-09 用户确认）：
 - 只统计当前构筑（主卡相同，build_detail scope=build）的场次；
-- **只统计对手在当前前 200 名内的场次**（当前榜单前100 + 名次快照，名次未核验的对手不计入）；
-  对手卡组和“共 N 场”都只按这些场次算；
 - 对手卡组按该构筑遇到的场次从多到少取前 6；
 - 每个对手只取最近 5 场，使用这些场里所有有完整卡表的第 2/3 局；
 - 有效换边局少于 3 个时标记 sample_low，不拒绝展示；
+- **默认只看对手前 200**（2026-11-09 用户确认）：对手卡组和“共 N 场”都只算名次已知且 ≤200 的场次，
+  名次未核验的对手不计入；`opponent_range=None` 可关闭（每个卡组最近 5 场，不看名次）；
 - 先攻/后攻按**该换边局（第 2/3 局）该玩家自己的座位**（first_player=1/0）分列：
   换入/换出要在“用这副主卡的这一局”里生效，BO3 中第 2/3 局的座位常与首局相反，
   不能拿首局座位代替。
@@ -295,6 +295,10 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
 def query(db, replay_root, now, player, digest=None, top: int = MAX_TOP_DECKS,
           recent: int = RECENT_MATCHES, min_side_games: int = MIN_SIDE_GAMES,
           opponent_range: int | None = OPPONENT_RANK_LIMIT):
+    """默认只看对手前 200 的「每个卡组最近 5 场」（网页与 QQ 一致）。
+
+    opponent_range=None 可关闭过滤（每个卡组最近 5 场，不再看对手名次）。
+    """
     from .statistics_build_detail import query as build_query
     detail = build_query(db, replay_root, now, player, digest=digest, scope='build')
     if detail is None:
