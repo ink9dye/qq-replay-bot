@@ -300,7 +300,7 @@ def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
                 merge_unknown=True):
     """单环（2026-11-06 用户新口径）。
 
-    - 主大类（内环口径）或未归入任何大类的具体卡组，占比严格 > min_slice 才单独成片；
+    - 主大类（内环口径）或未归入任何大类的具体卡组，占比 ≥ min_slice 才单独成片；
     - 其余（含未识别，merge_unknown 时）并入「其他」，卡图固定 other_image；
     - 外环 0.56-0.94R 内嵌套：大类里 > min_member 的具体卡组，以及与相邻大类 >0 的交集带
       （交集带画在两部分界处，卡图左右各半由调用方拼接）。
@@ -322,7 +322,7 @@ def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
     for cat in base['inner']:
         if cat['name'] in (OTHER_NAME, UNKNOWN_NAME):
             continue
-        if _pct(cat['players'], total) > min_slice:
+        if _pct(cat['players'], total) >= min_slice:
             slices.append(dict(name=cat['name'], players=cat['players'],
                                percent=_pct(cat['players'], total), color=cat['color'],
                                image=cat.get('image'), kind='category'))
@@ -333,7 +333,7 @@ def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
     remaining.sort(key=lambda item: (-item[1], item[0]))
     consumed = set()
     for name, players, image in remaining:
-        if name in consumed or _pct(players, total) <= min_slice:
+        if name in consumed or _pct(players, total) < min_slice:
             continue
         group = [(name, players)]
         group_names = {item[0] for item in group}
@@ -430,7 +430,7 @@ def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
         if cat['name'] == UNKNOWN_NAME:
             if not merge_unknown:
                 continue
-        elif _pct(cat['players'], total) > min_slice:
+        elif _pct(cat['players'], total) >= min_slice:
             continue
         parts.append((cat['name'], cat['players']))
     for row in outer:
@@ -446,7 +446,7 @@ def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
                            percent=_pct(other_players, total), color=OTHER_COLOR,
                            image=other_image,
                            parts=[dict(name=name, players=players) for name, players in parts]),
-                note='单环：主大类或未归类卡组严格 >{0}% 单独成片，其余并入「其他」；'
+                note='单环：主大类或未归类卡组 ≥{0}% 单独成片，其余并入「其他」；'
                      '外环嵌套 >{1}% 的组内卡组与相邻大类交集。'.format(min_slice, min_member))
 
 

@@ -454,7 +454,7 @@ window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster
     box.setAttribute('data-single-pie','1');
     var legend=document.getElementById('deckPieLegend'); if(legend) legend.replaceChildren();
     var note=document.getElementById('deckPieNote');
-    if(note){var base='严格 >5% 单独成片，其余并入「其他」；外环嵌套 >4% 的组内卡组与相邻大类交集；卡图只取卡框内插画。';
+    if(note){var base='≥5% 单独成片，其余并入「其他」；外环嵌套 >4% 的组内卡组与相邻大类交集；卡图只取卡框内插画。';
       var gs=window.__pieGroup; note.textContent=base+(gs?(' · 已筛：'+gs.label+'（合并块 '+gs.names.length+' 个卡组，再点一次取消）'):'');
     }
     box.onclick=function(ev){

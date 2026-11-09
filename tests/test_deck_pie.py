@@ -48,6 +48,24 @@ class DeckPieTests(unittest.TestCase):
         self.assertEqual(inner['混沌']['percent'], 66.7)
         self.assertAlmostEqual(sum(item['percent'] for item in pie['inner']), 100.0, places=0)
 
+    def test_exactly_five_percent_is_its_own_slice(self):
+        # 3 人 / 60 人 = 5.0%：旧口径（严格 >5%）会并入「其他」，新口径（≥5%）单独成片。
+        rows = dist([('混沌烙印', 1), ('混沌三幻魔', 1), ('混沌影依', 1),
+                     ('杂项甲', 30), ('杂项乙', 27)])
+        payload = deck_pie.single_ring(rows, GROUPS)
+        chaos = next((item for item in payload['slices'] if item['name'] == '混沌'), None)
+        self.assertIsNotNone(chaos)
+        self.assertEqual(chaos['percent'], 5.0)
+        self.assertNotIn('混沌', {part['name'] for part in payload['other']['parts']})
+
+    def test_just_under_five_percent_stays_in_other(self):
+        # 3 人 / 61 人 = 4.92%：仍并入「其他」，避免边界放宽后把 4.x% 也拆出来。
+        rows = dist([('混沌烙印', 1), ('混沌三幻魔', 1), ('混沌影依', 1),
+                     ('杂项甲', 30), ('杂项乙', 28)])
+        payload = deck_pie.single_ring(rows, GROUPS)
+        self.assertNotIn('混沌', {item['name'] for item in payload['slices']})
+        self.assertIn('混沌', {part['name'] for part in payload['other']['parts']})
+
     def test_colors_are_stable_and_distinct_for_categories(self):
         rows = dist([('混沌烙印', 1), ('混沌三幻魔', 1), ('混沌影依', 1),
                      ('烙印甲', 1), ('烙印乙', 1), ('其他一', 1)])
