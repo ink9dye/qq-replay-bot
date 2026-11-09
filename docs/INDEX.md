@@ -38,29 +38,31 @@
 | 文档 | 内容 |
 |---|---|
 | [`QUERY_API.md`](QUERY_API.md) | 服务端总接口：`/query-api`、`/replay-api`、`/statistics/api/recordings` |
-| [`RANK_SCOPE_200_20261107.md`](RANK_SCOPE_200_20261107.md) | **前200 口径修复**：名次来源、快照、`ygo-rank-refresh.timer` 每 6 小时刷新、回滚 |
 | [`REPLAY_LIBRARY_20261106.md`](REPLAY_LIBRARY_20261106.md) | 录像库检索/整场下载、限速、客户端 v1.1–v1.5 |
+| [`WRAPUP_REPLAY_DECK_NAMES_20261107.md`](WRAPUP_REPLAY_DECK_NAMES_20261107.md) | **回放库卡组名一致性收尾**：第1局口径、索引实时刷新、ZIP 目录带卡组、部署/回滚 |
 | [`SIDE_ANALYSIS_20261106.md`](SIDE_ANALYSIS_20261106.md) | Side 换入换出分析：入口、口径、算法候选、验收 |
 | [`WRAPUP_WEB_LATENCY_20261107.md`](WRAPUP_WEB_LATENCY_20261107.md) | **网页耗时优化全量记录**：措施、实测、饼图最终口径、卡图管线、回滚 |
-| [WRAPUP_PIE_LEGEND_20261107.md](WRAPUP_PIE_LEGEND_20261107.md) | **前百饼图/图例收尾（2026-11-07）**：网页逐项对齐、网站生成保存饼图+图例、机器人取图、验证与回滚 |
+| [`WRAPUP_PIE_LEGEND_20261107.md`](WRAPUP_PIE_LEGEND_20261107.md) | **前百饼图/图例收尾（2026-11-07）**：网页逐项对齐、网站生成保存饼图+图例、机器人取图、验证与回滚 |
 | [`STATISTICS_QUERY_OPTIMIZATION_PLAN_20261106.md`](STATISTICS_QUERY_OPTIMIZATION_PLAN_20261106.md) | 查询链路优化方案（P1b/P2/P3） |
 | [`STATISTICS_QUERY_FINAL_PLAN_20261106.md`](STATISTICS_QUERY_FINAL_PLAN_20261106.md) | 查询优化最终执行计划与结论 |
 | [`WEB_PERFORMANCE_NIGHT_20261106.md`](WEB_PERFORMANCE_NIGHT_20261106.md) | 2026-11-06 夜间网页性能专项（首屏/缓存/CPU 隔离） |
 | [`QUERY_PERF_DESIGN_20261106.md`](QUERY_PERF_DESIGN_20261106.md) / [`QUERY_PERF_PATCH_PLAN_20261106.md`](QUERY_PERF_PATCH_PLAN_20261106.md) | 查询性能设计/补丁计划 |
-| [`ALERTING_AND_WAL_20261106.md`](ALERTING_AND_WAL_20261106.md) | 告警重构（PSI/重启/OOM/WAL/磁盘）与 WAL 截断结论 |
+| [`ALERTING_AND_WAL_20261106.md`](ALERTING_AND_WAL_20261106.md) | 告警重构（PSI/重启/OOM/WAL/磁盘）、WAL 截断结论、**2026-11-08 降噪 v2**（去抖/恢复滞回/单日报/可读文案） |
 | [`BANDWIDTH_ACCESS_ANALYSIS_20261106.md`](BANDWIDTH_ACCESS_ANALYSIS_20261106.md) | 带宽/访问分析（3M 小水管优化依据） |
 | [`BANDWIDTH_P0_NGINX_GZIP_20261106.md`](BANDWIDTH_P0_NGINX_GZIP_20261106.md) / [`BANDWIDTH_ANDROID_PATCH_20261106.md`](BANDWIDTH_ANDROID_PATCH_20261106.md) | nginx gzip / 安卓端带宽补丁 |
-| [`STRESS_ANDROID_20261107.md`](STRESS_ANDROID_20261107.md) | 安卓端容量上限与带宽结论：查询 1–2 人、观战 30–50 台、带宽峰值 2%；瓶颈是内存与全局锁 |
-| [`STRESS_RESULT_20261107.md`](STRESS_RESULT_20261107.md) | 受控压测结果（1/2/4 用户）：4 用户 0.94 Mbps、卡牌占 92%；卡牌 608 KB 是带宽大头 |
-| [`WRAPUP_MEM2G_20261108.md`](WRAPUP_MEM2G_20261108.md) | **2 GB 内存治理 + 查询性能收尾**：A/B/C/D 四步、实测、版本、回滚、遗留 |
-| [`WRAPUP_PLAYER_HISTORY_20261108.md`](WRAPUP_PLAYER_HISTORY_20261108.md) | **QQ「当月历史」收尾**：北京时间当月场次/胜率/分数排名 + 积分图；改动、验证、部署、回滚 |
-| [`WRAPUP_QQ_BIND_SIDE_PLAYER_20261109.md`](WRAPUP_QQ_BIND_SIDE_PLAYER_20261109.md) | **绑定MC/订阅空格/换备/玩家资料 + 最近5场 Side 收尾（2026-11-09）**：口径、版本、部署、验证、回滚；**§8 = 换备先/后攻改按该换边局座位**（13:52 上线，`339a600`/`19fab5f`）；**§9 = 换备只看对手前200**（14:03 上线）＋ 名次快照 14 天（14:10 换备、14:22 全站默认） |
+| [`STRESS_ANDROID_20261107.md`](STRESS_ANDROID_20261107.md) | **安卓端容量上限与带宽结论（2026-11-07）**：查询 1–2 人、观战 30–50 台、带宽峰值仅 2%；瓶颈是内存与全局计算锁；含分级压测方案 |
+| [`STRESS_RESULT_20261107.md`](STRESS_RESULT_20261107.md) | **受控压测结果（22:26–22:33）**：1/2/4 用户，4 用户 0.94 Mbps、卡牌占 92%、p95 8 s；内存/CPU 未到瓶颈，卡牌 608 KB 是带宽大头 |
 | [`CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md`](CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md) | 卡图与设备下载（补充；卡图现行逻辑见 WRAPUP §10） |
-| [`CARD_IMAGE_SUPERPRE_20261109.md`](CARD_IMAGE_SUPERPRE_20261109.md) | **卡图串卡（2026-11-09）**：超先行同号图 momobako 会返回别的卡；≥1 亿只认 super-pre；改动/数据修复/验证/回滚 |
-| [`CARD_MATCHUPS_20261109.md`](CARD_MATCHUPS_20261109.md) | **单卡胜率 + 对前百卡组 Top5（2026-11-09）**：双方前100、使用后口径、网页/QQ 实现、性能、验证、部署与回滚 |
+| [`CARD_IMAGE_SUPERPRE_20261109.md`](CARD_IMAGE_SUPERPRE_20261109.md) | **卡图串卡（2026-11-09）**：超先行同号图 momobako 会串卡；只认 super-pre；改动/数据修复/验证/回滚 |
 | [`QQ_OBSERVATION_PERIOD_RULES.md`](QQ_OBSERVATION_PERIOD_RULES.md) | QQ 账号观察期纪律、掉线 SOP、换号判据 |
 | [`QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md`](QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md) | 发送守卫与登录证据计划 |
 | [`QQ_PROBE_DEPLOY_20261107.md`](QQ_PROBE_DEPLOY_20261107.md) | 自动探测恢复的部署与回滚（2026-11-07） |
+| [`WRAPUP_DAILY_CARD_PROBABILITY_20261107.md`](WRAPUP_DAILY_CARD_PROBABILITY_20261107.md) | **每日一卡 + 概率运算**：口径、验证、部署（已装未重启）、回滚、重启后验收 |
+| [`WRAPUP_CARD_REPORT_PRECOMPUTE_20261108.md`](WRAPUP_CARD_REPORT_PRECOMPUTE_20261108.md) | **卡片统计/构筑详情预计算上线**：实测、改动、部署记录、验收（8.7 ms / 5.7 ms / 20.2 ms）、回滚 |
+| [`CARD_MATCHUPS_20261109.md`](CARD_MATCHUPS_20261109.md) | **单卡胜率 + 对前百卡组 Top5（2026-11-09）**：双方前100、使用后口径、网页/QQ 实现、性能、验证、部署与回滚 |
+| [`WRAPUP_WEB_MEMORY_SIDE_INFERENCE_20261109.md`](WRAPUP_WEB_MEMORY_SIDE_INFERENCE_20261109.md) | **web RSS 60→480 MB 根因**：进程内 side inference 整份加载 171 MB 缓存；已移出、TTL/重算频率调整、验收与回滚 |
+| [`WRAPUP_MATRIX_PRECOMPUTE_20261109.md`](WRAPUP_MATRIX_PRECOMPUTE_20261109.md) | **卡组胜率提速**：关 series 标注（59→8.1 s）+ 默认 200/200 预计算（首次打开 25–45 ms）、验收与回滚 |
+| [`WRAPUP_QQ_BIND_SIDE_PLAYER_20261109.md`](WRAPUP_QQ_BIND_SIDE_PLAYER_20261109.md) | **绑定MC/订阅空格/换备/玩家资料 + 最近5场 Side 收尾（2026-11-09）**：口径、版本、部署、验证、回滚、GitHub；**§8 = 换备先/后攻改按该换边局座位**（13:52 上线，`339a600`/`19fab5f`）；**§9 = 换备只看对手前200**（14:03 上线）＋ 名次快照 14 天（14:10 换备、14:22 全站默认） |
 | `WATCH_DEVICE_TOKENS.md`（见仓库 `docs/`，含设备令牌，谨慎分发）/ [`WATCH_CAPACITY_20261105.md`](WATCH_CAPACITY_20261105.md) / [`SMALL_WORLD.md`](SMALL_WORLD.md) | 设备令牌、观战容量、小世界检索 |
 | [`SERVICE_BOUNDARIES_20261105.md`](SERVICE_BOUNDARIES_20261105.md) | 服务边界与职责划分 |
 
