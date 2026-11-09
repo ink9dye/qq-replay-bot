@@ -110,6 +110,31 @@ class ThumbTests(unittest.TestCase):
         self.assertEqual(found[0], cached)
         self.assertEqual(found[1], 'image/jpeg')
 
+    def test_super_pre_id_downloads_from_super_pre_first(self):
+        seen = []
+        buffer = io.BytesIO()
+        Image.new('RGB', (82, 120), (5, 5, 5)).save(buffer, 'JPEG')
+        payload = buffer.getvalue()
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(url, timeout=None):
+            seen.append(url)
+            return Response(payload)
+
+        with mock.patch.object(cards.urllib.request, 'urlopen', side_effect=fake_urlopen):
+            cards._schedule(str(self.data), 100268010, self.root / 'pics')
+            deadline = time.time() + 3
+            while time.time() < deadline and 100268010 in cards._pending:
+                time.sleep(0.05)
+        self.assertTrue(seen)
+        self.assertIn('super-pre', seen[0])
+
 
 if __name__ == '__main__':
     unittest.main()

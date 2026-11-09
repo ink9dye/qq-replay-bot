@@ -103,7 +103,10 @@ def _schedule(data_dir, code, pics):
             if existing is not None:
                 return existing[0]
             for candidate in _image_codes(code):
-                for template in (REMOTE, REMOTE_FALLBACK):
+                # 超先行号段 momobako 可能还留着上一期卡包的同号图（换包后卡号会改指另一张卡），
+                # 这类卡只认 super-pre；普通卡仍先试 momobako。
+                templates = (REMOTE_FALLBACK, REMOTE) if code >= 100_000_000 else (REMOTE, REMOTE_FALLBACK)
+                for template in templates:
                     try:
                         with urllib.request.urlopen(template % candidate, timeout=10) as response:
                             blob = response.read(2 * 1024 * 1024 + 1)
