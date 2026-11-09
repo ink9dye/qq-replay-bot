@@ -22,27 +22,71 @@ def _card_index(data_dir):
     return index(Path(data_dir))
 
 
-def resolve_card(data_dir, query):
-    """返回 (code, name)；本地库按中文名/别名匹配。"""
+def _recorded_copies(db, codes):
+    """构筑库里这几个卡号各自的记录量；查询失败当作没有记录。"""
+    marks = ','.join('?' for _ in codes)
+    try:
+        # 卡号只来自本地卡库的整数 id，占位符数量由 codes 决定。
+        return {int(code): int(total or 0) for code, total in db.execute(
+            'SELECT code, SUM(copies) FROM stat_build_cards '
+            f'WHERE code IN ({marks}) GROUP BY code', list(codes))}
+    except sqlite3.Error:
+        return {}
+
+
+def _prefer_recorded(db, exact, chosen):
+    """同名卡号不止一个时，优先选构筑库里真有记录的那个号。
+
+    先行服把卡写成 1013xxxxx，公开库收的是正式号；两边中文名相同，但统计
+    数据只落在其中一个号上。旧逻辑永远取最小卡号，会落到空号，导致「使用量」
+    「单卡流向」全是 0。只在当前选中的号没有记录时才改用有记录的号，其余情况
+    保持原口径不变。
+    """
+    codes = sorted({item[1] for item in exact})
+    if len(codes) < 2:
+        return chosen
+    counts = _recorded_copies(db, codes)
+    if not counts or counts.get(chosen[1], 0) > 0:
+        return chosen
+    best = max((item for item in exact if counts.get(item[1], 0) > 0),
+               key=lambda item: (counts[item[1]], -item[1]), default=None)
+    return best or chosen
+
+
+def resolve_card(data_dir, query, db=None):
+    """返回 (code, name)；本地库按中文名/别名匹配。
+
+    传入 db 时，同名多卡号会优先落到统计库里实际有记录的那个号。
+    """
     wanted = normalize(query)
     if not wanted:
         raise ValueError('卡名不能为空')
-    hits = []
+    exact, loose = [], []
     for info in _card_index(data_dir).values():
         names = [info.get(key) for key in ('cn_name', 'sc_name', 'md_name', 'nwbbs_n', 'cnocg_n')]
         for name in names:
             if not name:
                 continue
             if normalize(name) == wanted:
-                hits.append((0, int(info['id']), str(info.get('cn_name') or name)))
+                exact.append((0, int(info['id']), str(info.get('cn_name') or name)))
                 break
             if wanted in normalize(name):
-                hits.append((1, int(info['id']), str(info.get('cn_name') or name)))
+                loose.append((1, int(info['id']), str(info.get('cn_name') or name)))
                 break
+    hits = exact or loose
     if not hits:
         raise ValueError('本地卡库没有找到这张卡')
     hits.sort(key=lambda item: (item[0], len(item[2]), item[1]))
-    return hits[0][1], hits[0][2]
+    chosen = hits[0]
+    if db is not None and exact:
+        chosen = _prefer_recorded(db, exact, chosen)
+    return chosen[1], chosen[2]
+
+
+def identity_codes(db, code):
+    """同一张卡的异画/先行卡号；没有身份映射文件时只有它自己。"""
+    from .card_identity import identity
+    return identity(db, int(code))['codes'] or [int(code)]
 
 
 def _latest_builds(db, now):
@@ -66,11 +110,13 @@ def _latest_builds(db, now):
 
 
 def collect(database, data_dir, now, card_name):
-    code, name = resolve_card(data_dir, card_name)
     with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
                                  uri=True, timeout=5)) as db:
         db.row_factory = sqlite3.Row
         db.execute('BEGIN')
+        code, name = resolve_card(data_dir, card_name, db)
+        codes = identity_codes(db, code)
+        marks = ','.join('?' for _ in codes)
         builds = _latest_builds(db, now)
         players = {row['player']: row for row in builds}
         top = [dict(row) for row in db.execute(
@@ -84,7 +130,8 @@ def collect(database, data_dir, now, card_name):
             if row.get('build'):
                 for count in db.execute(
                         'SELECT partition, SUM(copies) AS copies FROM stat_build_cards '
-                        'WHERE build=? AND code=? GROUP BY partition', (row['build'], code)):
+                        f'WHERE build=? AND code IN ({marks}) GROUP BY partition',
+                        [row['build'], *codes]):
                     if count['partition'] == 'main':
                         main = int(count['copies'] or 0)
                     elif count['partition'] == 'side':

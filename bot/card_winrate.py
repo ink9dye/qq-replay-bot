@@ -37,7 +37,9 @@ def resolve_card(database, query):
             name = '#%d' % code
         return code, name
     from .card_usage_pie import resolve_card as resolve_name
-    return resolve_name(Path(database).resolve().parent, text)
+    path = Path(database).resolve()
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)) as db:
+        return resolve_name(path.parent, text, db)
 
 
 def _stamp(db, now):

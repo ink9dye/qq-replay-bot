@@ -29,14 +29,16 @@ def _latest_builds(db, now):
 
 
 def collect_flow(database, data_dir, now, card_name):
-    from .card_usage_pie import resolve_card
+    from .card_usage_pie import identity_codes, resolve_card
     from .statistics_dashboard import population
-    code, name = resolve_card(data_dir, card_name)
     replay_root = Path(database).parent / 'replays'
     with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
                                  uri=True, timeout=5)) as db:
         db.row_factory = sqlite3.Row
         db.execute('BEGIN')
+        code, name = resolve_card(data_dir, card_name, db)
+        codes = identity_codes(db, code)
+        marks = ','.join('?' for _ in codes)
         basis, latest, people = population(db, replay_root, now)
         records = []
         for person in people:
@@ -46,7 +48,8 @@ def collect_flow(database, data_dir, now, card_name):
             if row and row.get('build'):
                 for count in db.execute(
                         'SELECT partition, SUM(copies) AS copies FROM stat_build_cards '
-                        'WHERE build=? AND code=? GROUP BY partition', (row['build'], code)):
+                        f'WHERE build=? AND code IN ({marks}) GROUP BY partition',
+                        [row['build'], *codes]):
                     if count['partition'] == 'main':
                         main = int(count['copies'] or 0)
                     elif count['partition'] == 'side':
