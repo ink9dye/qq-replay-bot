@@ -72,7 +72,7 @@
 - 单测：新增 `test_card_statistics` 2 项、`test_card_winrate` 2 项、`test_qq_new_commands` 1 项；连同相关套件共 8 项通过。
 - 静态：`py_compile`、`node --check` 通过；页面 `$('id')` 与 `matchup*` ID 全部存在。
 - 线上接口：`/statistics/api/card-metrics?code=14558127&partition=main&self_range=100&opponent_range=100&first=all&matchups=1&full=1` → 200；灰流丽总体 274 局 / 52.2%，5 行。
-- 真实浏览器：headless Edge 桌面 1400×1800、移动 390×1600 均加载出面板、5 行、无 `window.error`/`unhandledrejection`。证据：[acceptance.json](../workflow-results/card-matchups-20261109/acceptance.json)、[移动端](../workflow-results/card-matchups-20261109/acceptance-mobile.json)、[桌面截图](../workflow-results/card-matchups-20261109/card-matchup-panel.png)。
+- 真实浏览器：headless Edge 桌面 1400×1800、移动 390×1600 均加载出面板、5 行、无 `window.error`/`unhandledrejection`。证据（工作区）：`workflow-results/card-matchups-20261109/acceptance.json`、`acceptance-mobile.json`、`card-matchup-panel.png`、`card-matchup-panel-mobile.png`。
 - 服务：`ygo-web` / `ygo-qq` / `ygo-collector` active；8787/8788 health=200；QQ `online`、无 Traceback；web RSS 约 133MB、qq 约 30MB。
 - 已知测试噪音：`test_card_statistics` 整套的既有 `missing_source_views` 用例会受 `top100._ALIVE_CACHE` 跨测试污染，单跑通过；`test_card_identity` 整套同样有 1 个顺序相关失败，单跑通过。均与本次改动无关。
 
