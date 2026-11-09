@@ -307,8 +307,14 @@ class StatisticsPortal:
         if len(parts)==3 and parts[:2]==['statistics','card-image']:
             from .statistics_local_cards import picture
             if not parts[2].isdigit() or len(parts[2])>10:return self._reply(400,'卡号无效。')
-            image=picture(self.database.parent,int(parts[2]))
-            if image is None:return self._reply(404,'本地暂无卡图。')
+            code=int(parts[2])
+            if not 0<code<=4294967295:return self._reply(404,'卡号无效。')
+            image=picture(self.database.parent,code)
+            if image is None:
+                # 缺本地图时不在请求里代下，直接 302 到正确图源（≥1e8 只在 super-pre）；
+                # 后台仍会缓存到本地，之后同一卡号走 200 本地文件。
+                from .card_image_cache import full_url
+                return self._reply(302,'',extra={'Location':full_url(self.database.parent,code)})
             file,mime=image
             status,kind,_,extra=self._reply(200,'',mime,{'Cache-Control':'public, max-age=86400'})
             return status,kind,file.read_bytes(),extra

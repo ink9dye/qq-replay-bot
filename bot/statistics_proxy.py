@@ -17,6 +17,9 @@ OWNER_COOKIE = "qqstats_owner"
 UPSTREAM = "http://127.0.0.1:8788"
 BLOCKED = ("/statistics/access",)
 TEXT_TYPES = ("text/html", "text/javascript", "application/javascript", "text/css", "application/json")
+IMAGE_SOURCES = ("https://cdn.233.momobako.com/ygopro/pics/",
+                 "https://cdntx.moecube.com/ygopro-super-pre/data/pics/")
+IMAGE_PATHS = ("/statistics/card-thumb/", "/statistics/card-image/")
 
 
 class _NoImageRedirect(urllib.request.HTTPRedirectHandler):
@@ -31,7 +34,7 @@ def _fetch(upstream, headers, body=None, method="GET"):
         request.add_header(key, value)
     request.add_header("Accept-Encoding", "identity")
     try:
-        if urlsplit(upstream).path.startswith('/statistics/card-thumb/'):
+        if urlsplit(upstream).path.startswith(IMAGE_PATHS):
             # Let the browser fetch a cache miss from CDN; never forward the owner cookie.
             response = urllib.request.build_opener(_NoImageRedirect()).open(request, timeout=10)
         else:
@@ -108,9 +111,9 @@ def route(app, path, parts):
                 "<p>请确认统计网页仍在运行，稍后重新发送“统计”。</p>".encode())
     if any(kind in content_type for kind in TEXT_TYPES):
         body = _rewrite(body, token)
-    if urlsplit(upstream).path.startswith('/statistics/card-thumb/'):
+    if urlsplit(upstream).path.startswith(IMAGE_PATHS):
         location = next((value for key,value in headers.items() if key.lower()=='location'),None)
-        if status==302 and location and location.startswith('https://cdn.233.momobako.com/ygopro/pics/'):
+        if status==302 and location and location.startswith(IMAGE_SOURCES):
             return status,content_type,b'',{'Location':location}
         if status==200 and content_type.startswith('image/'):
             return status,content_type,body,{'Cache-Control':'private, max-age=86400'}

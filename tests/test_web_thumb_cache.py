@@ -60,6 +60,36 @@ class WebThumbCacheTests(unittest.TestCase):
             result=proxy.route(self.app(),'/stats/t/statistics/api/roster',['stats','t','statistics','api','roster'])
         self.assertEqual(len(result),3)
 
+    def test_card_image_miss_redirects_to_the_right_source(self):
+        # 缺本地图时不再 404：≥1e8 直接 302 到 super-pre，普通卡回 momobako。
+        with patch.object(cards,'picture',return_value=None):
+            result=self.portal.route('/statistics/card-image/101307074',self.headers,'127.0.0.1')
+            self.assertEqual(result[0],302)
+            self.assertTrue(result[3]['Location'].startswith('https://cdntx.moecube.com/ygopro-super-pre/data/pics/'))
+            result=self.portal.route('/statistics/card-image/12345678',self.headers,'127.0.0.1')
+            self.assertEqual(result[0],302)
+            self.assertTrue(result[3]['Location'].startswith('https://cdn.233.momobako.com/ygopro/pics/'))
+
+    def test_card_image_hit_serves_local_bytes(self):
+        image=self.root/'x.jpg'; image.write_bytes(b'jpeg-bytes')
+        with patch.object(cards,'picture',return_value=(image,'image/jpeg')):
+            result=self.portal.route('/statistics/card-image/123',self.headers,'127.0.0.1')
+        self.assertEqual(result[:3],(200,'image/jpeg',b'jpeg-bytes'))
+        self.assertEqual(result[3]['Cache-Control'],'public, max-age=86400')
+
+    def test_share_proxy_preserves_card_image_redirect(self):
+        target='https://cdntx.moecube.com/ygopro-super-pre/data/pics/101307074.jpg'
+        with patch.object(proxy,'_fetch',return_value=(302,{'Content-Type':'text/plain','Location':target},b'')):
+            result=proxy.route(self.app(),'/stats/t/statistics/card-image/101307074',
+                               ['stats','t','statistics','card-image','101307074'])
+        self.assertEqual(result[3]['Location'],target)
+
+    def test_share_proxy_drops_untrusted_image_redirect(self):
+        with patch.object(proxy,'_fetch',return_value=(302,{'Content-Type':'text/plain','Location':'https://evil.example/x.jpg'},b'')):
+            result=proxy.route(self.app(),'/stats/t/statistics/card-image/1',
+                               ['stats','t','statistics','card-image','1'])
+        self.assertEqual(len(result),3)
+
     def test_thumbnail_redirects_are_not_followed_by_server_with_owner_cookie(self):
         handler=proxy._NoImageRedirect()
         self.assertIsNone(handler.redirect_request(None,None,302,'found',{},'https://cdn.example/image'))
