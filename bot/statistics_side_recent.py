@@ -5,7 +5,9 @@
 - 对手卡组按该构筑遇到的场次从多到少取前 6；
 - 每个对手只取最近 5 场，使用这些场里所有有完整卡表的第 2/3 局；
 - 有效换边局少于 3 个时标记 sample_low，不拒绝展示；
-- 先攻/后攻按该玩家在首局的实际座位（first_player=1/0）。
+- 先攻/后攻按**该换边局（第 2/3 局）该玩家自己的座位**（first_player=1/0）分列：
+  换入/换出要在“用这副主卡的这一局”里生效，BO3 中第 2/3 局的座位常与首局相反，
+  不能拿首局座位代替。
 """
 
 from __future__ import annotations
@@ -153,6 +155,7 @@ def _session_row(group: dict) -> dict:
         recorded_at=group.get('recorded_at') or (first or {}).get('recorded_at'),
         opponent=(first or {}).get('opponent'),
         first_player=(first or {}).get('first_player'),
+        side_seats=[seat for seat in (_seat(game) for game, _ in changes) if seat],
         game_count=max(game_numbers) if game_numbers else None,
         side_games=len(changes),
         status='observed' if changes else 'no_side_evidence',
@@ -184,15 +187,20 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
         recent_groups = by_label[label][:recent]
         buckets = {'first': _new_bucket(), 'second': _new_bucket()}
         sessions = []
+        seat_unknown = 0
         for group in recent_groups:
             first = _first_game(group)
-            seat = _seat(first) if first else None
             changes = _side_changes(group)
-            if seat:
-                buckets[seat]['side_games'] += len(changes)
-                session_key = str(group.get('id') or (first or {}).get('digest') or '')
-                for _, change in changes:
-                    _add_changes(buckets[seat], session_key, change)
+            session_key = str(group.get('id') or (first or {}).get('digest') or '')
+            # 换入/换出生效于第 2/3 局本身，座位取该局该玩家自己的 first_player；
+            # 不能沿用首局座位（BO3 第 2/3 局座位常与首局相反）。
+            for game, change in changes:
+                seat = _seat(game)
+                if not seat:
+                    seat_unknown += 1
+                    continue
+                buckets[seat]['side_games'] += 1
+                _add_changes(buckets[seat], session_key, change)
             sessions.append(_session_row(group))
         first_plan = _finalize(buckets['first'])
         second_plan = _finalize(buckets['second'])
@@ -200,12 +208,15 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
         opponents.append(dict(
             deck=label, matches=counts[label],
             recent_matches=len(recent_groups), side_games=side_games,
+            seat_unknown_games=seat_unknown,
             sample_low=side_games < max(1, int(min_side_games)),
             first=first_plan, second=second_plan, sessions=sessions,
         ))
 
     notes = ['只统计当前构筑（主卡相同）的场次；每个对手取最近 %d 场。' % recent,
-             '先攻/后攻按该玩家在首局的实际座位；同一场多局同一张卡取最大张数。']
+             '先攻/后攻按该换边局（第2/3局）该玩家自己的实际座位；同一场多局同一张卡取最大张数。']
+    if any(item['seat_unknown_games'] for item in opponents):
+        notes.append('该玩家座位未知（first_player 缺失）的换边局不计入先/后攻，单独计数。')
     if any(item['sample_low'] for item in opponents):
         notes.append('标记“样本少”表示最近几场里完整可比较的换边局少于 %d 个。' %
                      max(1, int(min_side_games)))
@@ -282,8 +293,8 @@ def format_text(plan: dict, name_for: Callable[[int], str],
     deck = plan.get('deck') or '未识别'
     opponents = plan.get('opponents') or []
     header = ['换备 · %s' % player, '当前构筑：%s' % deck,
-              '口径：当前构筑最近14天，按对手场次取前%d；每个对手取最近%d场，只用有完整卡表的第2/3局；'
-              '每方向最多列前%d张，完整明细见网页构筑页。' % (
+              '口径：当前构筑最近14天，按对手场次取前%d；每个对手取最近%d场，只用有完整卡表的第2/3局，'
+              '先攻/后攻按该局该玩家自己的座位；每方向最多列前%d张，完整明细见网页构筑页。' % (
                   plan.get('top_decks') or MAX_TOP_DECKS,
                   plan.get('recent_matches') or RECENT_MATCHES,
                   max_cards)]

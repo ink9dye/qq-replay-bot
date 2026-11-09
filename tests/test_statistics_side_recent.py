@@ -13,10 +13,11 @@ def game(number, label='B', first_player=1, added=(), removed=(), status='known'
                 changes=dict(status=status, added=list(added), removed=list(removed)))
 
 
-def group(label, recorded_at, first_player=1, side=()):
+def group(label, recorded_at, first_player=1, side=(), seats=None):
+    seats = seats or {}
     games = [game(1, label, first_player)]
     for number, added, removed in side:
-        games.append(game(number, label, first_player, added, removed))
+        games.append(game(number, label, seats.get(number, first_player), added, removed))
     return dict(id=f'{label}-{recorded_at}', recorded_at=recorded_at,
                 associated=True, sequence_ambiguous=False, games=games)
 
@@ -28,6 +29,42 @@ def detail(groups):
 
 
 class BuildPlanTests(unittest.TestCase):
+    def test_side_game_seat_decides_bucket_not_first_game(self):
+        """第2局座位与首局相反时，换入换出必须算到第2局的先/后攻。"""
+        groups = [group('B', 100, 1, ((2, [card(4, 3)], [card(1, 3)]),), seats={2: 0})]
+        plan = build_plan(detail(groups))
+        b = plan['opponents'][0]
+        self.assertEqual((b['first']['side_games'], b['second']['side_games']), (0, 1))
+        self.assertEqual([item['code'] for item in b['second']['added']], [4])
+        self.assertEqual(b['second']['added'][0]['max_copies'], 3)
+        self.assertEqual([item['code'] for item in b['second']['removed']], [1])
+        self.assertEqual(b['first']['added'], [])
+        self.assertEqual(b['sessions'][0]['first_player'], 1)
+        self.assertEqual(b['sessions'][0]['side_seats'], ['second'])
+        self.assertEqual(b['seat_unknown_games'], 0)
+
+    def test_one_match_can_feed_both_seats(self):
+        """同一场第2局先攻、第3局后攻时，两局按各自座位分别计入。"""
+        groups = [group('B', 100, 0, ((2, [card(4)], []), (3, [card(5)], [])),
+                        seats={2: 1, 3: 0})]
+        plan = build_plan(detail(groups))
+        b = plan['opponents'][0]
+        self.assertEqual((b['first']['side_games'], b['second']['side_games']), (1, 1))
+        self.assertEqual([item['code'] for item in b['first']['added']], [4])
+        self.assertEqual([item['code'] for item in b['second']['added']], [5])
+        self.assertEqual(b['sessions'][0]['side_seats'], ['first', 'second'])
+
+    def test_unknown_seat_is_not_guessed(self):
+        """座位缺失的换边局不计入任何方向，只单独计数。"""
+        groups = [group('B', 100, 1, ((2, [card(4)], []),), seats={2: None})]
+        plan = build_plan(detail(groups))
+        b = plan['opponents'][0]
+        self.assertEqual((b['first']['side_games'], b['second']['side_games']), (0, 0))
+        self.assertEqual(b['seat_unknown_games'], 1)
+        self.assertEqual(b['first']['added'], [])
+        self.assertEqual(b['sessions'][0]['side_seats'], [])
+        self.assertTrue(b['sample_low'])
+
     def test_top_decks_recent_five_and_seat_split(self):
         groups = []
         for index, moment in enumerate((100, 200, 300, 400, 500, 600, 700)):

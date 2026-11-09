@@ -240,11 +240,12 @@ function recentTable(id,cards,matches){
 function recentSessionTable(sessions){
   const table=$('recentSessions');table.replaceChildren();
   const head=el('thead'),hr=el('tr');
-  for(const text of ['时间','对手','局数','先后攻','换入','换出','源'])hr.append(el('th',text));
+  for(const text of ['时间','对手','局数','换边局先后攻','换入','换出','源'])hr.append(el('th',text));
   head.append(hr);table.append(head);
   const body=el('tbody');
   for(const item of sessions||[]){
-    const first=item.first_player===1?'先攻':item.first_player===0?'后攻':'未知';
+    const seats=[...new Set((item.side_seats||[]).map(value=>value==='first'?'先攻':'后攻'))];
+    const first=seats.length?seats.join('＋'):(item.first_player===1?'先攻':item.first_player===0?'后攻':'未知');
     const noEvidence=!(item.side_games||0);
     const added=noEvidence?'无换边局':(item.added||[]).map(card=>`${sideName(card.code,card.name)}×${card.copies}`).join('、')||'明确无变化';
     const removed=noEvidence?'无换边局':(item.removed||[]).map(card=>`${sideName(card.code,card.name)}×${card.copies}`).join('、')||'明确无变化';

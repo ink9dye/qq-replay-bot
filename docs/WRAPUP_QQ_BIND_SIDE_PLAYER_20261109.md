@@ -1,6 +1,6 @@
 # QQ 绑定 / 订阅空格 / 换备 / 玩家资料 + 最近5场 Side 收尾（2026-11-09）
 
-> 状态：**已部署**。2026-11-09 11:31:44 重启 `ygo-web`、`ygo-qq`；GitHub `master` 提交 `bdb5687`（代码+测试）、`0678c89`（文档）、`0ae8572`（补记提交号）、`b2f288c`（帮助文案修正）。
+> 状态：**已部署**。2026-11-09 11:31:44 重启 `ygo-web`、`ygo-qq`；GitHub `master` 提交 `bdb5687`（代码+测试）、`0678c89`（文档）、`0ae8572`（补记提交号）、`b2f288c`（帮助文案修正）、`fd08c2c`（最终收尾）。
 > 线上代码目录 `/opt/ygobot`；本文对应批次备份 `data/config-backups/qq-batch-20261109/`。
 
 ## 1. 背景与需求
@@ -111,3 +111,16 @@ systemctl restart ygo-web ygo-qq
 - QQ 每方向最多列前 10 张，完整明细看网页。
 - 网页“最近5场”默认只统计当前构筑；切“全部历史”才回到原聚合口径，矩阵 Side 不变。
 - 静态资源有 1 小时缓存；浏览器验收前 Ctrl+F5。
+
+## 8. 2026-11-09 修正：换备先/后攻改按“该换边局座位”（已上线）
+
+- 现象：用户看 `换备 亚翁` 第 1 组（x剑削手米底乌斯…，6 场/最近 5 场/9 个 Side 局），“先攻”栏出现 `+原始生命态 尼比鲁×3`、`-小丑与锁鸟` 这类后攻备牌；两方向进出张数也对不上（先攻 12进/13出、后攻 12进/14出）。
+- 真因：`build_plan` 用**首局** `first_player` 给整场贴先/后攻标签，但 `changes` 是第 2/3 局对第 1 局的差量，生效在**第 2/3 局**；BO3 里第 2/3 局座位常与首局相反（亚翁这 5 场第 2 局全部相反），于是大部分备牌被贴反。
+- 修正：座位取该换边局自己的 `first_player`；基准仍是主卡局（第 1 局）主卡+额外，第 2/3 局各自和主卡局比，不链式；同场多局同卡取最大张数不变；座位缺失的局不计入任何方向，单独计数 `seat_unknown_games` 并在 notes 提示。
+- 代码：`statistics_side_recent.py`（分桶，新增 `side_seats`/`seat_unknown_games`）、`statistics_build.js`（证据栏显示换边局座位，表头“换边局先后攻”）、`statistics_build.html`（说明文案）。
+- 版本（sha256 前 16）：`statistics_side_recent 6b277e7c`、`statistics_build.js bddbcdd4`、`statistics_build.html fefe6b1d`；基线 `5e0cc48b` / `8a956d7b`（CRLF，LF 归一 `fbc236c4`）/ `cc288a32`。
+- 部署：2026-11-09 13:52:51 重启 `ygo-web`（MainPID 1238402）、`ygo-qq`（1238415）；8787/8788 health=200、QQ `state=online`、`bot.log` 最近 200 行 Traceback=0；备份 `data/config-backups/side-seat-20261109/`（含 before/after sha256）。
+- 验证：本机 12 项单测通过（新增 3 项：第 2 局座位与首局相反、一场两局分别进两个方向、座位缺失不猜）；服务器影子副本跑亚翁/祈祈巧真实数据；上线后 `side-recent?player=亚翁` 先攻 4 局/后攻 5 局、`side_seats` 正确、页面与静态 JS 均含新文案。
+- 回滚：`cp -a data/config-backups/side-seat-20261109/statistics_side_recent.py data/config-backups/side-seat-20261109/statistics_build.js data/config-backups/side-seat-20261109/statistics_build.html bot/` → `chown ygo:ygo` → `py_compile` → `systemctl restart ygo-web ygo-qq`。
+- 边界：第 3 局同样“对主卡局”取净差，若第 2 局换入的牌第 3 局保留，它会同时出现在两个方向（亚翁的 `尼比鲁×1` 即此），属“基于主卡局”口径的必然结果，不是重复计数。
+
