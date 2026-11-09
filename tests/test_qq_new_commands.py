@@ -28,6 +28,12 @@ class NewCommandParseTests(unittest.TestCase):
         self.assertEqual(parse_command('订阅 技 能 抽 取')['player'], '技 能 抽 取')
         self.assertEqual(parse_command('订阅 推送')['player'], '推送')
 
+    def test_card_winrate_command(self):
+        self.assertEqual(parse_command('单卡胜率 灰流丽'),
+                         {'op': 'card_winrate', 'name': '灰流丽'})
+        self.assertEqual(parse_command('单卡胜率')['op'], 'error')
+        self.assertEqual(parse_command('单卡胜率 ' + '卡' * 101)['op'], 'error')
+
 
 class ForwardNodeTests(unittest.IsolatedAsyncioTestCase):
     async def test_forward_supports_image_then_falls_back_to_text(self):

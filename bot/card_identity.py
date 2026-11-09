@@ -52,16 +52,24 @@ def identity(db,code):
 
 def facts(db,codes,partition,selected_table=None):
     placeholders=','.join('?' for _ in codes)
-    join=f' JOIN {selected_table} s ON s.digest=f.digest AND s.player=f.player' if selected_table else ''
+    if selected_table:
+        # 先按 (code,partition) 取出该卡的少量事实，再回连小的选中集；
+        # 反过来会逐行回连，单卡查询会慢一个数量级。
+        source=f'stat_card_facts f CROSS JOIN {selected_table} s'
+        selected=' AND f.digest=s.digest AND f.player=s.player'
+    else:
+        source='stat_card_facts f'
+        selected=''
     groups={}
-    for row in db.execute(f'SELECT f.* FROM stat_card_facts f{join} '
-                          f'WHERE f.code IN ({placeholders}) AND f.partition=?',[*codes,partition]):
+    for row in db.execute(f'SELECT f.* FROM {source} '
+                          f'WHERE f.code IN ({placeholders}) AND f.partition=?{selected}',
+                          [*codes,partition]):
         groups.setdefault((row['digest'],row['player']),[]).append(dict(row))
     # Older reports may emit a different print's code and store it under "other".
     # Include that event only when this exact identity is carried in the requested
     # partition. Prefer an existing same-code row there to avoid replay duplicates.
-    for row in db.execute(f'''SELECT f.* FROM stat_card_facts f JOIN stat_views v ON v.digest=f.digest AND v.player=f.player{join}
-        WHERE f.code IN ({placeholders}) AND f.partition='other'
+    for row in db.execute(f'''SELECT f.* FROM {source} JOIN stat_views v ON v.digest=f.digest AND v.player=f.player
+        WHERE f.code IN ({placeholders}) AND f.partition='other'{selected}
         AND EXISTS(SELECT 1 FROM stat_build_cards c WHERE c.build=v.build AND c.partition=? AND c.code IN ({placeholders}))
         AND NOT EXISTS(SELECT 1 FROM stat_card_facts own WHERE own.digest=f.digest AND own.player=f.player AND own.partition=? AND own.code=f.code)''',
         [*codes,partition,*codes,partition]):

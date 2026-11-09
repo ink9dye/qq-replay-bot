@@ -96,6 +96,7 @@ SLOW_COMMAND_HINTS = {
     "ocg_pie": "正在读取OCG赛事饼图，首次获取约需几十秒…",
     "card_usage": "使用量统计中，约几秒…",
     "card_flow": "单卡流向统计中，约几秒…",
+    "card_winrate": "单卡胜率统计中，约几秒…",
     "card_search": "查卡中，完成后把结果发到这里。",
     "top100_deck": "前百构筑请求已收到，按顺序处理；完成后把结果发到这里。",
     "side_plan": "换备统计中，约几秒…",
@@ -711,6 +712,8 @@ class BotService:
             return self._card_usage_reply(command["name"])
         if op == "card_flow":
             return self._card_flow_reply(command["name"])
+        if op == "card_winrate":
+            return self._card_winrate_reply(command["name"])
         if op == "price_quote":
             return self._price_quote_blocking(command)
 
@@ -1864,6 +1867,14 @@ class BotService:
                 f"共 {len(data['items'])} 个卡组大类") 
         return CardReply(text, image_url)
 
+    def _card_winrate_reply(self, card_name):
+        from .card_winrate import collect, message
+        try:
+            payload = collect(self.store.path, self.replay_root, self.clock(), card_name)
+        except ValueError as exc:
+            return f"单卡胜率查询失败：{exc}"
+        return message(payload)
+
     def _card_usage_reply(self, card_name):
         from .card_usage_pie import render
         try:
@@ -2018,7 +2029,7 @@ class BotService:
     async def _slow_text_job(self, user_id, text, conversation, receiver, send, forward=None, self_id=None):
         """先回一句“正在…”，再在后台跑慢命令；结果（含合并转发卡片）单独发。"""
         try:
-            if parse_command(text).get('op') in ('top100_deck', 'top100_pie', 'card_usage', 'card_flow'):
+            if parse_command(text).get('op') in ('top100_deck', 'top100_pie', 'card_usage', 'card_flow', 'card_winrate'):
                 async with self._statistics_queue_lock():
                     reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
             else:

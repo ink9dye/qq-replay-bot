@@ -241,6 +241,13 @@ def parse_command(text: str) -> dict:
         if not name:
             return {"op": "error", "message": "格式：单卡流向 卡名，例如：单卡流向 决斗者之力"}
         return {"op": "card_flow", "name": name}
+    if head == "单卡胜率":
+        name = " ".join(rest).strip()
+        if not name:
+            return {"op": "error", "message": "格式：单卡胜率 卡名，例如：单卡胜率 灰流丽"}
+        if len(name) > 100:
+            return {"op": "error", "message": "卡名最多100字。"}
+        return {"op": "card_winrate", "name": name}
     if head == "前百构筑":
         keyword = " ".join(rest).strip()
         if not keyword:

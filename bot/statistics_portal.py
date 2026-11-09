@@ -470,6 +470,8 @@ class StatisticsPortal:
                 if not 0<code<=4294967295 or partition not in ('main','side','extra'):raise ValueError()
                 order=args.get('first',['all'])[0]
                 if order not in ('all','first','second'):raise ValueError()
+                want_matchups=args.get('matchups',['0'])[0]
+                if want_matchups not in ('0','1'):raise ValueError()
                 investment_basis=args.get('basis',['observed'])[0]
                 if investment_basis not in ('observed','initial'):raise ValueError()
                 values=[[json.loads(v) for v in args.get(k,[])] for k in ('deck','opponent','series','opponent_series')]
@@ -481,7 +483,8 @@ class StatisticsPortal:
             def run(db):
                 from .statistics_investment import query as player_investment
                 snapshot_now=float(self.clock())
-                result=card_query(db,self.replay_root,code,partition,snapshot_now,filters)
+                result=card_query(db,self.replay_root,code,partition,snapshot_now,filters,
+                                  matchups_enabled=want_matchups=='1')
                 if full_request:
                     result['investment']=player_investment(db,self.replay_root,code,snapshot_now,filters.deck_types,filters.series,basis=investment_basis)
                 digests=sorted({s['digest'] for s in result['samples']})

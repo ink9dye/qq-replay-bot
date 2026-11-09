@@ -201,12 +201,12 @@ class Store:
         self._db.execute(f'PRAGMA user_version={int(version)}')
         self._commit()
 
-    def card_statistics(self, replay_root, code, partition, now, filters=None):
+    def card_statistics(self, replay_root, code, partition, now, filters=None, **options):
         from .card_statistics import query
         with self._lock:
             self._db.execute('BEGIN')
             try:
-                return query(self._db,replay_root,code,partition,now,filters)
+                return query(self._db,replay_root,code,partition,now,filters,**options)
             finally:self._db.rollback()
 
     def player_card_statistics(self,replay_root,code,now,deck_types=(),series=()):

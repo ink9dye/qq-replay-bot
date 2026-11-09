@@ -55,8 +55,8 @@ class CardStatisticsTests(unittest.TestCase):
             self.store.classify_build(detail['views'][1]['build'],'对手C' if i==3 else '对手B',['Z'],'manual')
             self.rows.append(row)
 
-    def query(self,code=1,partition='main',filters=None,now=NOW):
-        return self.store.card_statistics(self.replays,code,partition,now,filters)
+    def query(self,code=1,partition='main',filters=None,now=NOW,**options):
+        return self.store.card_statistics(self.replays,code,partition,now,filters,**options)
 
     def test_independent_denominators_and_partial_positive_wins(self):
         result=self.query();m=result['metrics']
@@ -123,6 +123,33 @@ class CardStatisticsTests(unittest.TestCase):
         self.assertEqual(result['metrics']['carrying']['unknown_samples'],5)
         self.assertIsNone(self.query(filters=Filters(deck_types=('不存在',)))['metrics']['used_win_rate']['percentage'])
         self.assertEqual(self.query(999)['metrics']['carrying']['percentage'],0)
+
+    def test_used_after_matchups_require_both_top100_and_known_deck(self):
+        options=dict(matchups_enabled=True,matchup_min_games=1,matchup_fallback_games=1)
+        before=self.query(**options)['matchups']
+        # 对手乙还不在榜：不计入“双方前100”的总体与分卡组。
+        self.assertEqual(before['base']['games'],0)
+        self.assertEqual(before['rows'],[])
+        self.store.replace_top100(T.roster(['甲','乙']),NOW+1)
+        result=self.query(**options)['matchups']
+        rows=result['rows']
+        self.assertEqual([row['deck_type'] for row in rows],['对手B','对手C'])
+        self.assertEqual((rows[0]['games'],rows[0]['wins'],rows[0]['losses'],rows[0]['draws']),(2,2,0,0))
+        self.assertEqual(rows[0]['rate'],100)
+        self.assertFalse(rows[0]['low_sample'])
+        self.assertEqual((rows[1]['games'],rows[1]['wins'],rows[1]['draws']),(1,0,1))
+        self.assertEqual(rows[1]['rate'],0)
+        self.assertEqual(result['base']['games'],3)
+        self.assertEqual(result['base']['rate'],200/3)
+
+    def test_matchups_fall_back_to_low_sample_rows(self):
+        self.store.replace_top100(T.roster(['甲','乙']),NOW+1)
+        result=self.query(matchups_enabled=True,matchup_min_games=10,
+                          matchup_fallback_games=1)['matchups']
+        self.assertEqual(result['qualified_decks'],0)
+        self.assertEqual([row['deck_type'] for row in result['rows']],['对手B','对手C'])
+        self.assertTrue(all(row['low_sample'] for row in result['rows']))
+        self.assertIn('样本少',result['notes'][0])
 
     def test_missing_event_fact_is_unknown_and_does_not_erase_known_carrying(self):
         self.store._db.execute('DELETE FROM stat_card_facts WHERE digest=? AND player=? AND code=?',(self.rows[0]['digest'],'甲',1))
