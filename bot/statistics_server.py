@@ -155,25 +155,9 @@ def main():
                 except Exception:
                     pass
         threading.Thread(target=_roster_keepwarm,daemon=True).start()
-        def _side_loop():
-            import json as _json
-            while True:
-                time.sleep(300)
-                try:
-                    status_path = server.portal.database.parent / 'capture-status.json'
-                    status = _json.loads(status_path.read_text(encoding='utf-8'))
-                    if int(status.get('active_observations') or 0) != 0:
-                        continue
-                    if time.time() - float(status.get('updated_at') or 0) > 180:
-                        continue
-                    from .side_inference import run as side_run
-                    # A complete batch can take minutes; the service CPU quota
-                    # bounds its load without blocking interactive query locks.
-                    side_run(args.root, limit=20)
-                except Exception:
-                    pass
-
-        threading.Thread(target=_side_loop, daemon=True).start()
+        # Side inference 不再在 web 进程内跑：side-inference.json 已达 171 MB，
+        # 每次整份 load 会把匿名内存推到 ~480 MB 并触发 MemoryHigh 重拉。
+        # 同一批次由 side-inference.timer（独立 oneshot，带内存门槛）继续执行。
         from .draw_analysis_worker import start_worker
         analysis_stop=start_worker(args.root)
         try:server.serve_forever()
