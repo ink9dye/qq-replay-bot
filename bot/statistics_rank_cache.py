@@ -6,7 +6,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-TTL = 7 * 86400
+TTL = 14 * 86400
 FUTURE_SKEW = 3600
 MAX = 5000
 _LOCK = threading.Lock()
@@ -17,7 +17,7 @@ def cache_path(data_dir):
 
 
 def load(data_dir, now, ttl=TTL):
-    """返回 {player: (rank, checked_at)}；超过 ttl 的条目丢弃（默认 7 天，换备按 14 天取）。"""
+    """返回 {player: (rank, checked_at)}；超过 ttl 的条目丢弃（默认 14 天，与对局窗口一致）。"""
     try:
         payload = json.loads(cache_path(data_dir).read_text(encoding='utf-8'))
     except (OSError, ValueError):

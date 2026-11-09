@@ -139,4 +139,5 @@ systemctl restart ygo-web ygo-qq
 - 已知差异：`ygo-web` 开 quality filter、`ygo-qq` 不开，同一玩家网页显示 41→20、QQ 显示 50→23；两处都只算前200，但“共 N 场”的分母不同，属既有差异（本次未改 quality 开关）。
 - GitHub：`50bf472`（`feat(side): 换备只看对手前200`，代码+测试+本文件 §9+DECK_BUILD_SIDE/FEATURES），已推送 `master`。
 - 14:10 调整（同日上线）：名次快照新鲜度 7 天 → **14 天**（用户要求与对局窗口一致）。`statistics_rank_cache.load(data_dir, now, ttl=)` 与 `statistics_rank_scope._stored_ranks/stored_ranks(max_age=)` 参数化，默认仍 7 天，只有换备传 14 天；`rank_scope.rank_snapshot_days=14`、notes 写“14天内名次快照”。当前索引为 11-08 19:08（约 1.7 天），所以线上数字当天不变，只在快照 7–14 天时兜住。版本：`statistics_rank_cache e64e9f4f`、`statistics_rank_scope 2cc7f1fc`、`statistics_side_recent 6117278e`；14:10:24 重启 `ygo-web`（1247439）/`ygo-qq`（1247453）。GitHub：`5fc729c`，已推送 `master`。
+- 14:22 再调（同日上线）：用户要求全站统一，名次快照默认值本身也改成 **14 天**——`statistics_rank_cache.TTL = 14 天`、`_stored_ranks`/`stored_ranks` 的 `max_age` 默认 14 天（矩阵/前200 等入口一并生效）。版本：`statistics_rank_cache 22937345`、`statistics_rank_scope a8d183de`；14:22:54 重启 `ygo-web`（1249947）/`ygo-qq`（1249964）。复核：`side-recent` 的 `rank_snapshot_days=14`、矩阵 200/200 仍 6/6 场且 `rank_scope.complete=true`。
 
