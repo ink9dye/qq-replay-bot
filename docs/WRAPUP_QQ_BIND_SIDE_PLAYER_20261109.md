@@ -137,4 +137,5 @@ systemctl restart ygo-web ygo-qq
 - 部署：2026-11-09 14:03:02 重启 `ygo-web`（MainPID 1243256）、`ygo-qq`（1243270）；8787/8788 health=200、QQ `online`、日志无 Traceback；备份 `data/config-backups/side-top200-20261109/`（4 文件 + before/after sha256）。
 - 回滚：`cp -a data/config-backups/side-top200-20261109/{statistics_side_recent.py,statistics_rank_scope.py,statistics_build.js,statistics_build.html} bot/` → `chown ygo:ygo` → `py_compile` → `systemctl restart ygo-web ygo-qq`。
 - 已知差异：`ygo-web` 开 quality filter、`ygo-qq` 不开，同一玩家网页显示 41→20、QQ 显示 50→23；两处都只算前200，但“共 N 场”的分母不同，属既有差异（本次未改 quality 开关）。
+- GitHub：`50bf472`（`feat(side): 换备只看对手前200`，代码+测试+本文件 §9+DECK_BUILD_SIDE/FEATURES），已推送 `master`。
 
