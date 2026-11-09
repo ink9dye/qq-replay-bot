@@ -55,6 +55,7 @@
 | [`WRAPUP_MEM2G_20261108.md`](WRAPUP_MEM2G_20261108.md) | **2 GB 内存治理 + 查询性能收尾**：A/B/C/D 四步、实测、版本、回滚、遗留 |
 | [`WRAPUP_PLAYER_HISTORY_20261108.md`](WRAPUP_PLAYER_HISTORY_20261108.md) | **QQ「当月历史」收尾**：北京时间当月场次/胜率/分数排名 + 积分图；改动、验证、部署、回滚 |
 | [`CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md`](CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md) | 卡图与设备下载（补充；卡图现行逻辑见 WRAPUP §10） |
+| [`CARD_IMAGE_SUPERPRE_20261109.md`](CARD_IMAGE_SUPERPRE_20261109.md) | **卡图串卡（2026-11-09）**：超先行同号图 momobako 会返回别的卡；≥1 亿只认 super-pre；改动/数据修复/验证/回滚 |
 | [`QQ_OBSERVATION_PERIOD_RULES.md`](QQ_OBSERVATION_PERIOD_RULES.md) | QQ 账号观察期纪律、掉线 SOP、换号判据 |
 | [`QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md`](QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md) | 发送守卫与登录证据计划 |
 | [`QQ_PROBE_DEPLOY_20261107.md`](QQ_PROBE_DEPLOY_20261107.md) | 自动探测恢复的部署与回滚（2026-11-07） |
