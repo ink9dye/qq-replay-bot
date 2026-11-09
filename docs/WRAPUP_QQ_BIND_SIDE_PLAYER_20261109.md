@@ -1,6 +1,6 @@
 # QQ 绑定 / 订阅空格 / 换备 / 玩家资料 + 最近5场 Side 收尾（2026-11-09）
 
-> 状态：**已部署**。2026-11-09 11:31:44 重启 `ygo-web`、`ygo-qq`；GitHub `master` 提交 `bdb5687`（代码+测试）与 `0678c89`（文档）。
+> 状态：**已部署**。2026-11-09 11:31:44 重启 `ygo-web`、`ygo-qq`；GitHub `master` 提交 `bdb5687`（代码+测试）、`0678c89`（文档）、`0ae8572`（补记提交号）。
 > 线上代码目录 `/opt/ygobot`；本文对应批次备份 `data/config-backups/qq-batch-20261109/`。
 
 ## 1. 背景与需求
@@ -50,7 +50,7 @@
 | `bot/commands.py` | `b8f5b1a4` | 绑定/订阅空格/换备/玩家解析 |
 | `bot/store.py` | `db12af67` | `qq_bindings`、`player_names` |
 | `bot/service.py` | `42321cd1` | 默认自己、换备、玩家资料 job |
-| `bot/help.py` | `7f50450e` | 帮助同步 |
+| `bot/help.py` | `2b1ac56c` | 帮助同步（12:34 修正“下面四条”文案） |
 | `bot/qq.py` | `6951ceaa` | 合并转发支持图片节点 |
 | `bot/statistics_side_recent.py` | `5e0cc48b` | 新增换备汇总 |
 | `bot/statistics_portal.py` | `90948229` | `side-recent` 路由 |
@@ -64,7 +64,8 @@
 - 备份：`data/config-backups/qq-batch-20261109/baseline/`（8 个被覆盖文件 + `qq.py`；新增模块无基线）。
 - 部署：`cp` staged 9 个文件 → `chown ygo:ygo` → `py_compile` → `systemctl restart ygo-web` → `systemctl restart ygo-qq`。
 - 重启时间：2026-11-09 11:31:44；`ygo-web` MainPID 1215409、`ygo-qq` MainPID 1215412，均 active、`NRestarts=0`。
-- 健康：`8787/health=200`、`8788/health=200`；`qq-status.json` = `online`、`process_id=1215412`、`expected_self_id=3528698561`；`bot.log` 最近 100 行 Traceback=0；`ygo-web` RSS 约 70 MB。
+- 12:34:51 帮助文案修正（`绑定mc` 行去掉“下面四条”）：仅重启 `ygo-qq`，MainPID 1222756，active、无 Traceback；`help.py 2b1ac56c`。
+- 健康：`8787/health=200`、`8788/health=200`；`qq-status.json` = `online`、`process_id=1215412`、`expected_self_id=3528698561`；`bot.log` 最近 200 行 Traceback=0；`ygo-web` RSS 70→145 MB，`memory.events` low/high/max/oom 全 0。
 - 线上静态/接口：
   - `/statistics/build?player=祈祈巧` 200，含 `sideWindow`、`sideRecent`、`recentFirstIn`；
   - `/statistics/assets/statistics_build.js` 200，`sideWindow` 8 次、`sideRecent` 7 次；
@@ -76,7 +77,7 @@
   - `test_bind_mc` 12、`test_subscribe_spaces` 9、`test_side_plan_qq` 3、`test_player_profile` 6 = 30 项 QQ；
   - `test_statistics_side_recent` 9 项（聚合/分页/未知卡组/同场最大张数/先后攻）。
 - 服务器 Python 3.12：staged `py_compile`、`server-smoke-bind.py`、`probe_service.py`（祈祈巧 → 2 页）、`probe_api.py`（200、6 对手、30KB）通过。
-- GitHub：`master` 提交 `bdb5687`（代码+测试）；本文与文档为后续 docs 提交。
+- GitHub：`master` 提交 `bdb5687`（代码+测试）、`0678c89`（文档）、`0ae8572`（补记提交号）。
 - 未发 QQ 测试消息（遵守观察期纪律）；合并转发图片节点由 mock 覆盖，NapCat 实发未主动触发。
 
 ## 6. 回滚
