@@ -54,6 +54,7 @@
 | [`STRESS_RESULT_20261107.md`](STRESS_RESULT_20261107.md) | **受控压测结果（22:26–22:33）**：1/2/4 用户，4 用户 0.94 Mbps、卡牌占 92%、p95 8 s；内存/CPU 未到瓶颈，卡牌 608 KB 是带宽大头 |
 | [`CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md`](CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md) | 卡图与设备下载（补充；卡图现行逻辑见 WRAPUP §10） |
 | [`CARD_IMAGE_SUPERPRE_20261109.md`](CARD_IMAGE_SUPERPRE_20261109.md) | **卡图串卡（2026-11-09）**：超先行同号图 momobako 会串卡；只认 super-pre；改动/数据修复/验证/回滚 |
+| [`WRAPUP_CARD_CODE_IDENTITY_20261109.md`](WRAPUP_CARD_CODE_IDENTITY_20261109.md) | **卡号身份（2026-11-09）**：同名多号（先行号 1013xxxxx / 异画）导致「使用量/单卡流向」全 0；空号回落 + `card-equivalence.json` 全站合并（478 组 / 1102 个卡号）、影响、验证、回滚、维护 |
 | [`QQ_OBSERVATION_PERIOD_RULES.md`](QQ_OBSERVATION_PERIOD_RULES.md) | QQ 账号观察期纪律、掉线 SOP、换号判据 |
 | [`QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md`](QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md) | 发送守卫与登录证据计划 |
 | [`QQ_PROBE_DEPLOY_20261107.md`](QQ_PROBE_DEPLOY_20261107.md) | 自动探测恢复的部署与回滚（2026-11-07） |
