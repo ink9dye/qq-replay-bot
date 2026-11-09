@@ -122,5 +122,6 @@ systemctl restart ygo-web ygo-qq
 - 部署：2026-11-09 13:52:51 重启 `ygo-web`（MainPID 1238402）、`ygo-qq`（1238415）；8787/8788 health=200、QQ `state=online`、`bot.log` 最近 200 行 Traceback=0；备份 `data/config-backups/side-seat-20261109/`（含 before/after sha256）。
 - 验证：本机 12 项单测通过（新增 3 项：第 2 局座位与首局相反、一场两局分别进两个方向、座位缺失不猜）；服务器影子副本跑亚翁/祈祈巧真实数据；上线后 `side-recent?player=亚翁` 先攻 4 局/后攻 5 局、`side_seats` 正确、页面与静态 JS 均含新文案。
 - 回滚：`cp -a data/config-backups/side-seat-20261109/statistics_side_recent.py data/config-backups/side-seat-20261109/statistics_build.js data/config-backups/side-seat-20261109/statistics_build.html bot/` → `chown ygo:ygo` → `py_compile` → `systemctl restart ygo-web ygo-qq`。
+- GitHub：`339a600`（`fix(side): 换备先/后攻按该换边局座位分列`，代码+测试+本文件 §8+DECK_BUILD_SIDE §2.6），已推送 `master`。
 - 边界：第 3 局同样“对主卡局”取净差，若第 2 局换入的牌第 3 局保留，它会同时出现在两个方向（亚翁的 `尼比鲁×1` 即此），属“基于主卡局”口径的必然结果，不是重复计数。
 
