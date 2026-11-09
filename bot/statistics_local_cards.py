@@ -204,6 +204,14 @@ def picture(data_dir, code):
     found = _existing_picture(pics, code)
     if found is not None:
         return found
+    # 详情页大图优先用卡图缓存里的原图（只读本地文件，不走网络、不额外占内存）。
+    try:
+        from . import card_image_cache
+        full = card_image_cache.local_full(data_dir, code)
+    except (ImportError, OSError, ValueError):
+        full = None
+    if full is not None:
+        return full, 'image/jpeg'
     # 卡号可能是本体号，实际卡图存在 100xxxxxx 异画编号；后台缓存，当前请求立即返回。
     _schedule(data_dir, code, pics)
     return None
@@ -223,13 +231,17 @@ def thumb_dir(data_dir):
 
 def _thumb_file(thumbs, code):
     candidates = list(_image_codes(code))
-    try:
-        from . import card_image_cache
-        mapped = card_image_cache.image_id_cached(thumbs.parent, code)
-        if mapped and mapped not in candidates:
-            candidates.insert(0, mapped)
-    except (ImportError, OSError, ValueError):
-        pass
+    # 映射只作兜底：先认本卡号/本体号的缩略图，再认映射出来的先行图号。
+    # 超先行（≥100000000）的图本来就按卡号存放，不查映射。
+    # 旧写法把映射插到候选首位，一条错映射就会把别张卡的缩略图当成本卡的图。
+    if code < 100_000_000:
+        try:
+            from . import card_image_cache
+            mapped = card_image_cache.image_id_cached(thumbs.parent, code)
+            if mapped and mapped not in candidates:
+                candidates.append(mapped)
+        except (ImportError, OSError, ValueError):
+            pass
     for candidate in candidates:
         for suffix in ('.webp', '.jpg', '.png'):
             path = thumbs / (str(candidate) + suffix)

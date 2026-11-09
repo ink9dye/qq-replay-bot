@@ -1,4 +1,5 @@
 import io
+import json
 import tempfile
 import time
 import unittest
@@ -32,6 +33,11 @@ class ThumbTests(unittest.TestCase):
         deadline = time.time() + seconds
         while time.time() < deadline and code in cards._thumb_pending:
             time.sleep(0.05)
+
+    def _write_map(self, entries):
+        payload = {"version": 1,
+                   "cards": {str(k): {"image": v, "checked_at": 1.0} for k, v in entries.items()}}
+        (self.data / 'card-image-ids.json').write_text(json.dumps(payload), encoding='utf-8')
 
     def test_thumb_derived_from_local_picture_without_network(self):
         self._full_picture(12345)
@@ -78,6 +84,31 @@ class ThumbTests(unittest.TestCase):
         blob = deck_image.render(result, lambda code: None, stats=stats)
         self.assertTrue(blob)
         self.assertEqual(stats.get('missing'), 1)
+
+    def test_wrong_mapping_cannot_supply_another_cards_thumb(self):
+        thumbs = self.data / 'card-thumbs'
+        thumbs.mkdir()
+        Image.new('RGB', (120, 165), (0, 120, 0)).save(thumbs / '25750986.webp', 'WEBP')
+        self._write_map({100268010: 25750986})
+        self.assertIsNone(cards._thumb_file(thumbs, 100268010))
+
+    def test_super_pre_alias_mapping_still_used_last(self):
+        thumbs = self.data / 'card-thumbs'
+        thumbs.mkdir()
+        alias = thumbs / '101307051.webp'
+        Image.new('RGB', (120, 165), (200, 200, 0)).save(alias, 'WEBP')
+        self._write_map({58406693: 101307051})
+        self.assertEqual(cards._thumb_file(thumbs, 58406693), alias)
+
+    def test_picture_falls_back_to_cached_full_image(self):
+        folder = self.data / 'card-images'
+        folder.mkdir()
+        cached = folder / '777.jpg'
+        Image.new('RGB', (480, 700), (10, 10, 200)).save(cached, 'JPEG')
+        found = cards.picture(str(self.data), 777)
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0], cached)
+        self.assertEqual(found[1], 'image/jpeg')
 
 
 if __name__ == '__main__':

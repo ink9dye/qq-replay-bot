@@ -8,6 +8,9 @@
 * 缩略图按卡密落盘 data/card-thumbs/<卡密>.webp，供网页和拼图使用。
 
 网络只在本地缺失时发生；同一张卡的多线程请求合并为一次下载。
+
+映射只在能被校验时才落盘：卡号 ≥ 100000000（超先行，图按卡号存放在 super-pre）不需要映射；
+普通卡号的图名必须是 ≥ 100000000 的先行图号——把另一张普通卡的图记到本卡上，比没有映射更糟。
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from pathlib import Path
+from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 PAGE_URL = "https://ygocdb.com/card/%d"
@@ -31,6 +35,7 @@ MAX_BYTES = 2 * 1024 * 1024
 THUMB_MAX = (120, 165)
 MAP_FILE = "card-image-ids.json"
 MAP_TTL = 30 * 86400
+SUPER_PRE_FLOOR = 100_000_000  # 先行/超先行图号段（100xxxxxx / 101xxxxxx）
 UA = {"User-Agent": "qq-replay-bot/card-image"}
 
 _lock = threading.RLock()
@@ -57,6 +62,28 @@ def _stamp(path: Path) -> int:
         return 0
 
 
+def usable_image_id(card_id, image_id) -> bool:
+    """卡密 -> 图名 是否可信；不可信的映射一律不读、不写。
+
+    可信的只有一种：普通卡号（<100000000）对应到先行图号（≥100000000），
+    例如 58406693 -> 101307051。
+
+    排除两类：
+    * 卡号本身 ≥100000000：超先行图就按卡号放在 super-pre，查映射只会查错；
+    * 图名也是普通卡号且不等于卡号：两个普通卡号互相当图名，只可能是百鸽页
+      跳转/未收录时抓到了别张卡的第一张图（例如 100268010 -> 25750986）。
+    """
+    try:
+        card_id, image_id = int(card_id), int(image_id)
+    except (TypeError, ValueError):
+        return False
+    if not 0 < card_id <= 0xFFFFFFFF or not 0 < image_id <= 0xFFFFFFFF:
+        return False
+    if card_id >= SUPER_PRE_FLOOR:
+        return False
+    return image_id >= SUPER_PRE_FLOOR
+
+
 def load_map(data_dir) -> dict[int, tuple[int, float]]:
     """读取映射；按文件 mtime 缓存，避免每次查卡都读盘。"""
     key = _key(data_dir)
@@ -76,7 +103,8 @@ def load_map(data_dir) -> dict[int, tuple[int, float]]:
                         continue
                     image = value.get("image")
                     checked = value.get("checked_at")
-                    if isinstance(image, int) and 0 < image <= 0xFFFFFFFF and isinstance(checked, (int, float)):
+                    if (isinstance(image, int) and isinstance(checked, (int, float))
+                            and usable_image_id(name, image)):
                         cards[int(name)] = (int(image), float(checked))
         except (OSError, ValueError):
             pass
@@ -102,17 +130,24 @@ def _write_map(data_dir, cards: dict[int, tuple[int, float]]) -> None:
         _stamps[_key(data_dir)] = _stamp(path)
 
 
-def remember(data_dir, card_id, image_id, checked_at=None) -> None:
-    """记录 卡密 -> image id；先合并磁盘上的最新条目，避免跨进程覆盖。"""
+def remember(data_dir, card_id, image_id, checked_at=None) -> bool:
+    """记录 卡密 -> image id；先合并磁盘上的最新条目，避免跨进程覆盖。
+
+    不可信的映射直接丢弃（见 usable_image_id），返回 False。
+    """
+    if not usable_image_id(card_id, image_id):
+        return False
+    card_id, image_id = int(card_id), int(image_id)
     now = float(checked_at or time.time())
     with _lock:
         cards = dict(load_map(data_dir))
         disk = load_map(data_dir)
         for key, value in disk.items():
             cards.setdefault(key, value)
-        cards[int(card_id)] = (int(image_id), now)
+        cards[card_id] = (image_id, now)
         _maps[_key(data_dir)] = cards
         _write_map(data_dir, cards)
+    return True
 
 
 def parse_image_id(html) -> int | None:
@@ -126,18 +161,37 @@ def parse_image_id(html) -> int | None:
     return value if 0 < value <= 0xFFFFFFFF else None
 
 
-def _fetch_page(card_id, timeout=2.5) -> str | None:
+def _fetch_page(card_id, timeout=2.5) -> tuple[str | None, str]:
     try:
         with _opener.open(Request(PAGE_URL % int(card_id), headers=UA), timeout=timeout) as response:
-            return response.read(2 * 1024 * 1024).decode("utf-8", "replace")
+            body = response.read(2 * 1024 * 1024).decode("utf-8", "replace")
+            return body, str(response.geturl() or "")
     except (OSError, ValueError):
-        return None
+        return None, ""
+
+
+def _same_card_page(url, card_id) -> bool:
+    """百鸽是否把我们留在这张卡的页面上；跳转到别的卡页时不能信页面里的第一张图。"""
+    try:
+        path = urlsplit(str(url or "")).path.rstrip("/")
+    except ValueError:
+        return False
+    return path == "/card/%d" % int(card_id)
 
 
 def remember_page(data_dir, card_id, html) -> int | None:
+    """从已抓到的卡页补映射；页面不是这张卡的、图名不可信时都不落盘。"""
+    try:
+        card_id = int(card_id)
+    except (TypeError, ValueError):
+        return None
+    if card_id >= SUPER_PRE_FLOOR:
+        return None
+    if "/card/%d" % card_id not in str(html or ""):
+        return None
     image = parse_image_id(html)
-    if image is None:
-        image = int(card_id)
+    if image is None or not usable_image_id(card_id, image):
+        return None
     remember(data_dir, card_id, image)
     return image
 
@@ -150,10 +204,15 @@ def image_id(data_dir, card_id, allow_fetch=True) -> int | None:
         return entry[0]
     if not allow_fetch:
         return entry[0] if entry else None
-    html = _fetch_page(card_id)
-    if html is None:
+    if card_id >= SUPER_PRE_FLOOR:
+        # 超先行图按卡号直取 super-pre，不需要也不该写映射。
         return entry[0] if entry else None
-    image = parse_image_id(html) or card_id
+    html, final_url = _fetch_page(card_id)
+    if html is None or not _same_card_page(final_url, card_id):
+        return entry[0] if entry else None
+    image = parse_image_id(html)
+    if image is None or not usable_image_id(card_id, image):
+        return entry[0] if entry else None
     remember(data_dir, card_id, image)
     return image
 
