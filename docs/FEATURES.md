@@ -147,6 +147,7 @@
 ## 五、卡图与卡名
 
 - 统一入口 `bot/card_image_cache.py`：先本地、缺图才联网；`data/card-image-ids.json` 存百鸽卡页解析出的 image id（如 `58406693 → 101307051`），原图 `data/card-images/<卡密>.jpg`，缩略图 `data/card-thumbs/<卡密>.webp`。
+- 网页卡图统一走服务端路由：页面只请求 `/statistics/card-image/<code>`（缩略图 `/statistics/card-thumb/<code>`），由服务端按 本地 → momobako → super-pre 决定图源；缺本地图时 **302** 到正确源（≥1e8 → super-pre）并由后台缓存，页面不再各自拼 CDN。公开 token 代理只透传 momobako / super-pre 两个图源的 302。
 - 普通卡：本地原图 → momobako 原图 → 百鸽页映射 → super-pre；超先行（卡号 ≥ 1 亿，如 `101307061`）**只认 super-pre**，跳过百鸽页、也不读不写 image id 映射（2026-11-09：同号在 momobako 可能 200 返回**另一张卡**，换包后会改指）。
 - 网页构筑页缩略图：本地 thumb → 本地原图离线缩 → momobako `!thumb2`（约 3.5KB/张）→ super-pre 原图；没有本地图时 302 到对应 CDN。
 - 详情弹窗大图：先 ``/statistics/card-image/<卡号>``（本地 `pics` → `data/card-images`），再按卡号选远端——≥1 亿走 super-pre 原图，其余 momobako `!half`；最后才回缩略图。
