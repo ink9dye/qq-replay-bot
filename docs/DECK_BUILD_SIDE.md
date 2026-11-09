@@ -57,6 +57,22 @@ Side 只使用“有证据的换入/换出”，不从卡组名或使用记录�
 
 相关代码：`bot/statistics_build_detail.infer_side`。
 
+### 2.5 玩家页 Side 面板范围
+
+- 默认只统计**当前构筑**（主卡相同的整场，含第 2/3 局换边局），与构筑页“对局范围＝主卡相同的构筑”一致；
+- 把“对局范围”切到“该玩家全部有效小局”时，Side 才统计该玩家全部卡组；
+- 矩阵格 Side 仍按矩阵格样本，不受此影响。
+
+### 2.6 最近 5 场换备（2026-11-09 用户新增）
+
+- QQ `换备 [玩家名]`：以该玩家当前构筑（`build_detail` 最新构筑，主卡相同）遇到过的对手卡组按场次降序取前 6；每个对手只取最近 5 场。
+- Side 样本：这 5 场里所有第 2/3 局中 `changes.status=known` 的换边局（首局和换边局主卡+额外都完整）；同一场多局同一张卡取最大张数，不跨局相加。有效换边局少于 3 个标“样本少”，不拒绝展示；没有有效换边局时明确说明。
+- 先攻/后攻按该玩家首局实际座位（`first_player=1/0`）分列；未知座位不计入。
+- “太久远不考虑”：只使用最近 5 场，不再把 14 天内所有同构筑场次混在一起。
+- 网页构筑页 Side 面板默认使用同一份“最近 5 场”数据（`side-recent` 接口），对手下拉只列前 6；保留“全部历史”切换，切回后使用原有 `side-analysis` 聚合口径（含投入率/使用后胜率/算法候选）。
+- 矩阵格 Side 不变；仍按矩阵格样本和原有口径。
+- 代码：`bot/statistics_side_recent.py`（只读汇总，不改 `infer_side`/排序/命名/取源）、`statistics_portal` 的 `/statistics/api/side-recent`、`statistics_build.js/html`、QQ `service._side_plan_text`。
+
 ## 3. 排序
 
 排序只读本副牌涉及的本地卡表（`data/card-library.json` 指向的 `ygopro/cards.cdb` + `expansions/*.cdb`），不联网补参数。实现：`bot/deck_sort.py`。

@@ -1,6 +1,6 @@
 # 文档索引（唯一导航入口）
 
-> 更新时间：2026-11-07 10:30。**新对话先读本页**，再按顺序读核心文档；历史报告只作证据，不作为现状依据。
+> 更新时间：2026-11-09 11:40。**新对话先读本页**，再按顺序读核心文档；历史报告只作证据，不作为现状依据。
 
 ## 0. 快速入口
 
@@ -54,6 +54,7 @@
 | [`STRESS_RESULT_20261107.md`](STRESS_RESULT_20261107.md) | 受控压测结果（1/2/4 用户）：4 用户 0.94 Mbps、卡牌占 92%；卡牌 608 KB 是带宽大头 |
 | [`WRAPUP_MEM2G_20261108.md`](WRAPUP_MEM2G_20261108.md) | **2 GB 内存治理 + 查询性能收尾**：A/B/C/D 四步、实测、版本、回滚、遗留 |
 | [`WRAPUP_PLAYER_HISTORY_20261108.md`](WRAPUP_PLAYER_HISTORY_20261108.md) | **QQ「当月历史」收尾**：北京时间当月场次/胜率/分数排名 + 积分图；改动、验证、部署、回滚 |
+| [`WRAPUP_QQ_BIND_SIDE_PLAYER_20261109.md`](WRAPUP_QQ_BIND_SIDE_PLAYER_20261109.md) | **绑定MC/订阅空格/换备/玩家资料 + 最近5场 Side 收尾（2026-11-09）**：口径、版本、部署、验证、回滚 |
 | [`CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md`](CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md) | 卡图与设备下载（补充；卡图现行逻辑见 WRAPUP §10） |
 | [`CARD_IMAGE_SUPERPRE_20261109.md`](CARD_IMAGE_SUPERPRE_20261109.md) | **卡图串卡（2026-11-09）**：超先行同号图 momobako 会返回别的卡；≥1 亿只认 super-pre；改动/数据修复/验证/回滚 |
 | [`QQ_OBSERVATION_PERIOD_RULES.md`](QQ_OBSERVATION_PERIOD_RULES.md) | QQ 账号观察期纪律、掉线 SOP、换号判据 |
