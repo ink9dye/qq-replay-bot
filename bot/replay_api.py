@@ -729,6 +729,7 @@ class ReplayApp:
         self.log = log or (lambda message: None)
         self.clock = clock or store.clock
         self.limiter = RateLimiter()
+        self.official = OfficialPlayer()
         self._search_slots = threading.BoundedSemaphore(SEARCH_CONCURRENCY)
         self._download_slots = threading.BoundedSemaphore(DOWNLOAD_CONCURRENCY)
 
@@ -785,6 +786,98 @@ class ReplayApp:
             return int(str((values or [default])[0] or default))
         except (TypeError, ValueError):
             return default
+
+
+OFFICIAL_API = "https://sapi.moecube.com:444/ygopro/arena/"
+OFFICIAL_TTL = 60.0
+
+
+class OfficialPlayer:
+    """萌卡公开竞技资料：当前排名/积分 + 当月战绩（只读、带缓存）。"""
+
+    def __init__(self, fetch=None, clock=None, monthly=None):
+        self._fetch = fetch or self._http
+        self.clock = clock or time.time
+        self._monthly_fn = monthly
+        self._lock = threading.Lock()
+        self._cache: dict[str, tuple[float, dict]] = {}
+
+    @staticmethod
+    def _http(endpoint: str, params: dict) -> dict:
+        from urllib.parse import urlencode
+        from urllib.request import ProxyHandler, Request, build_opener
+
+        url = OFFICIAL_API + endpoint + "?" + urlencode(params)
+        request = Request(url, headers={"User-Agent": "ygobot-replay/2"})
+        with build_opener(ProxyHandler({})).open(request, timeout=12) as response:
+            body = response.read(8 * 1024 * 1024 + 1)
+        if len(body) > 8 * 1024 * 1024:
+            raise ValueError("official_too_large")
+        payload = json.loads(body.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid_official_payload")
+        return payload
+
+    def lookup(self, name: str) -> dict:
+        name = str(name or "").strip()[:100]
+        if not name:
+            raise ValueError("player_required")
+        moment = self.clock()
+        with self._lock:
+            cached = self._cache.get(name)
+            if cached and moment - cached[0] < OFFICIAL_TTL:
+                return cached[1]
+        user = self._fetch("user", {"username": name})
+        try:
+            rank = int(user.get("arena_rank") or user.get("rank") or 0)
+        except (TypeError, ValueError):
+            rank = 0
+        try:
+            score = float(user.get("pt") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        rows: list = []
+        for page in (1, 2):
+            payload = self._fetch("history", {"username": name, "type": 1,
+                                             "page_num": 50, "page": page})
+            batch = payload.get("data")
+            if isinstance(batch, list):
+                rows.extend(batch)
+            if len(rows) >= 50:
+                break
+        month = self._monthly(name, rows)
+        result = dict(player=name, rank=rank, score=round(score, 1), **month)
+        with self._lock:
+            self._cache[name] = (moment, result)
+            while len(self._cache) > 32:
+                self._cache.pop(next(iter(self._cache)))
+        return result
+
+    def _monthly(self, name: str, rows: list) -> dict:
+        if self._monthly_fn is not None:
+            stats, now = self._monthly_fn(name, rows)
+        else:
+            from bot.player_history import CST, monthly_stats
+
+            now = datetime.now(CST)
+            stats = monthly_stats(name, rows, now)
+        games = []
+        for stamp, before, after, row in stats["games"]:
+            opponent = row["usernameb"] if row["usernamea"] == name else row["usernamea"]
+            winner = row.get("winner")
+            outcome = ("win" if winner == name else "draw" if winner == "none"
+                       else "loss" if winner == opponent else "unknown")
+            games.append(dict(recorded_at=stamp.timestamp(), opponent=str(opponent),
+                              outcome=outcome, before=before, after=after,
+                              delta=round(after - before, 4)))
+        count = int(stats["count"] or 0)
+        wins = int(stats["wins"] or 0)
+        draws = int(stats["draws"] or 0)
+        return dict(label=now.strftime("%Y-%m"), count=count, wins=wins,
+                    losses=max(0, count - wins - draws), draws=draws,
+                    win_rate=stats["rate"], games=games,
+                    points_before=stats["points"][0] if games else None,
+                    points_after=stats["points"][-1] if games else None)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -863,6 +956,22 @@ class _Handler(BaseHTTPRequestHandler):
         if path == API_PREFIX + "/ping":
             self._send_json(200, dict(ok=True, worker=str(row.get("worker") or ""),
                                       version=2))
+            return
+        if path == API_PREFIX + "/player":
+            name = str(params.get("name", [""])[0] or "").strip()
+            if not name:
+                self._send_json(400, dict(ok=False, error="player_required"))
+                return
+            try:
+                data = self.app().official.lookup(name)
+            except ValueError:
+                self._send_json(400, dict(ok=False, error="bad_player"))
+                return
+            except Exception as exc:
+                self.app().log("[录像库] 玩家查询失败：%s" % type(exc).__name__)
+                self._send_json(503, dict(ok=False, error="official_unavailable"))
+                return
+            self._send_json(200, dict(ok=True, **data))
             return
         if path == API_PREFIX + "/matches":
             try:

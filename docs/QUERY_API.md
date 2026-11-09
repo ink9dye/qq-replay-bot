@@ -356,6 +356,28 @@ MoeCardWatch v1.2「录像库」：一场一行（双方/比分/卡组/局数/�
 「下载全部（当前筛选）」先给总大小与预计时间，下载中显示进度、速度和剩余时间，可停止。
 实现 `clients/MoeCardWatch/app/replay_api_client.py`、`replay_browser.py`。
 
+### 7.13 `GET /replay-api/player?name=<玩家名>`（PC 玩家查询，2026-11-09）
+
+给 PC 客户端「玩家查询」页用：返回萌卡**官方**当前排名/积分与**当月**战绩，口径与 QQ「历史 玩家名」一致。
+
+- 数据源：`https://sapi.moecube.com:444/ygopro/arena/user`（`arena_rank`、`pt`）+ `arena/history`（`type=1`，两页 50 条）；不读本站事实库。
+- 缓存：同一玩家 60 秒；服务端单次约 1–3 秒。
+- 鉴权：与录像库相同，`Authorization: Bearer wt_...`。
+
+```json
+{
+  "ok": true, "player": "捏爆你的小旺仔",
+  "rank": 427, "score": 1195.0,
+  "label": "2026-11", "count": 6, "wins": 5, "losses": 1, "draws": 0,
+  "win_rate": 83.33,
+  "games": [{"recorded_at": 1793668362.0, "opponent": "liberal", "outcome": "win",
+             "before": 1131.91, "after": 1152.91, "delta": 21.0}]
+}
+```
+
+`rank=0` 表示未上榜；`outcome` 为 `win/loss/draw/unknown`；`before/after/delta` 是该场前后竞技分。
+错误：400 `player_required`/`bad_player`；503 `official_unavailable`（萌卡接口超时或不可用）。
+
 ## 8. 统计网页录像筛选（`/statistics/api/recordings`）
 
 统计网页「录像筛选」页的查询接口，和上面的 `/query-api`、`/replay-api` 是两套东西：
