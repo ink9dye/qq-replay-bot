@@ -23,6 +23,24 @@ PRECOMPUTED_ROSTER_SECONDS = 900.0
 PRECOMPUTED_CARD_REPORT_SECONDS = 3600.0
 CARD_REPORT_PRECOMPUTED_SCOPES = (('100', '100'), ('200', '200'))
 CARD_REPORT_PRECOMPUTED_PHASES = ('main_first', 'main_second', 'side_first', 'side_second')
+PRECOMPUTED_MATRIX_SECONDS = 1800.0
+MATRIX_PRECOMPUTED_SCOPES = (('200', '200'),)
+
+
+def matrix_precomputed_scope(args):
+    """卡组胜率页面默认参数（200/200、first=all、无行列、samples=0）才吃预计算。"""
+    if args.get('row') or args.get('column'):
+        return None
+    if args.get('first', ['all'])[0] != 'all':
+        return None
+    if args.get('internal', ['0'])[0] != '0':
+        return None
+    if args.get('samples', ['0'])[0] not in ('0', ''):
+        return None
+    scope = (args.get('self_range', ['100'])[0], args.get('opponent_range', ['all'])[0])
+    if scope not in MATRIX_PRECOMPUTED_SCOPES:
+        return None
+    return scope
 
 
 def card_report_precomputed_scope(args):
@@ -525,6 +543,9 @@ class StatisticsPortal:
                 if order not in ('all','first','second'):raise ValueError()
                 ranges=parse_ranges(args)
             except (ValueError,TypeError):return self._reply(400,'矩阵筛选条件无效。')
+            precomputed=self._precomputed_matrix(args)
+            if precomputed is not None:
+                return precomputed
             return self._cached_query_reply(('matrix',parsed.query),lambda db:scoped_query(ranges,lambda:matrix(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1')),ttl=30.0)
         if parts==['statistics','api','matrix-cell']:
             from .statistics_matrix_cell import query as matrix_cell
@@ -800,6 +821,28 @@ class StatisticsPortal:
                 return None
             body = str(item['body'])
             if not body or len(body) > 4 * 1024 * 1024:
+                return None
+            return self._reply(200, body, 'application/json; charset=utf-8',
+                               {'X-Statistics-State': 'precomputed',
+                                'X-Statistics-Saved-At': str(int(saved))})
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+
+    def _precomputed_matrix(self, args):
+        """Serve the default matrix view (200/200, first=all) built out of process."""
+        scope = matrix_precomputed_scope(args)
+        if scope is None:
+            return None
+        try:
+            path = self.database.parent / 'cache' / ('matrix-%s-%s.json' % scope)
+            item = json.loads(path.read_text(encoding='utf8'))
+            saved = float(item['saved'])
+            if not 0.0 <= float(self.clock()) - saved <= PRECOMPUTED_MATRIX_SECONDS:
+                return None
+            if int(item['status']) != 200:
+                return None
+            body = str(item['body'])
+            if not body or len(body) > 8 * 1024 * 1024:
                 return None
             return self._reply(200, body, 'application/json; charset=utf-8',
                                {'X-Statistics-State': 'precomputed',

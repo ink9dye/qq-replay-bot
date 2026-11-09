@@ -35,7 +35,7 @@ def deck_order(labels,usage):
 
 
 def query(db,replay_root,now,rows=(),columns=(),first_player=None,internal_only=False,include_samples=True):
-    basis=eligible_views(db,replay_root,now,internal_only)
+    basis=eligible_views(db,replay_root,now,internal_only,annotate_series=False)
     opponents={}
     for row in db.execute('SELECT v.digest,v.player,b.deck_type FROM stat_views v JOIN stat_builds b ON b.fingerprint=v.build'):
         opponents.setdefault(row['digest'],[]).append(dict(row))
