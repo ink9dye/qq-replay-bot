@@ -83,6 +83,24 @@ def _card_thumb(code, size=(30, 42)):
     return None
 
 
+def _fetch_full_bounded(data_dir, code, seconds=3.0):
+    """有界地同步取一次原图：慢就放弃（后台线程仍会补），别让整张图卡住。"""
+    import threading
+    result = {}
+
+    def work():
+        try:
+            from .card_image_cache import ensure_full
+            result['path'] = ensure_full(data_dir, code)
+        except (ImportError, OSError, ValueError):
+            result['path'] = None
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(max(0.1, seconds))
+    return result.get('path')
+
+
 def _card_file(code):
     if not code:
         return None
@@ -93,8 +111,14 @@ def _card_file(code):
     paths.append(cache / (str(code) + '.jpg'))
     path = next((item for item in paths if item.is_file()), None)
     if path is None:
+        data_dir = Path(__file__).resolve().parents[1] / 'data'
+        # 新出现的卡组（常见于超先行代表卡）第一次出图时本地还没有原图：
+        # 有界地等一次下载，避免整块扇区退化成纯色；超时/失败再退回后台补图。
+        fetched = _fetch_full_bounded(data_dir, code)
+        if fetched is not None:
+            return fetched
         from .statistics_local_cards import picture
-        found = picture(Path(__file__).resolve().parents[1] / 'data', code)
+        found = picture(data_dir, code)
         return found[0] if found else None
     return path
 
