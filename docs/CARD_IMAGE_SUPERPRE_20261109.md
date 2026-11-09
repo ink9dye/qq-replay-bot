@@ -18,7 +18,7 @@
 2. **有三个入口还会先问 momobako，且它返回 200 而不是 404：**
    - 弹窗大图写死 `momobako/<code>.jpg!half`，`onerror` 不触发，永远回退不到正确源；
    - `statistics_local_cards._schedule`（补 `pics/`）先 momobako、后 super-pre；
-   - 11-03 批量生成的相缩略图也是从 momobako `!thumb2` 落盘，
+   - 11-03 批量生成的缩略图也是从 momobako `!thumb2` 落盘，
      `100268001/003/010` 三张因此是卡通卡 / 永恒混沌。
    （`ensure_full`/`ensure_thumb` 在 11-06 起已按 super-pre 优先，只影响上述入口与老缓存。）
 
