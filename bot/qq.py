@@ -754,19 +754,45 @@ class OneBotClient:
                 self_id = (info.get('data') or {}).get('user_id')
             if not str(self_id or '').isdigit():
                 return False
-            result = await self.call(action, {
-                destination: int(receiver),
-                'messages': [{'type': 'node', 'data': {
-                    'name': '录像订阅助手', 'uin': str(self_id),
-                    'content': [{'type': 'text', 'data': {'text': card}}],
-                }} for card in cards],
-                'source': '游戏王机器人',
-                'summary': str(cards[0])[:80] if cards else '查询结果',
-                'prompt': '[聊天记录] 游戏王机器人',
-                'news': [{'text': str(cards[0])[:80]}] if cards else [],
-                'timeout': 25000,
-            }, timeout=30)
-            return int(result.get('retcode', -1)) == 0
+            def content(item, with_images):
+                if isinstance(item, dict):
+                    text = str(item.get('text') or '')
+                    segments = []
+                    if text:
+                        segments.append({'type': 'text', 'data': {'text': text}})
+                    if with_images:
+                        for url in item.get('images') or []:
+                            if url:
+                                segments.append({'type': 'image', 'data': {'file': str(url)}})
+                    return segments or [{'type': 'text', 'data': {'text': ''}}]
+                return [{'type': 'text', 'data': {'text': str(item)}}]
+
+            def preview(item):
+                if isinstance(item, dict):
+                    return str(item.get('text') or '')[:80]
+                return str(item)[:80]
+
+            has_images = any(isinstance(card, dict) and card.get('images') for card in cards)
+            for with_images in ((True, False) if has_images else (False,)):
+                try:
+                    result = await self.call(action, {
+                        destination: int(receiver),
+                        'messages': [{'type': 'node', 'data': {
+                            'name': '录像订阅助手', 'uin': str(self_id),
+                            'content': content(card, with_images),
+                        }} for card in cards],
+                        'source': '游戏王机器人',
+                        'summary': preview(cards[0]) if cards else '查询结果',
+                        'prompt': '[聊天记录] 游戏王机器人',
+                        'news': [{'text': preview(cards[0])}] if cards else [],
+                        'timeout': 25000,
+                    }, timeout=30)
+                    if int(result.get('retcode', -1)) == 0:
+                        return True
+                except Exception:
+                    if not with_images:
+                        return False
+            return False
         except Exception:
             return False
 

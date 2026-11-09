@@ -20,6 +20,32 @@ QUERY_CACHE_MAX_BYTES = 8 * 1024 * 1024
 CARD_SAMPLES_LIMIT = 200
 CARD_METRICS_CACHE_SECONDS = 600.0
 PRECOMPUTED_ROSTER_SECONDS = 900.0
+PRECOMPUTED_CARD_REPORT_SECONDS = 3600.0
+CARD_REPORT_PRECOMPUTED_SCOPES = (('100', '100'), ('200', '200'))
+CARD_REPORT_PRECOMPUTED_PHASES = ('main_first', 'main_second', 'side_first', 'side_second')
+
+
+def card_report_precomputed_scope(args):
+    """页面默认参数才吃预计算；任何筛选/自定义/分组请求都走实时计算。"""
+    for key in ('code', 'exclude', 'combo', 'deck', 'opponent', 'series', 'opponent_series'):
+        if args.get(key):
+            return None
+    if args.get('phase_none', ['0'])[0] == '1':
+        return None
+    scope = (args.get('self_range', ['100'])[0], args.get('opponent_range', ['all'])[0])
+    if scope not in CARD_REPORT_PRECOMPUTED_SCOPES:
+        return None
+    defaults = dict(metric='opening', threshold='1', min='0', sort='rate',
+                    partition='auto', limit='500', seat='all', internal='0', deck_match='contains')
+    for key, expected in defaults.items():
+        value = args.get(key, [expected])[0]
+        if value != expected:
+            return None
+    phases = args.get('phase', [])
+    if len(phases) != len(CARD_REPORT_PRECOMPUTED_PHASES) or sorted(phases) != sorted(CARD_REPORT_PRECOMPUTED_PHASES):
+        return None
+    return scope
+
 
 
 def _trim_heap():
@@ -31,7 +57,7 @@ def _trim_heap():
         pass
 CACHED_API_PATHS=frozenset('/statistics/api/'+name for name in (
     'recordings','deck-naming/groups','card-table','cards-extra','card-combo',
-    'card-report','roster','build','matrix','side-analysis'))
+    'card-report','roster','build','matrix','side-analysis','side-recent'))
 
 
 def owner_secret(path):
@@ -415,6 +441,9 @@ class StatisticsPortal:
                 if seat not in ('all','first','second'):raise ValueError()
             except (ValueError,TypeError):
                 return self._reply(400,json.dumps({'error':'筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            precomputed=self._precomputed_card_report(args)
+            if precomputed is not None:
+                return precomputed
             filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1',deck_contains=args.get('deck_match',['contains'])[0]!='exact')
             try:
                 return self._cached_query_reply(('card-report',parsed.query),lambda db:scoped_query(ranges,lambda:card_report(
@@ -514,8 +543,14 @@ class StatisticsPortal:
             algorithm=args.get('algorithm',['1'])[0]
             first=args.get('first',['all'])[0]
             cell_token=(args.get('cell_token',[''])[0] or '').strip()
+            digest=(args.get('digest',[''])[0] or '').strip()
+            scope=(args.get('scope',['build'])[0] or 'build').strip()
             if mode not in ('player','matrix') or algorithm not in ('0','1') or first not in ('all','first','second'):
                 return self._reply(400,json.dumps({'error':'Side 分析入口无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if digest and (len(digest)!=64 or any(char not in '0123456789abcdef' for char in digest)):
+                return self._reply(400,json.dumps({'error':'来源编号无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if scope not in ('build','player'):
+                return self._reply(400,json.dumps({'error':'Side 范围无效。'},ensure_ascii=False),'application/json; charset=utf-8')
             if len(cell_token)>64:
                 return self._reply(400,json.dumps({'error':'矩阵格样本标记无效。'},ensure_ascii=False),'application/json; charset=utf-8')
             if any(len(value)>128 for value in (player,deck,opponent_deck)):
@@ -535,7 +570,8 @@ class StatisticsPortal:
                 else:
                     result=side_analysis(
                         db,self.replay_root,float(self.clock()),player,None,opponent_deck or None,
-                        mode='player',algorithm=algorithm=='1',first=first)
+                        mode='player',algorithm=algorithm=='1',first=first,
+                        digest=digest or None,scope=scope)
                 from .statistics_card_names import index as name_index
                 names=name_index(self.database.parent)
                 def decorate(cards):
@@ -558,6 +594,42 @@ class StatisticsPortal:
                 return result
             try:
                 return self._cached_query_reply(('side-analysis',parsed.query),side_run,ttl=30.0)
+            except ValueError as exc:
+                return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
+        if parts==['statistics','api','side-recent']:
+            # 换备：当前构筑按对手场次取前 N，每个对手最近 M 场，先/后攻分列。
+            from .statistics_side_recent import query as side_recent
+            args=parse_qs(parsed.query,keep_blank_values=True)
+            player=(args.get('player',[''])[0] or '').strip()
+            digest=(args.get('digest',[''])[0] or '').strip()
+            try:
+                top=int(args.get('top',['6'])[0]);recent=int(args.get('recent',['5'])[0])
+            except (TypeError,ValueError):
+                return self._reply(400,json.dumps({'error':'换备参数无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if not player or len(player)>128:
+                return self._reply(400,json.dumps({'error':'需要玩家名称。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if digest and (len(digest)!=64 or any(char not in '0123456789abcdef' for char in digest)):
+                return self._reply(400,json.dumps({'error':'来源编号无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            if not 1<=top<=12 or not 1<=recent<=10:
+                return self._reply(400,json.dumps({'error':'换备范围无效。'},ensure_ascii=False),'application/json; charset=utf-8')
+            def side_recent_run(db):
+                result=side_recent(db,self.replay_root,float(self.clock()),player,
+                                   digest=digest or None,top=top,recent=recent)
+                if result is None:return None
+                from .statistics_card_names import index as name_index
+                names=name_index(self.database.parent)
+                def decorate(cards):
+                    for card in cards:
+                        info=names.get(str(card['code']))
+                        card['name']=card_name(info) if info else ('#%d' % int(card['code']))
+                for opponent in result.get('opponents') or []:
+                    for seat in ('first','second'):
+                        decorate(opponent[seat]['added']);decorate(opponent[seat]['removed'])
+                    for session in opponent.get('sessions') or []:
+                        decorate(session['added']);decorate(session['removed'])
+                return result
+            try:
+                return self._cached_query_reply(('side-recent',parsed.query),side_recent_run,ttl=30.0)
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts==['statistics','api','sample'] or len(parts)==3 and parts[:2]==['statistics','sample']:
@@ -652,6 +724,9 @@ class StatisticsPortal:
             if parts[-1]=='build' and (not player or len(player)>128):return self._reply(400,'需要玩家名称。')
             if player is None:
                 return self._roster_reply()
+            precomputed=self._precomputed_build(player)
+            if precomputed is not None:
+                return precomputed
             def build_with_names(db):
                 result=query(db,self.replay_root,float(self.clock()),player)
                 if result and player:
@@ -696,6 +771,53 @@ class StatisticsPortal:
             headers['X-Statistics-Saved-At'] = str(int(saved))
             return 200, str(item['kind']), body.encode('utf8'), headers
         except (OSError, ValueError, TypeError, KeyError):
+            return None
+
+    def _precomputed_card_report(self, args):
+        """Serve the default card-report views built by tools/precompute_card_report.py.
+
+        低峰由独立进程算好、原子写盘；这里只读文件，命中时不进单 worker 队列。
+        """
+        scope = card_report_precomputed_scope(args)
+        if scope is None:
+            return None
+        try:
+            path = self.database.parent / 'cache' / ('card-report-%s-%s.json' % scope)
+            item = json.loads(path.read_text(encoding='utf8'))
+            saved = float(item['saved'])
+            if not 0.0 <= float(self.clock()) - saved <= PRECOMPUTED_CARD_REPORT_SECONDS:
+                return None
+            if int(item['status']) != 200:
+                return None
+            body = str(item['body'])
+            if not body or len(body) > 4 * 1024 * 1024:
+                return None
+            return self._reply(200, body, 'application/json; charset=utf-8',
+                               {'X-Statistics-State': 'precomputed',
+                                'X-Statistics-Saved-At': str(int(saved))})
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+
+    def _precomputed_build(self, player):
+        """Serve the build detail precomputed by tools/precompute_query_cache.py."""
+        try:
+            from .query_precompute import read_precomputed, cache_path, MISS
+            latest = 0.0
+            with closing(sqlite3.connect(self.database.resolve().as_uri() + '?mode=ro',
+                                         uri=True, timeout=2)) as db:
+                row = db.execute('SELECT MAX(recorded_at) FROM replays WHERE focus_player=?',
+                                 (player,)).fetchone()
+                if row and row[0] is not None:
+                    latest = float(row[0])
+            payload = read_precomputed(self.database.parent, player, latest)
+            if payload is MISS or not isinstance(payload, dict):
+                return None
+            saved = cache_path(self.database.parent, player).stat().st_mtime
+            return self._reply(200, json.dumps(payload, ensure_ascii=False),
+                               'application/json; charset=utf-8',
+                               {'X-Statistics-State': 'precomputed',
+                                'X-Statistics-Saved-At': str(int(saved))})
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
             return None
 
     def _roster_reply(self, force=False, background=False):

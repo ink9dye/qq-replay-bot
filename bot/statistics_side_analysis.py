@@ -12,7 +12,7 @@
 from collections import Counter
 import sqlite3
 
-from .statistics_build_detail import infer_side, swap_changes
+from .statistics_build_detail import infer_side, swap_changes, query as build_detail_query
 from .top100 import eligible_views
 from .statistics_match_identity import identity_metadata
 from .card_identity import reference as identity_reference
@@ -731,10 +731,12 @@ def _collect_algorithm(rows_by_player, target_info, metadata, cards, mapping,
 
 def query(db, replay_root, now, player=None, deck=None, opponent_deck=None,
           mode='player', internal_only=False, algorithm=True, first=None,
-          cell_token=None):
+          cell_token=None, digest=None, scope='build'):
     """玩家页与对战矩阵共用的只读查询。
 
     mode='player'：player 必填，按该玩家的场次汇总；opponent_deck 可选。
+                   scope='build' 且给 digest 时，只统计该构筑（主卡相同）的场次；
+                   scope='player' 时保持该玩家全部有效小局。
     mode='matrix'：deck（我方/行）必填，opponent_deck（对手/列）可选；
                    方向固定为 row -> column；内战按玩家-场次合并。
     first：matrix 可传 all/first/second，与矩阵格的“实际先后攻”一致。
@@ -742,6 +744,11 @@ def query(db, replay_root, now, player=None, deck=None, opponent_deck=None,
     """
     if mode not in ('player', 'matrix'):
         raise ValueError('分析入口无效。')
+    if scope not in ('build', 'player'):
+        raise ValueError('Side 范围无效。')
+    if digest is not None and (not isinstance(digest, str) or len(digest) != 64
+                               or any(char not in '0123456789abcdef' for char in digest)):
+        raise ValueError('来源编号无效。')
     if first not in (None, 'all', 'first', 'second'):
         raise ValueError('先后攻条件无效。')
     first = None if first in (None, 'all') else first == 'first'
@@ -796,6 +803,13 @@ def query(db, replay_root, now, player=None, deck=None, opponent_deck=None,
         roster = basis['roster']
         data_quality = basis.get('diagnostics') or {}
         classification_revision = basis.get('classification_revision')
+        # 构筑页的 Side 必须和页面展示的“当前构筑”同一范围：复用
+        # build_detail 的 scope='build' 场次集合（主卡相同的整场，含换边局），
+        # 不能把该玩家最近 14 天所有卡组的换边混在一起。
+        if digest and scope == 'build':
+            detail = build_detail_query(db, replay_root, now, player, digest, 'build')
+            allowed = {match['digest'] for match in detail['matches']} if detail else set()
+            views = [row for row in views if row['digest'] in allowed]
     result = dict(
         version=VERSION, mode=mode, generated_at=now,
         filters=dict(player=player, deck=deck, opponent_deck=opponent_deck,

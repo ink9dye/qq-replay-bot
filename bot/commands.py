@@ -73,17 +73,41 @@ def parse_command(text: str) -> dict:
         return {"op": "watch_token", "args": list(rest)}
     if head in ("历史", "当月历史"):
         player = " ".join(rest).strip()
-        if not player or len(player) > 100:
-            return {"op": "error", "message": f"格式：{head} 玩家名，例如：{head} 花无十日红。"}
-        command = {"op": "player_history", "player": player}
+        if len(player) > 100:
+            return {"op": "error", "message": f"格式：{head} [玩家名]，玩家名最多100字。"}
+        # 不写玩家名时留空，由 service 按 QQ 绑定解析；未绑定会提示先绑定。
+        command = {"op": "player_history", "player": player or None}
         if head == "当月历史":
             command["monthly"] = True
         return command
     if head == "构筑":
         player = " ".join(rest).strip()
-        if not player or len(player) > 100:
-            return {"op": "error", "message": "格式：构筑 玩家名，例如：构筑 花无十日红。"}
-        return {"op": "deck_build", "player": player}
+        if len(player) > 100:
+            return {"op": "error", "message": "格式：构筑 [玩家名]，玩家名最多100字。"}
+        return {"op": "deck_build", "player": player or None}
+    if head == "换备":
+        player = " ".join(rest).strip()
+        if len(player) > 100:
+            return {"op": "error", "message": "格式：换备 [玩家名]，玩家名最多100字。"}
+        return {"op": "side_plan", "player": player or None}
+    if head == "玩家":
+        player = " ".join(rest).strip()
+        if len(player) > 100:
+            return {"op": "error", "message": "格式：玩家 [玩家名]，玩家名最多100字。"}
+        return {"op": "player_profile", "player": player or None}
+    if head.casefold() == "绑定mc":
+        player = " ".join(rest).strip()
+        if len(player) > 100:
+            return {"op": "error", "message": "玩家名最多100字。"}
+        return {"op": "bind_mc", "player": player or None}
+    if head.casefold() == "解绑mc":
+        if rest:
+            return {"op": "error", "message": "直接发送“解绑mc”即可。"}
+        return {"op": "unbind_mc"}
+    if head == "我的绑定":
+        if rest:
+            return {"op": "error", "message": "直接发送“我的绑定”即可。"}
+        return {"op": "my_binding"}
     if head in ("随机一卡", "随机卡", "猜卡", "揭晓猜卡"):
         if rest:
             return {"op": "error", "message": f"直接发送“{head}”即可。"}
@@ -136,21 +160,22 @@ def parse_command(text: str) -> dict:
     if head == "我的订阅":
         return {"op": "list"}
     if head == "订阅":
-        if not rest or len(rest) > 3:
-            return {"op": "error", "message": "格式：订阅 “玩家名” [全部或前100] [推送或静默]；只写玩家名默认“全部 + 静默”。"}
-        player = rest[0]
-        if not player.strip():
-            return {"op": "error", "message": "玩家名不能为空"}
+        if not rest:
+            return {"op": "error", "message": "格式：订阅 玩家名 [全部或前100] [推送或静默]；只写玩家名默认“全部 + 静默”。"}
+        # 玩家名可能含空格：从右往左只识别末尾的“通知方式”和“范围”，
+        # 剩下的全部当作玩家名。至少给名字留一个词，避免把名字本身当选项。
+        tokens = list(rest)
         scope_text, mode_text = "全部", "静默"
-        defaulted = len(rest) < 3
-        if len(rest) == 2:
-            # 第二个词既可能是范围，也可能是通知方式；只写一个时另一项用默认值。
-            if rest[1] in ("推送", "静默"):
-                mode_text = rest[1]
-            else:
-                scope_text = rest[1]
-        elif len(rest) == 3:
-            scope_text, mode_text = rest[1], rest[2]
+        scope_given = mode_given = False
+        if len(tokens) >= 2 and tokens[-1] in ("推送", "静默"):
+            mode_text = tokens.pop()
+            mode_given = True
+        if len(tokens) >= 2 and (tokens[-1] == "全部" or _SCOPE.fullmatch(tokens[-1])):
+            scope_text = tokens.pop()
+            scope_given = True
+        player = " ".join(tokens).strip()
+        if not player or len(player) > 100:
+            return {"op": "error", "message": "格式：订阅 玩家名 [全部或前100] [推送或静默]；玩家名最多100字。"}
         try:
             top = parse_scope(scope_text)
         except ValueError as exc:
@@ -161,13 +186,18 @@ def parse_command(text: str) -> dict:
             notify = False
         else:
             return {"op": "error", "message": "通知方式请写“推送”或“静默”"}
-        return {"op": "subscribe", "player": player.strip(), "rank_top": top,
-                "notify": notify, "defaulted": defaulted}
-    if head in ("推送", "静默", "取消订阅", "录像"):
+        return {"op": "subscribe", "player": player, "rank_top": top,
+                "notify": notify, "defaulted": not (scope_given and mode_given)}
+    if head == "录像":
         player = " ".join(rest).strip()
-        if not player:
-            return {"op": "error", "message": f"请写上玩家名：{head} “玩家名”"}
-        op = {"推送": "push", "静默": "silent", "取消订阅": "unsubscribe", "录像": "replays"}[head]
+        if len(player) > 100:
+            return {"op": "error", "message": "格式：录像 [玩家名]，玩家名最多100字。"}
+        return {"op": "replays", "player": player or None}
+    if head in ("推送", "静默", "取消订阅"):
+        player = " ".join(rest).strip()
+        if not player or len(player) > 100:
+            return {"op": "error", "message": f"请写上玩家名（最多100字）：{head} 玩家名"}
+        op = {"推送": "push", "静默": "silent", "取消订阅": "unsubscribe"}[head]
         return {"op": op, "player": player}
     if head == "预定":
         if len(rest) < 2:

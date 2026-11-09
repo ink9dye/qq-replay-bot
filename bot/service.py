@@ -43,6 +43,7 @@ from .watch_core import (
 
 
 _UPLOAD_FOLDER_UNSAFE = re.compile(r"[^0-9A-Za-z._\-()\u4e00-\u9fff ]+")
+_WHITESPACE = re.compile(r"\s+")
 
 
 def upload_folder_part(text: str, fallback: str = "unknown") -> str:
@@ -63,6 +64,16 @@ def player_folders(name: str) -> tuple[str, ...]:
 def system_clock() -> float:
     """生产时钟。每次读取都是当前时间，不会停在进程启动的那一刻。"""
     return time.time()
+
+
+class TextPages(str):
+    """多页纯文本回复：str 兼容现有单条发送，pages 供慢命令任务逐条发送。"""
+
+    def __new__(cls, pages):
+        pages = [str(page) for page in pages]
+        value = super().__new__(cls, "\n\n".join(pages))
+        value.pages = pages
+        return value
 
 
 
@@ -87,6 +98,18 @@ SLOW_COMMAND_HINTS = {
     "card_flow": "单卡流向统计中，约几秒…",
     "card_search": "查卡中，完成后把结果发到这里。",
     "top100_deck": "前百构筑请求已收到，按顺序处理；完成后把结果发到这里。",
+    "side_plan": "换备统计中，约几秒…",
+}
+
+# 「绑定mc」后再发玩家名的等待时间：只认同一 QQ 号的下一条文字消息。
+BIND_PENDING_SECONDS = 120.0
+
+_PLAYER_DEFAULT_LABELS = {
+    "player_history": "历史",
+    "deck_build": "构筑",
+    "replays": "录像",
+    "side_plan": "换备",
+    "player_profile": "玩家",
 }
 
 
@@ -308,8 +331,13 @@ class BotService:
         self._top100_views_cache = None
         self._deck_tasks = set()
         self._slow_tasks = set()
+        self._profile_tasks = set()
         # 群内保密命令私聊发送失败后，给该用户一次性的私聊重发允许（10 分钟有效期）
         self._confidential_retry = {}
+        # 「绑定mc」之后等待同一 QQ 号发来玩家名的临时状态（只在内存，重启即失效）
+        self._bind_pending = {}
+        # 名字空格归一用的玩家名清单：查询要扫 6 万行，缓存 5 分钟。
+        self._player_names_cache = (0.0, [])
         self._known_replays_at = 0.0
         self._known_replays = set()
 
@@ -612,6 +640,16 @@ class BotService:
                 text = self.help_text(user, conversation)
                 return text + "\n\n你还没有使用权限，不能订阅或查看录像。"
             return "你没有使用权限，不能订阅或查看录像。"
+        # 「绑定mc」后的下一条文字：同一个人、短窗口内，优先当作 MC 玩家名。
+        # 若对方发的是已有指令（帮助/历史等），则作废这次等待，按原指令处理。
+        if str(text or "").strip() and self._bind_pending_active(user):
+            stripped = str(text).strip()
+            self._clear_bind_pending(user)
+            if stripped in ("取消", "取消绑定"):
+                return "已取消绑定。"
+            candidate = parse_command(stripped)
+            if candidate.get("op") in ("empty", "unknown"):
+                return self._bind_mc(user, stripped)
         if op == "help":
             return self.help_text(user, conversation)
         if op == "query_enroll":
@@ -630,10 +668,20 @@ class BotService:
             return "请发送“帮助”查看用法。"
         if op == "error":
             return command["message"]
+        if op == "bind_mc":
+            return self._bind_mc(user, command.get("player")) if command.get("player") else self._start_bind(user)
+        if op == "unbind_mc":
+            return self._unbind_mc(user)
+        if op == "my_binding":
+            return self._my_binding(user)
         if op == "player_history":
+            label = "当月历史" if command.get("monthly") else "历史"
+            player, error = self._player_or_self(user, command.get("player"), label)
+            if error:
+                return error
             if command.get("monthly"):
-                return self.player_history.handle_monthly(command["player"])
-            return self.player_history.handle(command["player"])
+                return self.player_history.handle_monthly(player)
+            return self.player_history.handle(player)
         if op == "daily_card":
             # 绑定 QQ 号（user），不是群/会话：同一人换群或私聊都是当天同一张。
             return self.card_extras.handle(user, op)
@@ -727,9 +775,10 @@ class BotService:
         if op == "list":
             return self._list_text(user)
         if op == "subscribe":
+            player = self._canonical_player(command["player"])
             sub = self.store.upsert_subscription(
                 user,
-                command["player"],
+                player,
                 command["rank_top"],
                 command["notify"],
                 self.clock(),
@@ -738,18 +787,31 @@ class BotService:
             return "已订阅。\n" + default_note + self._format_sub(sub) + "\n后台持续观测该玩家所有对局；推送和录像链接按以上条件筛选，卡组使用最新观测。"
         if op in ("push", "silent"):
             notify = op == "push"
-            if not self.store.set_notify(user, command["player"], notify):
+            player = self._canonical_player(command["player"])
+            if not self.store.set_notify(user, player, notify):
                 return "你还没有订阅这个玩家。"
             word = "推送" if notify else "静默"
-            return f"已把 {command['player']} 改为{word}。之后保存的新录像按这个方式处理。"
+            return f"已把 {player} 改为{word}。之后保存的新录像按这个方式处理。"
         if op == "unsubscribe":
-            if not self.store.delete_subscription(user, command["player"]):
+            player = self._canonical_player(command["player"])
+            if not self.store.delete_subscription(user, player):
                 return "你没有这个订阅。"
-            return f"已取消订阅 {command['player']}。其他用户的订阅不受影响，已经在看的那盘会继续到结束。"
+            return f"已取消订阅 {player}。其他用户的订阅不受影响，已经在看的那盘会继续到结束。"
         if op == "replays":
-            return self._replay_text(user, command["player"])
+            player, error = self._player_or_self(user, command.get("player"), "录像")
+            if error:
+                return error
+            return self._replay_text(user, player)
         if op == "deck_build":
-            return self._deck_build_text(user, command["player"])
+            player, error = self._player_or_self(user, command.get("player"), "构筑")
+            if error:
+                return error
+            return self._deck_build_text(user, player)
+        if op == "side_plan":
+            player, error = self._player_or_self(user, command.get("player"), "换备")
+            if error:
+                return error
+            return self._side_plan_text(player)
         if op == "unknown":
             answer = command.get('text') or ''
             pending_key = (conversation + ":" + user) if conversation else user
@@ -773,6 +835,100 @@ class BotService:
                 return self._replay_text(user, player)
             return "无法识别。发送“帮助”查看用法。已经订阅的玩家可以直接发送完整玩家名。"
         return "无法识别。发送“帮助”查看用法。"
+
+    def _bind_pending_active(self, user_id) -> bool:
+        until = self._bind_pending.get(str(user_id))
+        if until is None:
+            return False
+        if until < self.clock():
+            self._bind_pending.pop(str(user_id), None)
+            return False
+        return True
+
+    def _clear_bind_pending(self, user_id) -> None:
+        self._bind_pending.pop(str(user_id), None)
+
+    def _start_bind(self, user) -> str:
+        now = self.clock()
+        # 顺手清掉过期项，避免长期积累。
+        for key, until in list(self._bind_pending.items()):
+            if until < now:
+                self._bind_pending.pop(key, None)
+        self._bind_pending[str(user)] = now + BIND_PENDING_SECONDS
+        current = self.store.get_binding(user)
+        seconds = int(BIND_PENDING_SECONDS)
+        if current:
+            return (f"你当前绑定的是：{current}\n"
+                    f"请在 {seconds} 秒内发送新的 MC 玩家名完成改绑；发送「取消」放弃。")
+        return (f"请在 {seconds} 秒内发送你的 MC 玩家名。\n"
+                "名字含空格可以直接发；发送「取消」放弃。")
+
+    def _bind_mc(self, user, player) -> str:
+        player = str(player or "").strip()
+        if not player:
+            return self._start_bind(user)
+        if len(player) > 100:
+            return "玩家名最多100字，请重新发送「绑定mc」。"
+        player = self._canonical_player(player)
+        self.store.set_binding(user, player, self.clock())
+        self._clear_bind_pending(user)
+        try:
+            known = self.store.has_player(player)
+        except sqlite3.Error:
+            known = True
+        note = ("" if known else
+                "\n注意：最近14天的收录里还没有这个名字（可能最近没有对局，或名字打错了）。"
+                "打错了再发一次「绑定mc」即可改绑。")
+        return (f"已绑定：{player}{note}\n"
+                "之后发送「历史」「当月历史」「构筑」「录像」不带名字，就默认查你自己。\n"
+                "查看/解除：我的绑定 / 解绑mc")
+
+    def _unbind_mc(self, user) -> str:
+        if self.store.delete_binding(user):
+            self._clear_bind_pending(user)
+            return "已解除 MC 账号绑定。"
+        return "你还没有绑定 MC 账号。发送「绑定mc」开始绑定。"
+
+    def _my_binding(self, user) -> str:
+        player = self.store.get_binding(user)
+        if player:
+            return f"你绑定的 MC 玩家名：{player}\n改绑：再发一次「绑定mc」；解除：解绑mc"
+        return "你还没有绑定 MC 账号。发送「绑定mc」，然后按提示发送你的 MC 玩家名。"
+
+    def _canonical_player(self, player: str) -> str:
+        """把用户输入的空格写法对齐到真实玩家名；只有唯一匹配才替换。"""
+        text = str(player or "").strip()
+        if not text:
+            return text
+        now = self.clock()
+        cached_at, cached = self._player_names_cache
+        if cached and now - cached_at < 300:
+            names = cached
+        else:
+            try:
+                names = self.store.player_names()
+            except sqlite3.Error:
+                return text
+            self._player_names_cache = (now, names)
+        if text in names:
+            return text
+        target = _WHITESPACE.sub(" ", text)
+        matches = {name for name in names if _WHITESPACE.sub(" ", name.strip()) == target}
+        return matches.pop() if len(matches) == 1 else text
+
+    def _player_or_self(self, user, player, label: str):
+        """显式玩家名优先；没写时用 QQ 绑定。返回 (玩家名, 错误提示)。"""
+        if player:
+            return self._canonical_player(str(player)), None
+        try:
+            bound = self.store.get_binding(user)
+        except sqlite3.Error:
+            bound = None
+        if bound:
+            return bound, None
+        return None, (f"你还没有绑定 MC 账号。\n"
+                      f"先发送「绑定mc」，再按提示发送你的 MC 玩家名；"
+                      f"也可以直接写：{label} 玩家名。")
 
     def _format_sub(self, sub: dict) -> str:
         scope = "全部" if sub["rank_top"] is None else f"前{sub['rank_top']}"
@@ -928,6 +1084,28 @@ class BotService:
             while len(self._deck_cache) > 32:
                 self._deck_cache.pop(next(iter(self._deck_cache)))
         return reply
+
+    def _side_plan_text(self, player: str):
+        """换备：当前构筑、对手场次前6、每个对手最近5场，先/后攻分列。"""
+        from .statistics_side_recent import query as side_plan_query, format_text
+        try:
+            with closing(sqlite3.connect(self.store.path.resolve().as_uri() + '?mode=ro',
+                                         uri=True, timeout=5)) as db:
+                db.row_factory = sqlite3.Row
+                db.execute('BEGIN')
+                plan = side_plan_query(db, self.replay_root, float(self.clock()), player)
+        except (sqlite3.Error, OSError):
+            return "换备统计暂时读取失败，请稍后再试。"
+        if plan is None:
+            return f"没有找到 {player} 的有效构筑（最近14天没有可用录像）。"
+        from .statistics_card_names import index as name_index
+        from .card_search import card_name
+        names = name_index(self.data_dir)
+        def name_for(code):
+            info = names.get(str(code))
+            return card_name(info) if info else '#%d' % int(code)
+        pages = format_text(plan, name_for)
+        return pages[0] if len(pages) == 1 else TextPages(pages)
 
     def _replay_text(self, user_id: str, player: str) -> str:
         self.index_player_replays(player)
@@ -1339,8 +1517,16 @@ class BotService:
         pending = self._top100_deck_candidates.get(key)
         return bool(pending and int(answer) in pending.get("players", {}))
 
+    def accept_group_bind_name(self, event, text):
+        """「绑定mc」等待期内，允许同一 QQ 号在群里免@直接发玩家名。"""
+        value = str(text or "").strip()
+        if not value:
+            return False
+        return self._bind_pending_active(event.get("user_id"))
+
     def accept_group_extra(self, event, text):
-        return (self.accept_group_top100_number(event, text)
+        return (self.accept_group_bind_name(event, text)
+                or self.accept_group_top100_number(event, text)
                 or self.accept_group_guess(event, text)
                 or self.accept_group_card_shortcut(event, text))
 
@@ -1381,6 +1567,28 @@ class BotService:
         deck_selection = bool(pending and answer.isascii() and answer.isdigit()
                               and int(answer) in pending.get('players', {})
                               and self.clock() - pending['time'] <= 300)
+        # 没写玩家名时先确认已绑定，避免先回“查询中”再回“未绑定”。
+        if (self.authorized(user_id) and not deck_selection
+                and parsed_command.get('op') in _PLAYER_DEFAULT_LABELS
+                and not parsed_command.get('player')):
+            label = _PLAYER_DEFAULT_LABELS[parsed_command['op']]
+            if parsed_command.get('op') == 'player_history' and parsed_command.get('monthly'):
+                label = '当月历史'
+            _, error = self._player_or_self(user_id, None, label)
+            if error:
+                await send(receiver, error)
+                return
+        if parsed_command.get('op') == 'player_profile':
+            if not self.authorized(user_id):
+                await send(receiver, "你没有使用权限，不能订阅或查看录像。")
+                return
+            await send(receiver, "玩家资料读取中，依次读取历史、当月历史、构筑、换备、录像，约30秒；"
+                                 "完成后合并成一条聊天记录发到这里。")
+            task = asyncio.create_task(self._player_profile_job(
+                user_id, text, conversation, receiver, send, forward, event.get('self_id')))
+            self._profile_tasks.add(task)
+            task.add_done_callback(self._profile_tasks.discard)
+            return
         if parsed_command.get('op') in ('deck_build', 'top100_rank_build') or deck_selection:
             await send(receiver, "构筑请求已收到，按顺序生成；完成后把结果发到这里。")
             task = asyncio.create_task(self._deck_build_job(
@@ -1824,6 +2032,11 @@ class BotService:
         if reply is None:
             return
         try:
+            text_pages = getattr(reply, 'pages', None)
+            if text_pages:
+                for page in text_pages:
+                    await send(receiver, page)
+                return
             pages = getattr(reply, 'forward_cards', None)
             if pages and forward is not None and await forward(receiver, pages, self_id):
                 return
@@ -1845,6 +2058,66 @@ class BotService:
             await send(receiver, reply)
         except Exception as exc:
             self.write_log(f"历史结果发送失败：{exc}")
+
+    async def _player_profile_job(self, user_id, text, conversation, receiver, send, forward, self_id):
+        """玩家 xxx：把历史/当月/构筑/换备/录像合并成一条聊天记录。"""
+        command = parse_command(text)
+        player, error = self._player_or_self(user_id, command.get('player'), '玩家')
+        if error:
+            await send(receiver, error)
+            return
+        sections = [{'text': f'玩家：{player}\n依次为：历史、当月历史、构筑、换备、录像。'}]
+        for title, command_text in (('历史', '历史'), ('当月历史', '当月历史'), ('构筑', '构筑'),
+                                    ('换备', '换备'), ('录像', '录像')):
+            try:
+                if command_text in ('构筑', '换备'):
+                    async with self._statistics_queue_lock():
+                        reply = await asyncio.wait_for(
+                            asyncio.to_thread(self.handle_text, user_id,
+                                              f'{command_text} {player}', conversation), timeout=90)
+                else:
+                    reply = await asyncio.wait_for(
+                        asyncio.to_thread(self.handle_text, user_id,
+                                          f'{command_text} {player}', conversation), timeout=60)
+            except asyncio.TimeoutError:
+                sections.append({'text': f'【{title}】读取超时。'})
+                continue
+            except Exception as exc:
+                sections.append({'text': f'【{title}】读取失败：{exc}'})
+                self.write_log(f"玩家资料 {title} 读取失败：{type(exc).__name__}: {exc}")
+                continue
+            if reply is None:
+                continue
+            pages = getattr(reply, 'pages', None)
+            if pages:
+                for index, page in enumerate(pages, 1):
+                    prefix = f'【{title}】' if len(pages) == 1 else f'【{title} {index}/{len(pages)}】'
+                    sections.append({'text': prefix + '\n' + str(page)})
+                continue
+            urls = list(getattr(reply, 'image_urls', None) or [])
+            one = getattr(reply, 'image_url', None)
+            if one and one not in urls:
+                urls.insert(0, one)
+            sections.append({'text': f'【{title}】\n{reply}', 'images': urls})
+        try:
+            sent = await forward(receiver, sections, self_id)
+        except Exception as exc:
+            self.write_log(f"玩家资料合并转发失败：{type(exc).__name__}: {exc}")
+            sent = False
+        if sent:
+            return
+        # 合并转发不支持图片/节点时，退回逐段发送，至少把文字送出。
+        for node in sections:
+            try:
+                urls = node.get('images') or []
+                if urls:
+                    reply = CardReply(node.get('text') or '', urls[0])
+                    reply.image_urls = urls
+                    await send(receiver, reply)
+                else:
+                    await send(receiver, node.get('text') or '')
+            except Exception as exc:
+                self.write_log(f"玩家资料分段发送失败：{type(exc).__name__}: {exc}")
 
     async def _price_quote_job(self, command, receiver, send):
         try:

@@ -79,6 +79,11 @@ class Store:
                 created_at REAL NOT NULL,
                 UNIQUE(user_id, player)
             );
+            CREATE TABLE IF NOT EXISTS qq_bindings (
+                user_id TEXT PRIMARY KEY,
+                player TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS replays (
                 id INTEGER PRIMARY KEY,
                 digest TEXT NOT NULL,
@@ -394,6 +399,58 @@ class Store:
             )
             self._commit()
             return cur.rowcount > 0
+
+    def get_binding(self, user_id: str) -> Optional[str]:
+        """QQ 号绑定的 MC 玩家名；未绑定返回 None。"""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT player FROM qq_bindings WHERE user_id = ?",
+                (str(user_id),),
+            ).fetchone()
+        return row["player"] if row else None
+
+    def set_binding(self, user_id: str, player: str, updated_at: float) -> None:
+        """绑定/改绑；一个 QQ 号只保留一个当前玩家名。"""
+        with self._lock:
+            self._db.execute(
+                """
+                INSERT INTO qq_bindings (user_id, player, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    player = excluded.player,
+                    updated_at = excluded.updated_at
+                """,
+                (str(user_id), player, float(updated_at)),
+            )
+            self._commit()
+
+    def delete_binding(self, user_id: str) -> bool:
+        with self._lock:
+            cur = self._db.execute(
+                "DELETE FROM qq_bindings WHERE user_id = ?",
+                (str(user_id),),
+            )
+            self._commit()
+            return cur.rowcount > 0
+
+    def has_player(self, player: str) -> bool:
+        """最近收录的统计里是否有该玩家名；只用于绑定后的提示，不作为拒绝依据。"""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM stat_views WHERE player = ? OR TRIM(player) = ? LIMIT 1",
+                (player, player),
+            ).fetchone()
+        return row is not None
+
+    def player_names(self) -> list[str]:
+        """最近录像/统计/已有订阅里出现过的玩家名，用于空格写法归一。"""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT player FROM stat_views "
+                "UNION ALL SELECT focus_player FROM replays "
+                "UNION ALL SELECT player FROM subscriptions"
+            ).fetchall()
+        return sorted({str(row[0]) for row in rows if row[0]})
 
     def add_replay(
         self,

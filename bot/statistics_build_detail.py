@@ -65,10 +65,12 @@ def validate_build(cards, inferred_cards=(), mapping=None, completeness=None):
 
 
 def query(db, replay_root, now, player, digest=None, scope='build',allowed_digests=None,history_digests=None):
-    if not isinstance(player, str) or not player or len(player) > 128 or scope not in ('build', 'player'):
+    if not isinstance(player, str) or not player.strip() or len(player) > 128 or scope not in ('build', 'player'):
         raise ValueError('invalid_player_or_scope')
+    # 玩家名允许首尾空格；统一按去边界空格后的名字查，显示也用同一份。
+    player = player.strip()
     basis, latest, people = population(db, replay_root, now, player=player,allowed_digests=allowed_digests)
-    rows = [r for r in basis['views'] if r['player'] == player]
+    rows = [r for r in basis['views'] if r['player'].strip() == player]
     selected = next((r for r in rows if r['digest'] == digest), None) if digest else latest.get(player)
     if selected is None:
         return None
