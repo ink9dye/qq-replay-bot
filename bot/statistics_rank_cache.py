@@ -16,8 +16,8 @@ def cache_path(data_dir):
     return Path(data_dir) / 'statistics-rank-cache.json'
 
 
-def load(data_dir, now):
-    """返回 {player: (rank, checked_at)}；过期条目丢弃。"""
+def load(data_dir, now, ttl=TTL):
+    """返回 {player: (rank, checked_at)}；超过 ttl 的条目丢弃（默认 7 天，换备按 14 天取）。"""
     try:
         payload = json.loads(cache_path(data_dir).read_text(encoding='utf-8'))
     except (OSError, ValueError):
@@ -31,10 +31,10 @@ def load(data_dir, now):
             continue
         rank = entry.get('rank')
         checked = entry.get('checked_at')
-        age = float(now) - float(checked) if isinstance(checked, (int, float)) else TTL + 1
+        age = float(now) - float(checked) if isinstance(checked, (int, float)) else ttl + 1
         # 查询的 now 可能比写入时刻早几分钟（排队后才计算），未来时间戳不能当过期：
         # 否则一次迟到的请求会把整份缓存改写成本次刚查到的那几条。
-        if isinstance(rank, int) and rank > 0 and -FUTURE_SKEW <= age <= TTL:
+        if isinstance(rank, int) and rank > 0 and -FUTURE_SKEW <= age <= ttl:
             result[str(name).strip()] = (rank, float(checked))
     return result
 

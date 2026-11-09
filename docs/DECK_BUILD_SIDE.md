@@ -67,7 +67,7 @@ Side 只使用“有证据的换入/换出”，不从卡组名或使用记录�
 
 - QQ `换备 [玩家名]`：以该玩家当前构筑（`build_detail` 最新构筑，主卡相同）遇到过的对手卡组按场次降序取前 6；每个对手只取最近 5 场。
 - **只统计对手在当前前 200 名内的场次**（当前榜单前100 + 两份只读名次快照；名次未核验的对手不计入）。对手卡组排行和“该对手共 N 场”都只按这些场次算；QQ 与网页「最近5场」同口径。
-  - 名次来源：`stat_current_top100` + `statistics_rank_scope.stored_ranks`（`statistics-rank-cache.json` / `rank-scope-index.json`，快照超过 7 天按没有算）；不为此额外查官方接口。
+  - 名次来源：`stat_current_top100` + `statistics_rank_scope.stored_ranks`（`statistics-rank-cache.json` / `rank-scope-index.json`）；**换备按 14 天新鲜度**（与对局保留/统计窗口一致，`statistics_side_recent.RANK_SNAPSHOT_SECONDS`），矩阵等其它入口仍用默认 7 天；不为此额外查官方接口。
   - 2026-11-09 用户要求新增。样本会明显变小（亚翁示例：当前构筑 50 场里 23 场对手在前 200；网页因 quality filter 为 41→20），前 6 会换成真正的高分段对手。
   - 已知差异：`ygo-web` 开启 quality filter、`ygo-qq` 未开启，同一玩家的“共 N 场”网页与 QQ 可能略有差异（既有差异，非本次引入）。
 - Side 样本：这 5 场里所有第 2/3 局中 `changes.status=known` 的换边局（首局和换边局主卡+额外都完整）；同一场多局同一张卡取最大张数，不跨局相加。有效换边局少于 3 个标“样本少”，不拒绝展示；没有有效换边局时明确说明。

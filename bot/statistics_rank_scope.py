@@ -37,29 +37,30 @@ def _data_dir(db):
     return Path(database).parent if database else None
 
 
-def _stored_ranks(data_dir,now):
+def _stored_ranks(data_dir,now,max_age=7*86400):
     """两处名次快照，只读：
     1) statistics-rank-cache.json（dashboard/命名/采集都在写，可能被迟到的请求整份改写）；
     2) rank-scope-index.json（tools/backfill_rank_cache.py 一次性落盘，只有它写，不会被改写）。
+    max_age 默认 7 天；换备按 14 天取（与对局窗口一致）。
     """
     if data_dir is None:return {}
-    try:result=dict(rank_cache_load(data_dir,now))
+    try:result=dict(rank_cache_load(data_dir,now,ttl=max_age))
     except (OSError,ValueError,TypeError):result={}
     try:payload=json.loads((Path(data_dir)/'rank-scope-index.json').read_text(encoding='utf-8'))
     except (OSError,ValueError,TypeError):payload=None
     if isinstance(payload,dict) and isinstance(payload.get('players'),dict):
         saved=payload.get('saved_at')
         saved=float(saved) if isinstance(saved,(int,float)) else 0.0
-        # 快照超过 7 天就当没有：定时器停摆时宁可回到“只认共享缓存”，也不用旧名次冒充。
-        if 0<=now-saved<=7*86400:
+        # 快照超过 max_age 就当没有：定时器停摆时宁可回到“只认共享缓存”，也不用旧名次冒充。
+        if 0<=now-saved<=max_age:
             for name,rank in payload['players'].items():
                 if isinstance(rank,int) and rank>0:result.setdefault(str(name).strip(),(rank,saved))
     return result
 
 
-def stored_ranks(db,now):
-    """只读两份名次快照（dashboard 缓存 + rank-scope 索引），超过 7 天的快照按没有算。"""
-    return _stored_ranks(_data_dir(db),now)
+def stored_ranks(db,now,max_age=7*86400):
+    """只读两份名次快照（dashboard 缓存 + rank-scope 索引），超过 max_age 的快照按没有算。"""
+    return _stored_ranks(_data_dir(db),now,max_age=max_age)
 
 
 @contextmanager

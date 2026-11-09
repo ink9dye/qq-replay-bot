@@ -24,6 +24,7 @@ MAX_CARDS_PER_DIRECTION = 10
 DECKS_PER_PAGE = 3
 UNKNOWN_DECK = '未识别'
 OPPONENT_RANK_LIMIT = 200
+RANK_SNAPSHOT_SECONDS = 14 * 86400  # 与对局保留/统计窗口一致；超过 14 天的名次快照不认
 
 
 def _game_label(game: dict) -> str:
@@ -76,7 +77,7 @@ def _seat(first_game: dict):
 
 
 def _rank_map(db, now) -> dict:
-    """对手名次：当前榜单前100 + 两份只读名次快照；名字统一 strip 对齐。"""
+    """对手名次：当前榜单前100 + 两份只读名次快照（换备按 14 天新鲜度）；名字统一 strip 对齐。"""
     from .statistics_rank_scope import stored_ranks
     ranks = {}
     for row in db.execute('SELECT player, rank FROM stat_current_top100'):
@@ -86,7 +87,7 @@ def _rank_map(db, now) -> dict:
             continue
         if rank > 0:
             ranks[str(row['player']).strip()] = rank
-    for name, hit in stored_ranks(db, now).items():
+    for name, hit in stored_ranks(db, now, max_age=RANK_SNAPSHOT_SECONDS).items():
         try:
             rank = int(hit[0])
         except (TypeError, ValueError, IndexError):
@@ -110,8 +111,9 @@ def _scope_groups(groups: list[dict], ranks: dict, limit: int):
             excluded += 1
             continue
         kept.append(group)
-    return kept, dict(opponent_range=limit, excluded_matches=excluded,
-                      unverified_matches=unverified, matches_before_scope=len(groups))
+    return kept, dict(opponent_range=limit, rank_snapshot_days=RANK_SNAPSHOT_SECONDS // 86400,
+                      excluded_matches=excluded, unverified_matches=unverified,
+                      matches_before_scope=len(groups))
 
 
 def _new_bucket() -> dict:
@@ -259,7 +261,7 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
     notes = ['只统计当前构筑（主卡相同）的场次；每个对手取最近 %d 场。' % recent,
              '先攻/后攻按该换边局（第2/3局）该玩家自己的实际座位；同一场多局同一张卡取最大张数。']
     if rank_scope:
-        notes.insert(0, '只看对手前 %d（当前榜单／名次快照）：纳入 %d 场；另有 %d 场对手名次在前 %d 之外、'
+        notes.insert(0, '只看对手前 %d（当前榜单／14天内名次快照）：纳入 %d 场；另有 %d 场对手名次在前 %d 之外、'
                         '%d 场名次未核验，均不计入。' % (
                             rank_scope['opponent_range'], len(groups),
                             rank_scope.get('excluded_matches', 0), rank_scope['opponent_range'],
