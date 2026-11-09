@@ -29,7 +29,9 @@ class _NoImageRedirect(urllib.request.HTTPRedirectHandler):
 
 def _fetch(upstream, headers, body=None, method="GET"):
     """请求 ygo-web；失败抛 OSError/HTTPError 由调用方回退或报错。"""
-    request = urllib.request.Request(UPSTREAM + quote(upstream, safe='/?&=%:'), data=body, method=method)
+    # 查询串已在浏览器侧编码；'+' 是表单编码的空格，不能再转成 %2B，
+    # 否则带空格的玩家名（如“久 远”）到上游会变成带加号的另一个名字。
+    request = urllib.request.Request(UPSTREAM + quote(upstream, safe='/?&=%:+'), data=body, method=method)
     for key, value in headers.items():
         request.add_header(key, value)
     request.add_header("Accept-Encoding", "identity")
