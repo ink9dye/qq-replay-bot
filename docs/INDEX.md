@@ -57,6 +57,7 @@
 | [`WRAPUP_QQ_BIND_SIDE_PLAYER_20261109.md`](WRAPUP_QQ_BIND_SIDE_PLAYER_20261109.md) | **绑定MC/订阅空格/换备/玩家资料 + 最近5场 Side 收尾（2026-11-09）**：口径、版本、部署、验证、回滚；**§8 = 换备先/后攻改按该换边局座位**（13:52 上线，`339a600`/`19fab5f`）；**§9 = 换备只看对手前200**（14:03 上线）＋ 名次快照 14 天（14:10 换备、14:22 全站默认） |
 | [`CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md`](CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md) | 卡图与设备下载（补充；卡图现行逻辑见 WRAPUP §10） |
 | [`CARD_IMAGE_SUPERPRE_20261109.md`](CARD_IMAGE_SUPERPRE_20261109.md) | **卡图串卡（2026-11-09）**：超先行同号图 momobako 会返回别的卡；≥1 亿只认 super-pre；改动/数据修复/验证/回滚 |
+| [`CARD_MATCHUPS_20261109.md`](CARD_MATCHUPS_20261109.md) | **单卡胜率 + 对前百卡组 Top5（2026-11-09）**：双方前100、使用后口径、网页/QQ 实现、性能、验证、部署与回滚 |
 | [`QQ_OBSERVATION_PERIOD_RULES.md`](QQ_OBSERVATION_PERIOD_RULES.md) | QQ 账号观察期纪律、掉线 SOP、换号判据 |
 | [`QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md`](QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md) | 发送守卫与登录证据计划 |
 | [`QQ_PROBE_DEPLOY_20261107.md`](QQ_PROBE_DEPLOY_20261107.md) | 自动探测恢复的部署与回滚（2026-11-07） |
