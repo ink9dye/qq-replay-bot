@@ -206,7 +206,7 @@ query最多同时处理2个请求，繁忙返回429；不占用watch的请求闸
 ### 7.7 资源与安全边界
 
 - 检索并发 2，超过等 5 秒返回 503；单次最多 100 条，避免一次拉全库。
-- nginx 侧沿用 `zone=api`（5r/s，burst 20）；8787 出站只有 3M，批量下载会占满带宽。
+- nginx 侧使用独立 `zone=replay`（2026-11-10 起：20r/s，burst 60，原先复用 `zone=api` 5r/s burst 20，逐场下载会 429）；8787 出站只有 3M，批量下载会占满带宽。
 - 只读连接 `file:...?mode=ro`，不持有写事务；不写 `data/replays/`、不删录像、不改保留期。
 - 日志只记启动、检索失败类型和文件解析失败，不输出令牌、账号、完整路径。
 - 数据保留期仍由既有 14 天策略决定：过期录像既不在库也不在盘，检索不到属正常。
@@ -219,7 +219,7 @@ query最多同时处理2个请求，繁忙返回429；不占用watch的请求闸
 
 ```nginx
 location ^~ /replay-api/ {
-    limit_req zone=api burst=20 nodelay;
+    limit_req zone=replay burst=60 nodelay;
     proxy_pass http://127.0.0.1:8792;
     proxy_http_version 1.1;
     proxy_set_header Host $http_host;
