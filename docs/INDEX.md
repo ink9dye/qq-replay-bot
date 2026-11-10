@@ -40,6 +40,7 @@
 | [`QUERY_API.md`](QUERY_API.md) | 服务端总接口：`/query-api`、`/replay-api`、`/statistics/api/recordings` |
 | [`REPLAY_LIBRARY_20261106.md`](REPLAY_LIBRARY_20261106.md) | 录像库检索/整场下载、限速、客户端 v1.1–v1.5 |
 | [`WRAPUP_REPLAY_DECK_NAMES_20261107.md`](WRAPUP_REPLAY_DECK_NAMES_20261107.md) | **回放库卡组名一致性收尾**：第1局口径、索引实时刷新、ZIP 目录带卡组、部署/回滚 |
+| [`WRAPUP_REPLAY_429_20261110.md`](WRAPUP_REPLAY_429_20261110.md) | **录像批量下载 429 收尾（2026-11-10）**：nginx 独立 20r/s 限流、客户端重试/节流、验证与回滚 |
 | [`SIDE_ANALYSIS_20261106.md`](SIDE_ANALYSIS_20261106.md) | Side 换入换出分析：入口、口径、算法候选、验收 |
 | [`WRAPUP_WEB_LATENCY_20261107.md`](WRAPUP_WEB_LATENCY_20261107.md) | **网页耗时优化全量记录**：措施、实测、饼图最终口径、卡图管线、回滚 |
 | [`WRAPUP_PIE_LEGEND_20261107.md`](WRAPUP_PIE_LEGEND_20261107.md) | **前百饼图/图例收尾（2026-11-07）**：网页逐项对齐、网站生成保存饼图+图例、机器人取图、验证与回滚 |
