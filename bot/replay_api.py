@@ -35,7 +35,7 @@ import zipfile
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, unquote_plus, urlsplit
 
 API_PREFIX = "/replay-api"
 CHUNK = 64 * 1024
@@ -457,7 +457,22 @@ class ReplayStore:
 
     @classmethod
     def _merge_players(cls, seed: list[str], games: list[dict]) -> list[str]:
-        names = list(seed)
+        # 上传账本里的名字可能是 URL 编码（+ 代表空格），和证据/统计里的原名对不上；
+        # 以本场 stat_views 的名字为准，能解开的就用原名的写法。
+        known = {}
+        for game in games:
+            for view in game["views"]:
+                name = cls._clean_name(view["player"])
+                if name:
+                    known.setdefault(name.casefold(), name)
+        names = []
+        for raw in seed:
+            name = cls._clean_name(raw)
+            if name.casefold() not in known:
+                decoded = cls._clean_name(unquote_plus(name))
+                if decoded.casefold() in known:
+                    name = known[decoded.casefold()]
+            names.append(name)
         for game in games:
             for view in game["views"]:
                 names.append(view["player"])
