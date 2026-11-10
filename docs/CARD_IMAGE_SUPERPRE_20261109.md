@@ -81,3 +81,24 @@
 - 80 个 ≥1e8 缩略图已核对：除上述三张外，momobako 同号均 404（图来自 super-pre，正确）。
 - 以后新出现的 `1002680xx` 一律只认 super-pre；若 `statistics_build.js` 被其它会话整文件覆盖，
   需保留 `cardImageRemote` 与 `cardImage(...,true)` 两处改动。
+
+## 八、2026-11-10 补记：映射到先行图号的缩略图会互相覆盖
+
+- 现象：QQ `构筑` 图里 Side 的 `99522650 沉默斗者-沉默魔术师` 又显示成「永恒混沌」。
+- 链路：99522650（本体号）的图在先行图号 `100268010`（`card-image-ids.json` 里 `99522650 → 100268010`）。
+  旧 `_schedule_thumb` 对**普通卡**也会 `try_thumb(映射号)`，即去 **momobako** 取
+  `100268010.jpg!thumb2`（HTTP 200，内容是「永恒混沌」），并按**候选号**落盘 →
+  把 `card-thumbs/100268010.webp` 覆盖回 2,618 B / 82×120（11-09 19:47）。
+- 修（代码）：`statistics_local_cards._schedule_thumb` 对 ≥1e8 的候选号/映射号一律不走 momobako，
+  交给 `ensure_full`（super-pre 优先）离线缩；`card_image_cache.ensure_thumb` 的 `take(image)` 同理；
+  `page_urls()` 遇到 ≥1e8 的映射直接给 super-pre 原图，不再给 momobako `!thumb2`。
+- 修（数据）：用 `data/card-images/100268010.jpg`（340,523 B，正确）重缩
+  `card-thumbs/100268010.webp` 与 `card-thumbs/99522650.webp`（各 9,206 B、113×165）。
+- 验证：`/statistics/card-thumb/99522650` 与 `/100268010` 均 200 `image/webp` 9,206 B；
+  `/statistics/card-image/99522650` 与 `/100268010` 均 200 `image/jpeg` 340,523 B；
+  服务器重渲染构筑图，Side 第 9 格已是「沉默斗者-沉默魔术师」。
+- 单测：卡图相关 18 项通过（新增“普通卡不得为先行映射号去 momobako 取缩略图”“page_urls 走 super-pre”）。
+- 未重启 `ygo-qq`（观察期）：它仍跑旧代码，但两个缩略图已存在，旧逻辑优先命中 `100268010.webp`
+  也是正确图；要彻底消掉“将来别的卡再触发覆盖”的风险，等它下次自然重启即生效。
+- 版本（sha256 前 16）：`statistics_local_cards 786f3d04…`、`card_image_cache a52fafa7…`；
+  备份 `data/config-backups/card-superpre-20261110-215510/`。

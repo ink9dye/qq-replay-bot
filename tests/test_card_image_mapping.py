@@ -89,5 +89,13 @@ class MappingGuardTests(unittest.TestCase):
         self.assertEqual(cache.load_map(self.data), {})
 
 
+    def test_page_urls_use_super_pre_for_super_pre_alias(self):
+        # 99522650（沉默斗者）的图在先行图号 100268010；momobako 同号是另一张卡。
+        self._write_map({99522650: 100268010})
+        thumb, full = cache.page_urls(self.data, 99522650)
+        self.assertIn('super-pre', thumb)
+        self.assertIn('super-pre', full)
+
+
 if __name__ == '__main__':
     unittest.main()

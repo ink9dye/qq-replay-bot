@@ -392,7 +392,7 @@ def ensure_thumb(data_dir, card_id, timeout=8) -> Path | None:
     if take(card_id):
         return thumb_path(data_dir, card_id)
     image = image_id(data_dir, card_id) or card_id
-    if image != card_id and take(image):
+    if image != card_id and image < SUPER_PRE_FLOOR and take(image):
         return thumb_path(data_dir, card_id)
     full = ensure_full(data_dir, card_id)
     if full is not None and _derive_thumb(full, thumb_path(data_dir, card_id)):
@@ -428,6 +428,9 @@ def page_urls(data_dir, card_id) -> tuple[str, str]:
     card_id = int(card_id)
     image = image_id_cached(data_dir, card_id) or card_id
     if image != card_id:
+        if image >= SUPER_PRE_FLOOR:
+            # 先行图号在 momobako 可能是另一张卡，只给 super-pre 原图。
+            return FULL_PRE % image, FULL_PRE % image
         return THUMB_MOMO % image, FULL_PRE % image
     if card_id >= 100_000_000:
         # 萌卡超先行没有 !thumb2，直接给 super-pre 原图。

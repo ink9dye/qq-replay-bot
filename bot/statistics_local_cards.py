@@ -310,13 +310,18 @@ def _schedule_thumb(data_dir, code, thumbs, pics=None):
             from . import card_image_cache
             # 普通卡先按卡号拿 !thumb2，命中就不查百鸽页；超先行没有 !thumb2，直接走原图。
             if code < 100_000_000:
+                # momobako 只按普通卡号取 !thumb2：先行图号（≥1e8）在 momobako 可能挂着
+                # 另一张卡的图，下回来会把这个图号自己的缩略图覆盖成错图。
                 for candidate in _image_codes(code):
+                    if candidate >= 100_000_000:
+                        continue
                     if try_thumb(candidate):
                         with _lock:
                             _thumb_failed.pop(code, None)
                         return
                 mapped = card_image_cache.image_id(data_dir, code)
-                if mapped and mapped not in _image_codes(code) and try_thumb(mapped):
+                if (mapped and mapped < 100_000_000 and mapped not in _image_codes(code)
+                        and try_thumb(mapped)):
                     with _lock:
                         _thumb_failed.pop(code, None)
                     return

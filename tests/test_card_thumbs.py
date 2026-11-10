@@ -135,6 +135,25 @@ class ThumbTests(unittest.TestCase):
         self.assertTrue(seen)
         self.assertIn('super-pre', seen[0])
 
+    def test_normal_card_never_asks_momobako_for_a_super_pre_alias(self):
+        from bot import card_image_cache as cache
+        seen = []
+
+        def fake_urlopen(url, timeout=None):
+            seen.append(url)
+            raise OSError('offline')
+
+        with mock.patch.object(cards.urllib.request, 'urlopen', side_effect=fake_urlopen), \
+                mock.patch.object(cache, 'image_id', return_value=100268010), \
+                mock.patch.object(cache, 'ensure_full', return_value=None):
+            cards._schedule_thumb(str(self.data), 12345678, self.data / 'card-thumbs')
+            deadline = time.time() + 3
+            while time.time() < deadline and 12345678 in cards._thumb_pending:
+                time.sleep(0.05)
+        self.assertTrue(seen)
+        self.assertFalse([url for url in seen if '100268010' in url or '10012345678' in url or '10112345678' in url])
+        self.assertTrue(all('momobako' in url for url in seen))
+
 
 if __name__ == '__main__':
     unittest.main()
