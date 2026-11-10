@@ -355,7 +355,7 @@ class ReplayStore:
         for row in view_rows:
             build = str(row["build"] or "")
             views.setdefault(row["digest"], []).append(dict(
-                player=str(row["player"] or ""),
+                player=str(row["player"] or "").strip(),
                 outcome=str(row["outcome"] or ""),
                 build=build,
                 deck=decks.get(build, "") or "",
@@ -380,7 +380,7 @@ class ReplayStore:
                 try:
                     raw = json.loads(row["players_json"] or "[]")
                     if isinstance(raw, list):
-                        players = [str(item) for item in raw if str(item).strip()]
+                        players = self._unique_names(str(item) for item in raw)
                 except (TypeError, ValueError):
                     players = []
                 match = grouped[key] = dict(key=key, session=session, players=players,
@@ -437,20 +437,38 @@ class ReplayStore:
         return matches
 
     @staticmethod
-    def _merge_players(seed: list[str], games: list[dict]) -> list[str]:
-        players = list(seed)
+    def _clean_name(value) -> str:
+        return str(value or "").strip()
+
+    @classmethod
+    def _unique_names(cls, values) -> list[str]:
+        seen: set[str] = set()
+        names: list[str] = []
+        for value in values:
+            name = cls._clean_name(value)
+            if not name:
+                continue
+            key = name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(name)
+        return names
+
+    @classmethod
+    def _merge_players(cls, seed: list[str], games: list[dict]) -> list[str]:
+        names = list(seed)
         for game in games:
             for view in game["views"]:
-                if view["player"] and view["player"] not in players:
-                    players.append(view["player"])
-        return players[:4]
+                names.append(view["player"])
+        return cls._unique_names(names)[:4]
 
     @staticmethod
     def _player_deck(player: str, games: list[dict]) -> str:
         """Match label follows the earliest identified game (game 1 first), like the player page."""
         for game in sorted(games, key=lambda g: (g.get("game_no") or 999, g.get("recorded_at") or 0.0)):
             for view in game["views"]:
-                if view["player"] == player and view["deck"]:
+                if view["player"].strip() == player and view["deck"]:
                     return view["deck"]
         return ""
 
