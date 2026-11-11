@@ -84,13 +84,19 @@ def collect_flow(database, data_dir, now, card_name):
             [dict(deck=item['deck'], used=item[key]['used'], known=item[key]['known'])
              for item in shown if item[key]['used'] > 0 and item[key]['known'] < BAR_MIN_PLAYERS],
             key=lambda row: (-row['used'], row['deck']))
+    # ≤2 人的卡组：整组（含主卡/side/合计的三档分布）交给消息文本，不省略。
+    small_groups = sorted(
+        [dict(deck=item['deck'], players=item['players'],
+              main=dict(item['main']), side=dict(item['side']), total=dict(item['total']))
+         for item in shown if item['total']['known'] < BAR_MIN_PLAYERS],
+        key=lambda group: (-group['total']['used'], group['deck']))
     bars = {}
     for key in ('main', 'side', 'total'):
         bars[key] = [item for item in shown
                      if item[key]['used'] > 0 and item[key]['known'] >= BAR_MIN_PLAYERS]
         bars[key].sort(key=lambda item: (-item[key]['rate'], -item[key]['used'], item['deck']))
     return dict(code=code, name=name, items=items, shown=shown, records=records,
-                small=small, bars=bars,
+                small=small, small_groups=small_groups, bars=bars,
                 covered=sum(1 for row in records if row),
                 current=len(records), total_players=len(people),
                 main_used=sum(1 for row in records if row['main'] > 0),
@@ -137,8 +143,8 @@ def render_flow(database, data_dir, now, card_name):
                      key=lambda item: (-item['total']['rate'], -item['total']['used'], item['deck']))
     positions = list(range(len(ordered)))
     height = max(3.2, 0.42 * max(len(ordered), 1) + 1.9)
-    fig, axes = plt.subplots(1, 3, figsize=(12.2, height), dpi=100, sharey=True)
-    fig.subplots_adjust(left=0.19, right=0.99, top=0.78, bottom=0.24)
+    fig, axes = plt.subplots(1, 3, figsize=(13.6, height), dpi=100, sharey=True)
+    fig.subplots_adjust(left=0.21, right=0.86, top=0.78, bottom=0.24)
     titles = {'main': f"主卡（确证首局）{payload['main_used']} 人",
               'side': f"备牌（换入）{payload['side_used']} 人",
               'total': f"合计（主卡+换入）{payload['total_used']} 人"}
@@ -153,23 +159,31 @@ def render_flow(database, data_dir, now, card_name):
                 continue
             left = 0.0
             for part in BINS:
-                value = bucket[part] / known * 100 if known else 0
-                if value <= 0:
+                count = bucket[part]
+                if count <= 0:
                     continue
+                value = count / known * 100
                 ax.barh(pos, value, left=left, color=colors[part], edgecolor='white', height=0.48)
-                if value >= 8:
-                    ax.text(left + value / 2, pos, f'{value:.0f}', ha='center', va='center',
-                            fontsize=7.5, color='black' if part == 'two' else 'white')
+                if value >= 9:
+                    ax.text(left + value / 2, pos, f'{count}人', ha='center', va='center', fontproperties=prop,
+                            fontsize=7, color='black' if part == 'two' else 'white')
                 left += value
         ax.set_xlim(0, 100)
         ax.tick_params(axis='x', labelsize=7)
         if not any(item[key]['used'] > 0 and item[key]['known'] >= BAR_MIN_PLAYERS for item in ordered):
             ax.text(50, (len(ordered) - 1) / 2, '没有 ≥3 人的卡组', ha='center', va='center',
                     fontproperties=prop, fontsize=11, color='#8A5A00')
+    tick_labels = [f"{_short(item['deck'], 12)} ({item['total']['used']}/{item['total']['known']})"
+                   for item in ordered]
     axes[0].set_yticks(positions)
-    axes[0].set_yticklabels([f"{_short(item['deck'], 13)} ({item['total']['used']}/{item['total']['known']})"
-                             for item in ordered], fontproperties=prop, fontsize=8)
+    axes[0].set_yticklabels(tick_labels, fontproperties=prop, fontsize=8)
     axes[0].invert_yaxis()
+    # 右侧也放一份卡组名，方便三栏左右对照。
+    axes[2].yaxis.set_ticks_position('right')
+    axes[2].yaxis.set_label_position('right')
+    axes[2].set_yticks(positions)
+    axes[2].set_yticklabels(tick_labels, fontproperties=prop, fontsize=8)
+    axes[2].tick_params(axis='y', pad=4)
     handles = [Patch(facecolor=colors[part], edgecolor='white', label=labels[part]) for part in BINS]
     handles.append(Patch(facecolor='#ECEFF3', edgecolor='white', label='该大类全体（灰底轨）'))
     fig.legend(handles=handles, loc='lower center', ncol=4, frameon=False, prop=prop, fontsize=8,

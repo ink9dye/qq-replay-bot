@@ -1867,27 +1867,33 @@ class BotService:
         total_used = data.get('total_used')
         if total_used is None:
             total_used = data.get('used') or 0
-        small = data.get('small') or {}
+        small = data.get('small_groups') or []
 
-        def small_part(label, key):
-            rows = small.get(key) or []
-            if not rows:
-                return f"{label} 0"
-            if len(rows) <= 3:
-                names = '、'.join(
-                    f"{(r['deck'] if len(r['deck']) <= 10 else r['deck'][:9] + '…')} {r['used']}/{r['known']}"
-                    for r in rows)
-                return f"{label} {len(rows)} 个（{names}）"
-            return f"{label} {len(rows)} 个 / {sum(r['used'] for r in rows)} 人"
+        def bucket_text(bucket, label):
+            if not bucket or not bucket.get('known'):
+                return f"{label} 无证据"
+            bits = []
+            for copies, key in ((1, 'one'), (2, 'two'), (3, 'three')):
+                count = bucket.get(key) or 0
+                if count:
+                    bits.append(f"{copies}张({count}/{bucket['known']})")
+            return f"{label} " + ("、".join(bits) if bits else "无")
 
+        lines = []
+        for group in small:
+            lines.append(f"{group['deck']} {group['total']['used']}/{group['total']['known']}："
+                         + bucket_text(group['main'], '主卡') + "；"
+                         + bucket_text(group['side'], 'side') + "；"
+                         + bucket_text(group['total'], '合计'))
+        tail = ""
+        if lines:
+            tail = ("\n≤2 人卡组（%d 个，全列）：\n" % len(lines)) + "\n".join(lines)
         text = (f"前100单卡流向：{data['name']}（{data['code']:08d}）\n"
                 f"有构筑 {data['covered']}/{data.get('total_players') or data['current']} 人；"
                 f"主卡 {data.get('main_used', 0)} 人 / 备牌换入 {data.get('side_used', 0)} 人 / "
                 f"合计 {total_used} 人；{shown} 个卡组有人带卡（共 {len(data['items'])} 类）\n"
-                "条形只画 ≥3 人的卡组（长度=该大类带卡率）；≤2 人的："
-                + small_part('主卡', 'main') + "；"
-                + small_part('备牌', 'side') + "；"
-                + small_part('合计', 'total'))
+                "条形只画 ≥3 人的卡组（长度=该大类带卡率，条内数字=玩家数）；≤2 人的见下"
+                + tail)
         return CardReply(text, image_url)
 
     def _card_winrate_reply(self, card_name):
