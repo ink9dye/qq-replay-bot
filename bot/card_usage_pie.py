@@ -89,6 +89,45 @@ def identity_codes(db, code):
     return identity(db, int(code))['codes'] or [int(code)]
 
 
+def _session_key(row):
+    session = row.get('observed_session_id')
+    if session:
+        return (session, tuple(row.get('observed_match_players') or ()))
+    return row.get('digest')
+
+
+def _latest_sessions(views):
+    """每人最近一场的全部局次；分组与排序规则和 latest_views 一致。"""
+    grouped = {}
+    for row in views:
+        grouped.setdefault(str(row['player']).strip(), {}).setdefault(_session_key(row), []).append(row)
+    latest = {}
+    for player, matches in grouped.items():
+        latest[player] = max(
+            matches.values(),
+            key=lambda rows: max((r['recorded_at'], r.get('received_at', 0), r['digest'])
+                                 for r in rows))
+    return latest
+
+
+def _main_copies(db, builds, codes):
+    """这些构筑里该卡在主卡分区的张数；换备换入的牌在第 2/3 局也算 main。"""
+    builds = sorted({b for b in builds if b})
+    if not builds or not codes:
+        return {}
+    marks = ','.join('?' for _ in codes)
+    result = {}
+    for start in range(0, len(builds), 400):
+        chunk = builds[start:start + 400]
+        slots = ','.join('?' for _ in chunk)
+        for row in db.execute(
+                'SELECT build, SUM(copies) AS copies FROM stat_build_cards '
+                f"WHERE partition='main' AND code IN ({marks}) AND build IN ({slots}) "
+                'GROUP BY build', [*codes, *chunk]):
+            result[row['build']] = int(row['copies'] or 0)
+    return result
+
+
 def collect(database, data_dir, now, card_name):
     from .statistics_dashboard import population
     replay_root = Path(database).parent / 'replays'
@@ -98,63 +137,75 @@ def collect(database, data_dir, now, card_name):
         db.execute('BEGIN')
         code, name = resolve_card(data_dir, card_name, db)
         codes = identity_codes(db, code)
-        marks = ','.join('?' for _ in codes)
         # 代表构筑与「单卡流向」/网页/换备同一份：最近一场优先取首局
         # （game_no=1）的主卡组。旧实现按 recorded_at 取最近一局，常常落到
-        # BO3 第 2/3 局的换备构筑，把 Side 换进来的卡算成主卡，于是与
-        # 「单卡流向」的带卡人数对不上（也会漏掉被换出去的卡）。
-        _, latest, people = population(db, replay_root, now)
+        # BO3 第 2/3 局的换备构筑，把 Side 换进来的卡算成主卡。
+        basis, latest, people = population(db, replay_root, now)
+        sessions = _latest_sessions(basis['views'])
+        builds = {row.get('build') for rows in sessions.values() for row in rows}
+        builds |= {(latest.get(person['player']) or {}).get('build') for person in people}
+        copies = _main_copies(db, builds, codes)
         records = []
         for person in people:
             player = person['player']
-            row = latest.get(player)
-            main = side = 0
-            if row and row.get('build'):
-                for count in db.execute(
-                        'SELECT partition, SUM(copies) AS copies FROM stat_build_cards '
-                        f'WHERE build=? AND code IN ({marks}) GROUP BY partition',
-                        [row['build'], *codes]):
-                    if count['partition'] == 'main':
-                        main = int(count['copies'] or 0)
-                    elif count['partition'] == 'side':
-                        side = int(count['copies'] or 0)
+            row = latest.get(player) or {}
+            build = row.get('build')
+            main = copies.get(build, 0) if build else 0
+            side = side_out = 0
+            known = False
+            # 备牌没有直接记录（录像不含备牌表），只能看第 2/3 局相对第 1 局的净换入。
+            games = sessions.get(player) or []
+            first = [r for r in games if r.get('observed_game_no') == 1
+                     and r.get('observed_identity_confirmed') is True]
+            later = [r for r in games if (r.get('observed_game_no') or 0) > 1]
+            if len(first) == 1 and later and first[0].get('build') == build:
+                later_counts = [copies.get(r.get('build'), 0) for r in later]
+                side = max(0, max(later_counts) - main)
+                side_out = max(0, main - min(later_counts))
+                known = True
             records.append(dict(player=player, rank=int(person.get('rank') or 999),
-                                main=main, side=side, total=main + side,
-                                build=(row or {}).get('build'), has_build=bool(row)))
+                                main=main, side=side, side_out=side_out, known=known,
+                                total=main + side, build=build, has_build=bool(row)))
     records.sort(key=lambda item: item['rank'])
     main_dist = {0: 0, 1: 0, 2: 0, 3: 0}
     side_dist = {0: 0, 1: 0, 2: 0, 3: 0}
     total_dist = {0: 0, 1: 0, 2: 0, 3: 0}
     for row in records:
         main_dist[min(row['main'], 3)] += 1
-        side_dist[min(row['side'], 3)] += 1
         total_dist[min(row['total'], 3)] += 1
-    side_available = any(row['side'] for row in records)
+        if row['known']:
+            side_dist[min(row['side'], 3)] += 1
+    known_players = sum(1 for row in records if row['known'])
     return dict(code=code, name=name, records=records,
                 covered=sum(1 for row in records if row['has_build']),
-                current=len(records), side_available=side_available,
+                current=len(records), side_available=known_players > 0,
+                side_known=known_players, side_unknown=len(records) - known_players,
+                side_used=sum(1 for row in records if row['known'] and row['side'] > 0),
                 main_dist=main_dist, side_dist=side_dist, total_dist=total_dist,
                 main_total=sum(row['main'] for row in records),
-                side_total=sum(row['side'] for row in records),
+                side_total=sum(row['side'] for row in records if row['known']),
                 total_total=sum(row['total'] for row in records))
 
 
-def _pie(ax, values, labels, title, colors, prop):
-    labels = [label for label, value in zip(labels, values) if value]
-    values = [value for value in values if value]
-    if not values:
-        values, labels = [1], ['无记录']
-    wedges, texts, autotexts = ax.pie(
-        values, labels=labels, colors=colors, startangle=90, counterclock=False,
+def _pie(ax, items, title, prop):
+    """items=[(label, value, color)]；小切片不再画外部标签，人数写在标题第二行。"""
+    shown = [(label, value, color) for label, value, color in items if value]
+    if not shown:
+        shown = [('无记录', 1, '#D9DEE7')]
+    values = [value for _, value, _ in shown]
+    colors = [color for _, _, color in shown]
+    _wedges, _texts, autotexts = ax.pie(
+        values, labels=None, colors=colors, startangle=90, counterclock=False,
         autopct=lambda pct: f'{pct:.0f}%' if pct >= 4 else '',
-        pctdistance=0.68, labeldistance=1.12,
-        textprops={'fontproperties': prop, 'fontsize': 9} if prop else {'fontsize': 9},
+        pctdistance=0.68,
+        textprops={'fontproperties': prop} if prop is not None else None,
         wedgeprops={'linewidth': 0.8, 'edgecolor': 'white'})
     for text in autotexts:
         text.set_fontsize(9)
         text.set_color('white')
         text.set_fontweight('bold')
-    ax.set_title(title, fontproperties=prop, fontsize=15, pad=12)
+    detail = ' · '.join(f'{label} {value}人' for label, value, _ in shown)
+    ax.set_title(f'{title}\n{detail}', fontproperties=prop, fontsize=13, pad=10)
 
 
 def render(database, data_dir, now, card_name):
@@ -175,28 +226,35 @@ def render(database, data_dir, now, card_name):
     if prop is not None:
         plt.rcParams['font.family'] = prop.get_name()
     plt.rcParams['axes.unicode_minus'] = False
-    colors = ['#AAB5C4', '#4E79A7', '#59A14F', '#E15759', '#B07AA1', '#EDC948']
+    palette = ['#AAB5C4', '#4E79A7', '#59A14F', '#E15759', '#B07AA1']
+    unknown_color = '#D9DEE7'
+    unknown = payload['side_unknown']
 
-    def labels(dist, suffix='张'):
-        return [f'{key}{suffix} {value}人' for key, value in dist.items()]
+    def items(dist):
+        return [(f'{key}张', dist[key], palette[key]) for key in (0, 1, 2, 3)]
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 6.4), dpi=100)
-    _pie(axes[0], [payload['main_dist'][key] for key in (0, 1, 2, 3)],
-         labels(payload['main_dist']), '主卡投入（人数）', colors, prop)
+    _pie(axes[0], items(payload['main_dist']), '主卡投入（人数）', prop)
     if payload['side_available']:
-        _pie(axes[1], [payload['side_dist'][key] for key in (0, 1, 2, 3)],
-             labels(payload['side_dist']), '备牌投入（人数）', colors, prop)
+        side_items = items(payload['side_dist'])
+        total_items = items(payload['total_dist'])
+        if unknown:
+            side_items = side_items + [('未知', unknown, unknown_color)]
+            total_items = total_items + [('未知', unknown, unknown_color)]
+        _pie(axes[1], side_items, '备牌换入（证据，人数）', prop)
+        _pie(axes[2], total_items, '总投入（主卡+换入，人数）', prop)
     else:
-        _pie(axes[1], [payload['current']], ['备牌未知'], '备牌投入（录像无备牌表）',
-             ['#D9DEE7'], prop)
-    _pie(axes[2], [payload['total_dist'][key] for key in (0, 1, 2, 3)],
-         labels(payload['total_dist'], '张'), '总投入（仅主卡，人数）', colors, prop)
+        _pie(axes[1], [('无换备证据', payload['current'], unknown_color)],
+             '备牌换入（暂无证据）', prop)
+        _pie(axes[2], [('无换备证据', payload['current'], unknown_color)],
+             '总投入（暂无证据）', prop)
     fig.suptitle(f"前100使用量 · {payload['name']}（{payload['code']:08d}） · "
                  f"有构筑 {payload['covered']}/{payload['current']} 人",
                  fontproperties=prop, fontsize=20, y=0.99)
-    if not payload['side_available']:
-        fig.text(0.5, 0.015, '录像不含备牌表：备牌图仅占位，备牌未知不等于没人带；总投入=主卡（下界）。',
-                 ha='center', fontproperties=prop, fontsize=11, color='#8A5A00')
+    fig.text(0.5, 0.015,
+             '备牌=最近一场第 2/3 局相对第 1 局的净换入（录像无备牌表：未换入≠没带；'
+             f'有证据 {payload["side_known"]} 人、未知 {unknown} 人）；总投入=主卡+换入（下界）。',
+             ha='center', fontproperties=prop, fontsize=10, color='#8A5A00')
     output = io.BytesIO()
     fig.savefig(output, format='png', dpi=100, bbox_inches='tight', facecolor='white')
     plt.close(fig)
