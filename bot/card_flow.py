@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""前100单卡流向：按卡组大类分别看主卡 / 备牌换入 / 合计的张数分布。"""
+"""前100单卡流向：主卡 / 备牌换入 / 合计 一张三栏图；≤2 人的小卡组用文字描述。"""
 from __future__ import annotations
 
 import io
@@ -9,6 +9,7 @@ from contextlib import closing
 from pathlib import Path
 
 BINS = ('one', 'two', 'three')
+BAR_MIN_PLAYERS = 3  # 少于 3 人的大类不画条形，由消息文本描述
 
 
 def collect_flow(database, data_dir, now, card_name):
@@ -77,11 +78,19 @@ def collect_flow(database, data_dir, now, card_name):
                    key=lambda item: (-item['total']['rate'], -item['total']['used'], item['deck']))
     shown = [item for item in items if item['total']['used'] > 0]
     shown.sort(key=lambda item: (-item['total']['rate'], -item['total']['used'], item['deck']))
-    for item in shown:
-        for key in ('main', 'side', 'total'):
-            bucket = item[key]
-            bucket['rate'] = bucket['used'] / bucket['known'] if bucket['known'] else 0
+    small = {}
+    for key in ('main', 'side', 'total'):
+        small[key] = sorted(
+            [dict(deck=item['deck'], used=item[key]['used'], known=item[key]['known'])
+             for item in shown if item[key]['used'] > 0 and item[key]['known'] < BAR_MIN_PLAYERS],
+            key=lambda row: (-row['used'], row['deck']))
+    bars = {}
+    for key in ('main', 'side', 'total'):
+        bars[key] = [item for item in shown
+                     if item[key]['used'] > 0 and item[key]['known'] >= BAR_MIN_PLAYERS]
+        bars[key].sort(key=lambda item: (-item[key]['rate'], -item[key]['used'], item['deck']))
     return dict(code=code, name=name, items=items, shown=shown, records=records,
+                small=small, bars=bars,
                 covered=sum(1 for row in records if row),
                 current=len(records), total_players=len(people),
                 main_used=sum(1 for row in records if row['main'] > 0),
@@ -101,86 +110,78 @@ def _font():
     return FontProperties(fname=str(path)) if path else None
 
 
-def _panel(payload, shown, key, title, note, prop):
-    """单张图：一个大类一行人，堆叠显示 1/2/3 张及以上。"""
-    import io
+def _short(name, limit=16):
+    return name if len(name) <= limit else name[:limit - 1] + '…'
+
+
+def render_flow(database, data_dir, now, card_name):
+    """一张图三栏：主卡 / 备牌（换入）/ 合计；只画 ≥3 人的卡组。"""
+    payload = collect_flow(database, data_dir, now, card_name)
+    if not payload['shown']:
+        raise ValueError('暂无带卡数据')
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from matplotlib.patches import Patch
 
+    prop = _font()
+    plt.rcParams['axes.unicode_minus'] = False
     colors = {'one': '#4E79A7', 'two': '#EDC948', 'three': '#E15759'}
     labels = {'one': '带1张', 'two': '带2张', 'three': '带3张及以上'}
-    height = max(6.4, 0.5 * len(shown) + 2.8)
-    fig, ax = plt.subplots(figsize=(13.0, height), dpi=100)
-    fig.subplots_adjust(left=0.24, right=0.97, top=0.86, bottom=0.2)
-    positions = list(range(len(shown)))
-    any_value = False
-    for pos, item in zip(positions, shown):
-        bucket = item[key]
-        known = bucket['known']
-        ax.barh(pos, 100, color='#ECEFF3', edgecolor='white', height=0.72)
-        left = 0.0
-        for part in BINS:
-            value = bucket[part] / known * 100 if known else 0
-            if value <= 0:
+    # 行 = 三栏里任何一栏达到「≥3 人且有人带」的卡组，按合计带卡率排序。
+    rows = {}
+    for key in ('main', 'side', 'total'):
+        for item in payload['bars'][key]:
+            rows[item['deck']] = item
+    ordered = sorted(rows.values(),
+                     key=lambda item: (-item['total']['rate'], -item['total']['used'], item['deck']))
+    positions = list(range(len(ordered)))
+    height = max(3.2, 0.42 * max(len(ordered), 1) + 1.9)
+    fig, axes = plt.subplots(1, 3, figsize=(12.2, height), dpi=100, sharey=True)
+    fig.subplots_adjust(left=0.19, right=0.99, top=0.78, bottom=0.24)
+    titles = {'main': f"主卡（确证首局）{payload['main_used']} 人",
+              'side': f"备牌（换入）{payload['side_used']} 人",
+              'total': f"合计（主卡+换入）{payload['total_used']} 人"}
+    for ax, key in zip(axes, ('main', 'side', 'total')):
+        ax.set_title(titles[key], fontproperties=prop, fontsize=12, pad=8)
+        for pos, item in zip(positions, ordered):
+            bucket = item[key]
+            known = bucket['known']
+            enabled = bucket['used'] > 0 and known >= BAR_MIN_PLAYERS
+            ax.barh(pos, 100, color='#ECEFF3', edgecolor='white', height=0.48)
+            if not enabled:
                 continue
-            any_value = True
-            ax.barh(pos, value, left=left, color=colors[part], edgecolor='white', height=0.72)
-            if value >= 6:
-                ax.text(left + value / 2, pos, f'{value:.0f}', ha='center', va='center',
-                        fontsize=9, color='black' if part == 'two' else 'white')
-            left += value
-        ax.text(101.5, pos, f"{bucket['used']}人 · {bucket['rate'] * 100:.0f}%",
-                va='center', ha='left', fontproperties=prop, fontsize=9)
-    if not any_value:
-        ax.text(50, (len(shown) - 1) / 2, '无换入证据', ha='center', va='center',
-                fontproperties=prop, fontsize=15, color='#8A5A00')
-    ax.set_yticks(positions)
-    ax.set_yticklabels(
-        [(item['deck'] if len(item['deck']) <= 18 else item['deck'][:17] + '…')
-         + f" ({item[key]['used']}/{item['players']})" for item in shown],
-        fontproperties=prop, fontsize=10)
-    ax.invert_yaxis()
-    ax.set_xlim(0, 118)
-    ax.set_xlabel('占该大类人数比例（%）', fontproperties=prop, fontsize=10)
-    ax.tick_params(axis='x', labelsize=8)
-    handles = [Patch(facecolor=colors[part], edgecolor='white', label=labels[part])
-               for part in BINS]
+            left = 0.0
+            for part in BINS:
+                value = bucket[part] / known * 100 if known else 0
+                if value <= 0:
+                    continue
+                ax.barh(pos, value, left=left, color=colors[part], edgecolor='white', height=0.48)
+                if value >= 8:
+                    ax.text(left + value / 2, pos, f'{value:.0f}', ha='center', va='center',
+                            fontsize=7.5, color='black' if part == 'two' else 'white')
+                left += value
+        ax.set_xlim(0, 100)
+        ax.tick_params(axis='x', labelsize=7)
+        if not any(item[key]['used'] > 0 and item[key]['known'] >= BAR_MIN_PLAYERS for item in ordered):
+            ax.text(50, (len(ordered) - 1) / 2, '没有 ≥3 人的卡组', ha='center', va='center',
+                    fontproperties=prop, fontsize=11, color='#8A5A00')
+    axes[0].set_yticks(positions)
+    axes[0].set_yticklabels([f"{_short(item['deck'], 13)} ({item['total']['used']}/{item['total']['known']})"
+                             for item in ordered], fontproperties=prop, fontsize=8)
+    axes[0].invert_yaxis()
+    handles = [Patch(facecolor=colors[part], edgecolor='white', label=labels[part]) for part in BINS]
     handles.append(Patch(facecolor='#ECEFF3', edgecolor='white', label='该大类全体（灰底轨）'))
-    ax.legend(handles=handles, loc='lower center', ncol=4, frameon=False,
-              prop=prop, fontsize=9, bbox_to_anchor=(0.5, -0.2))
-    ax.set_title(f"「{payload['name']}」{title}", fontproperties=prop, fontsize=16, pad=12)
-    fig.text(0.5, 0.02, note, ha='center', fontproperties=prop, fontsize=9, color='#555555')
+    fig.legend(handles=handles, loc='lower center', ncol=4, frameon=False, prop=prop, fontsize=8,
+               bbox_to_anchor=(0.5, 0.07))
+    fig.suptitle(f"「{payload['name']}」各大类：主卡 {payload['main_used']} 人 / "
+                 f"备牌换入 {payload['side_used']} 人 / 合计 {payload['total_used']} 人",
+                 fontproperties=prop, fontsize=15, y=0.98)
+    fig.text(0.5, 0.012,
+             f'只画 ≥{BAR_MIN_PLAYERS} 人的卡组（≤{BAR_MIN_PLAYERS - 1} 人的见消息文字）；'
+             '备牌=第 2/3 局相对第 1 局的净换入（未换入≠没带）；分母为各大类有确证首局的人数。',
+             ha='center', fontproperties=prop, fontsize=7.5, color='#555555')
     output = io.BytesIO()
     fig.savefig(output, format='png', dpi=100, bbox_inches='tight', facecolor='white')
     plt.close(fig)
-    return output.getvalue()
-
-
-def render_flow(database, data_dir, now, card_name):
-    """返回三张图：主卡 / 备牌（换入）/ 合计，QQ 端分三条图片发送。"""
-    payload = collect_flow(database, data_dir, now, card_name)
-    shown = payload['shown']
-    if not shown:
-        raise ValueError('暂无带卡数据')
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-
-    prop = _font()
-    plt.rcParams['axes.unicode_minus'] = False
-    shown_count = f'只显示合计有人带卡的 {len(shown)} 个卡组大类（共 {len(payload["items"])} 类）。'
-    parts = {
-        'main': _panel(
-            payload, shown, 'main', f'主卡（确证首局）：{payload["main_used"]} 人',
-            '主卡=每人最近一场确证第 1 局的张数；分母为各大类有确证首局的人数。' + shown_count, prop),
-        'side': _panel(
-            payload, shown, 'side', f'备牌（换入证据）：{payload["side_used"]} 人',
-            '备牌=第 2/3 局相对第 1 局的净换入（录像无备牌表：未换入≠没带）；分母同上。' + shown_count, prop),
-        'total': _panel(
-            payload, shown, 'total', f'合计（主卡+换入）：{payload["total_used"]} 人',
-            '合计=主卡+换入（下界）；分母为各大类有确证首局的人数。' + shown_count, prop),
-    }
-    return parts, payload
-
+    return output.getvalue(), payload

@@ -1858,23 +1858,37 @@ class BotService:
     def _card_flow_reply(self, card_name):
         from .card_flow import render_flow
         try:
-            parts, data = render_flow(self.store.path, self.data_dir, self.clock(), card_name)
+            blob, data = render_flow(self.store.path, self.data_dir, self.clock(), card_name)
         except ValueError as exc:
             return f"单卡流向查询失败：{exc}"
-        urls = ["base64://" + base64.b64encode(parts[key]).decode("ascii")
-                for key in ("main", "side", "total") if parts.get(key)]
+        image_url = "base64://" + base64.b64encode(blob).decode("ascii")
         shown = data.get('shown')
         shown = len(shown) if shown is not None else len(data['items'])
         total_used = data.get('total_used')
         if total_used is None:
             total_used = data.get('used') or 0
+        small = data.get('small') or {}
+
+        def small_part(label, key):
+            rows = small.get(key) or []
+            if not rows:
+                return f"{label} 0"
+            if len(rows) <= 3:
+                names = '、'.join(
+                    f"{(r['deck'] if len(r['deck']) <= 10 else r['deck'][:9] + '…')} {r['used']}/{r['known']}"
+                    for r in rows)
+                return f"{label} {len(rows)} 个（{names}）"
+            return f"{label} {len(rows)} 个 / {sum(r['used'] for r in rows)} 人"
+
         text = (f"前100单卡流向：{data['name']}（{data['code']:08d}）\n"
                 f"有构筑 {data['covered']}/{data.get('total_players') or data['current']} 人；"
                 f"主卡 {data.get('main_used', 0)} 人 / 备牌换入 {data.get('side_used', 0)} 人 / "
-                f"合计 {total_used} 人；显示 {shown} 个卡组大类"
-                f"（共 {len(data['items'])} 类）\n"
-                f"下面 3 张图：主卡 / 备牌（换入）/ 合计") 
-        return CardReply(text, image_urls=urls)
+                f"合计 {total_used} 人；{shown} 个卡组有人带卡（共 {len(data['items'])} 类）\n"
+                "条形只画 ≥3 人的卡组（长度=该大类带卡率）；≤2 人的："
+                + small_part('主卡', 'main') + "；"
+                + small_part('备牌', 'side') + "；"
+                + small_part('合计', 'total'))
+        return CardReply(text, image_url)
 
     def _card_winrate_reply(self, card_name):
         from .card_winrate import collect, message
