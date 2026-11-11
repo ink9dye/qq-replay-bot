@@ -109,3 +109,5 @@
 5. 文档里避免写死过期路径/进程号；以 handoff 顶部和实际 `sha256sum` 为准。
 
 - [卡片模糊查询与合并资料收尾](WRAPUP_CARD_PROFILE_20261111.md)
+
+- [QQ单卡胜率先后攻拆分收尾](WRAPUP_CARD_WINRATE_ORDER_20261111.md)：逐小局分组、真实库验证、部署与回滚。

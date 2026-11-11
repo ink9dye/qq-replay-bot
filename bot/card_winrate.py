@@ -96,7 +96,7 @@ def _basis(db, replay_root, now):
 
 def _compute(database, replay_root, now, code):
     from .card_identity import identity, facts as identity_facts
-    from .card_statistics import matchups
+    from .card_statistics import matchups, _opponent_rows
     with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
                                  uri=True, timeout=5)) as db:
         db.row_factory = sqlite3.Row
@@ -122,9 +122,16 @@ def _compute(database, replay_root, now, code):
         facts = identity_facts(db, codes, 'main', '_card_winrate_selected')
         for row in selected:
             row['copies'] = copies.get(row['build'], 0)
+        opponents = _opponent_rows(db, {row['digest'] for row in selected})
         result = matchups(db, selected, facts, 'main', MATCHUP_LIMIT,
-                          MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES)
-    return dict(card=info['canonical_card'], matchups=result)
+                          MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES, opponents=opponents)
+        # 按每个小局的玩家视角分桶；复用同一份事实和对手，不重查人口或录像。
+        order = {}
+        for label, value in (('first', 1), ('second', 0), ('unknown', None)):
+            subset = [row for row in selected if row.get('first_player') == value]
+            order[label] = matchups(db, subset, facts, 'main', limit=0,
+                                    opponents=opponents)['base']
+    return dict(card=info['canonical_card'], matchups=result, order=order)
 
 
 def collect(database, replay_root, now, card_name):
@@ -147,17 +154,30 @@ def collect(database, replay_root, now, card_name):
 
 
 def message(payload):
-    """纯文字回复：总体使用后胜率 + 对手卡组 Top 5。"""
+    """纯文字回复：总体/先攻/后攻使用后胜率 + 对手卡组 Top 5。"""
     code = int(payload['code'])
     name = payload.get('name') or ('#%d' % code)
     matchups = payload.get('matchups') or {}
     base = matchups.get('base') or {}
     lines = ['前100单卡胜率：%s（%08d）' % (name, code)]
     if base.get('games'):
-        lines.append('使用后胜率 %.1f%%（%d胜/%d负/%d平，共%d局；双方当前前100）' % (
+        lines.append('总体使用后胜率 %.1f%%（%d胜/%d负/%d平，共%d局；双方当前前100）' % (
             base['rate'], base['wins'], base['losses'], base['draws'], base['games']))
     else:
-        lines.append('使用后胜率：暂无有效样本（双方当前前100）')
+        lines.append('总体使用后胜率：暂无有效样本（双方当前前100）')
+    order = payload.get('order') or {}
+    for key, label in (('first', '先攻'), ('second', '后攻')):
+        bucket = order.get(key) or {}
+        if bucket.get('games'):
+            mark = '（样本少）' if bucket['games'] < MATCHUP_MIN_GAMES else ''
+            lines.append('%s使用后胜率 %.1f%%（%d胜/%d负/%d平，共%d局）%s' % (
+                label, bucket['rate'], bucket['wins'], bucket['losses'],
+                bucket['draws'], bucket['games'], mark))
+        else:
+            lines.append('%s使用后胜率：暂无有效样本' % label)
+    unknown = (order.get('unknown') or {}).get('games', 0)
+    if unknown:
+        lines.append('先后攻未知 %d局：仅计入总体。' % unknown)
     rows = matchups.get('rows') or []
     if rows:
         lines.append('对前百卡组最高的%d个（使用后）：' % len(rows))
@@ -169,6 +189,7 @@ def message(payload):
     else:
         lines.append('对前百卡组：暂无达到%d局的对手卡组。' % MATCHUP_FALLBACK_GAMES)
     lines.append('口径：双方当前前100；主卡实际使用且胜负明确；平局计入分母；'
+                 '先后攻按该小局；分组不足10局标样本少；'
                  '每行至少%d局，不足时用%d局以上补足并标注。' % (
                      MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES))
     return '\n'.join(lines)
