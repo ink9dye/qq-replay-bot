@@ -201,6 +201,10 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
         rows=filter_rows(db,rows,state,now)
         diagnostics.update(population='selected_self_and_opponent_rank_ranges',before_rank_range_views=before_range,rank_range_excluded_views=before_range-len(rows))
     diagnostics.update(after_scope_and_internal_views=len(rows),missing_source_views=sum(not alive[r['digest']] for r in rows))
+    # 没有局次信息的录像不进入任何统计：无法判断是第几局，就不能当主卡/换备基准。
+    before_game_no=len(rows)
+    rows=[r for r in rows if isinstance(r.get('observed_game_no'),int) and r['observed_game_no']>0]
+    diagnostics.update(views_without_game_no=before_game_no-len(rows),after_game_no_filter_views=len(rows))
     return dict(roster=state,classification_revision=revision,views=[r for r in rows if alive[r['digest']]],diagnostics=diagnostics,series_reference=series_reference)
 
 

@@ -170,27 +170,27 @@ def collect(database, data_dir, now, card_name):
                                 main_known=main_known, known=side_known,
                                 total=main + side, build=build, has_build=bool(row)))
     records.sort(key=lambda item: item['rank'])
+    # 没有确认首局的录像直接忽略（不进任何分母），只在文案里报人数。
+    valid = [row for row in records if row['main_known']]
+    excluded = len(records) - len(valid)
     main_dist = {0: 0, 1: 0, 2: 0, 3: 0}
     side_dist = {0: 0, 1: 0, 2: 0, 3: 0}
     total_dist = {0: 0, 1: 0, 2: 0, 3: 0}
-    for row in records:
-        if row['main_known']:
-            main_dist[min(row['main'], 3)] += 1
-            total_dist[min(row['total'], 3)] += 1
-        if row['known']:
-            side_dist[min(row['side'], 3)] += 1
-    known_players = sum(1 for row in records if row['known'])
-    main_known_players = sum(1 for row in records if row['main_known'])
-    return dict(code=code, name=name, records=records,
-                covered=sum(1 for row in records if row['has_build']),
-                current=len(records), side_available=known_players > 0,
-                side_known=known_players, side_unknown=len(records) - known_players,
-                main_known=main_known_players, main_unknown=len(records) - main_known_players,
-                side_used=sum(1 for row in records if row['known'] and row['side'] > 0),
+    for row in valid:
+        main_dist[min(row['main'], 3)] += 1
+        total_dist[min(row['total'], 3)] += 1
+        side_dist[min(row['side'], 3)] += 1
+    return dict(code=code, name=name, records=valid,
+                covered=sum(1 for row in valid if row['has_build']),
+                current=len(valid), total_players=len(records), excluded=excluded,
+                side_available=bool(valid),
+                side_known=len(valid), side_unknown=0,
+                main_known=len(valid), main_unknown=0,
+                side_used=sum(1 for row in valid if row['side'] > 0),
                 main_dist=main_dist, side_dist=side_dist, total_dist=total_dist,
-                main_total=sum(row['main'] for row in records if row['main_known']),
-                side_total=sum(row['side'] for row in records if row['known']),
-                total_total=sum(row['total'] for row in records if row['main_known']))
+                main_total=sum(row['main'] for row in valid),
+                side_total=sum(row['side'] for row in valid),
+                total_total=sum(row['total'] for row in valid))
 
 
 def _pie(ax, items, title, prop):

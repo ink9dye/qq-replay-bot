@@ -1863,7 +1863,8 @@ class BotService:
             return f"单卡流向查询失败：{exc}"
         image_url = "base64://" + base64.b64encode(blob).decode("ascii")
         text = (f"前100单卡流向：{data['name']}（{data['code']:08d}）\n"
-                f"有构筑 {data['covered']}/{data['current']} 人；带卡 {data['used']}/100 人；"
+                f"有构筑 {data['covered']}/{data.get('total_players') or data['current']} 人；"
+                f"带卡 {data['used']}/{data['current']} 人；"
                 f"共 {len(data['items'])} 个卡组大类") 
         return CardReply(text, image_url)
 
@@ -1892,8 +1893,12 @@ class BotService:
             side = f"备牌换入 {data['side_total']} 张（≥{data['side_used']} 人）"
         else:
             side = "备牌换入 0 人（未被换入）"
+        total = data.get('total_players') or data['current']
+        excluded = data.get('excluded') or 0
+        head = (f"有构筑 {data['covered']}/{total} 人"
+                + (f"（{excluded} 人无有效首局，已忽略）" if excluded else ""))
         text = (f"前100使用量：{data['name']}（{data['code']:08d}）\n"
-                f"有构筑 {data['covered']}/{data['current']} 人；"
+                f"{head}；"
                 f"主卡 {data['main_total']} 张（{main_known} 人确证首局）；{side}；"
                 f"总投入 {data['total_total']} 张（下界）\n"
                 f"主卡投入人数：" + "，".join(f"{k}张 {v}人" for k, v in data['main_dist'].items()) +

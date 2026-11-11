@@ -14,16 +14,17 @@
 
 ## 1. 选哪一局
 
-默认构筑 = **最新一场比赛的可靠第 1 局**，主卡和额外都取自该局；Side 也以该局为基准。
+默认构筑 = **最近一场有确证首局的比赛的第 1 局**，主卡和额外都取自该局；Side 也以该局为基准。
 
 选择顺序：
 
 1. `stat_evidence` 中有 `capture.session_id` / `game_no` 时，以显式 capture 为准；同一 digest 出现冲突 capture 时视为不可用。
 2. 没有显式 capture 时，只使用 `stat_files -> replay_sessions` 的**唯一**关联；同一 digest 有多个不同 session/game_no 时放弃回退，不按时间猜。
-3. `statistics_population.latest_views` 以 `(session_id, 双方玩家)` 分组，避免不同对局因同名 session 被合并；每组取最新一场，场内优先 `game_no=1`。
-4. 第 1 局缺失、过期、被排除或卡表不完整时，回退到最新有效观测，并把 `observation_kind` 标为 `post_side` / `initial_status_unknown`；**没有唯一首局就不生成 Side 基准**。
+3. `statistics_population.latest_views` 以 `(session_id, 双方玩家)` 分组，避免不同对局因同名 session 被合并；只保留**有确证首局**的场次，取其中最近一场。
+4. **没有局次信息（`game_no` 未知）的视角不进入任何统计**：`top100.eligible_views` 统一丢弃（2026-11-11，线上 892/13,860 = 6.4% 视角被过滤）。一场有效比赛都没有的玩家不计入任何分母。
+5. 第 1 局缺失、过期、被排除或卡表不完整时，该场次同样被忽略（不拿第 2/3 局冒充主卡组，也不按时间猜）；`observation_kind` 只用于展示层说明。
 
-相关代码：`bot/statistics_match_identity.py`、`bot/statistics_population.py`。
+相关代码：`bot/statistics_match_identity.py`、`bot/statistics_population.py`、`bot/top100.py`。
 
 ## 2. Side 怎么推
 

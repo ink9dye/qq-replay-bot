@@ -44,21 +44,22 @@ def collect_flow(database, data_dir, now, card_name):
         for person in people:
             player = person['player']
             row = latest.get(player)
+            if not row or not row.get('build'):
+                # 没有可用首局的场次：按规则忽略，不进任何分母。
+                continue
             main = side = 0
-            if row and row.get('build'):
-                for count in db.execute(
-                        'SELECT partition, SUM(copies) AS copies FROM stat_build_cards '
-                        f'WHERE build=? AND code IN ({marks}) GROUP BY partition',
-                        [row['build'], *codes]):
-                    if count['partition'] == 'main':
-                        main = int(count['copies'] or 0)
-                    elif count['partition'] == 'side':
-                        side = int(count['copies'] or 0)
+            for count in db.execute(
+                    'SELECT partition, SUM(copies) AS copies FROM stat_build_cards '
+                    f'WHERE build=? AND code IN ({marks}) GROUP BY partition',
+                    [row['build'], *codes]):
+                if count['partition'] == 'main':
+                    main = int(count['copies'] or 0)
+                elif count['partition'] == 'side':
+                    side = int(count['copies'] or 0)
             total = min(3, main + side)
             deck = person.get('deck_type') or '未分类'
             records.append(dict(player=player, rank=person.get('rank'), deck=deck,
-                                copies=total, main=main, side=side,
-                                has_build=bool(row)))
+                                copies=total, main=main, side=side, has_build=True))
     groups = {}
     for row in records:
         group = groups.setdefault(row['deck'], dict(deck=row['deck'], total=0, one=0, two=0, three=0, used=0))
@@ -78,7 +79,8 @@ def collect_flow(database, data_dir, now, card_name):
     items.sort(key=lambda item: (-item['rate'], -item['total'], item['deck']))
     return dict(code=code, name=name, items=items, records=records,
                 covered=sum(1 for row in records if row['has_build']),
-                current=len(records), used=sum(1 for row in records if row['copies'] > 0))
+                current=len(records), total_players=len(people),
+                used=sum(1 for row in records if row['copies'] > 0))
 
 
 def _font():
