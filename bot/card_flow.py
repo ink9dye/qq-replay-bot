@@ -152,14 +152,14 @@ def render_flow(database, data_dir, now, card_name):
 
     # ---- 尺寸（英寸）----
     max_name = max((len(item['deck']) for item in ordered), default=6)
-    side_in = min(5.9, 0.115 * max_name + 1.15)
-    panel_in = 2.35
-    gap_in = 0.12
-    title_in = 0.90
-    chart_in = max(2.0, 0.40 * max(len(ordered), 1) + 0.85)
-    legend_in = 0.62
-    text_in = 0.155 * len(lines) + (0.28 if lines else 0.0)
-    note_in = 0.30
+    side_in = min(7.2, 0.14 * max_name + 1.2)
+    panel_in = 3.25
+    gap_in = 0.18
+    title_in = 1.10
+    chart_in = max(2.6, 0.55 * max(len(ordered), 1) + 1.10)
+    legend_in = 0.78
+    text_in = 0.19 * len(lines) + (0.40 if lines else 0.0)
+    note_in = 0.44
     width = 3 * panel_in + 2 * gap_in + 2 * side_in
     height = title_in + chart_in + legend_in + text_in + note_in
     fig = plt.figure(figsize=(width, height), dpi=100)
@@ -173,11 +173,15 @@ def render_flow(database, data_dir, now, card_name):
     axes = [fig.add_axes([left + index * (panel_w + gap), bottom, panel_w, top - bottom])
             for index in range(3)]
 
-    titles = {'main': f"主卡（确证首局）{payload['main_used']} 人",
-              'side': f"备牌（换入）{payload['side_used']} 人",
-              'total': f"合计（主卡+换入）{payload['total_used']} 人"}
+    def in_chart(key):
+        return sum(item[key]['used'] for item in ordered
+                   if item[key]['used'] > 0 and item[key]['known'] >= BAR_MIN_PLAYERS)
+
+    titles = {'main': f"主卡（确证首局）{payload['main_used']} 人 · 图内 {in_chart('main')} 人",
+              'side': f"备牌（换入）{payload['side_used']} 人 · 图内 {in_chart('side')} 人",
+              'total': f"合计（主卡+换入）{payload['total_used']} 人 · 图内 {in_chart('total')} 人"}
     for ax, key in zip(axes, ('main', 'side', 'total')):
-        ax.set_title(titles[key], fontproperties=prop, fontsize=12, pad=8)
+        ax.set_title(titles[key], fontproperties=prop, fontsize=13, pad=10)
         for pos, item in zip(positions, ordered):
             bucket = item[key]
             known = bucket['known']
@@ -193,11 +197,11 @@ def render_flow(database, data_dir, now, card_name):
                 ax.barh(pos, span, left=start, color=colors[part], edgecolor='white', height=0.48)
                 if span >= 9:
                     ax.text(start + span / 2, pos, f'{count}人', ha='center', va='center',
-                            fontproperties=prop, fontsize=7,
+                            fontproperties=prop, fontsize=8.5,
                             color='black' if part == 'two' else 'white')
                 start += span
         ax.set_xlim(0, 100)
-        ax.tick_params(axis='x', labelsize=7)
+        ax.tick_params(axis='x', labelsize=8.5)
         if not any(item[key]['used'] > 0 and item[key]['known'] >= BAR_MIN_PLAYERS for item in ordered):
             ax.text(0.5, 0.97, '这一栏没有 ≥3 人的卡组', transform=ax.transAxes, ha='center', va='top',
                     fontproperties=prop, fontsize=9, color='#8A5A00')
@@ -205,32 +209,32 @@ def render_flow(database, data_dir, now, card_name):
     tick_labels = [f"{item['deck']} ({item['total']['used']}/{item['total']['known']})"
                    for item in ordered]
     axes[0].set_yticks(positions)
-    axes[0].set_yticklabels(tick_labels, fontproperties=prop, fontsize=7.5)
+    axes[0].set_yticklabels(tick_labels, fontproperties=prop, fontsize=9)
     for ax in axes:
         ax.set_ylim(len(ordered) - 0.5, -0.5)
     axes[1].tick_params(axis='y', labelleft=False)
     axes[2].yaxis.set_ticks_position('right')
     axes[2].yaxis.set_label_position('right')
     axes[2].set_yticks(positions)
-    axes[2].set_yticklabels(tick_labels, fontproperties=prop, fontsize=7.5)
+    axes[2].set_yticklabels(tick_labels, fontproperties=prop, fontsize=9)
     axes[2].tick_params(axis='y', pad=4)
 
     handles = [Patch(facecolor=colors[part], edgecolor='white', label=labels[part]) for part in BINS]
     handles.append(Patch(facecolor='#ECEFF3', edgecolor='white', label='该大类全体（灰底轨）'))
-    fig.legend(handles=handles, loc='center', ncol=4, frameon=False, prop=prop, fontsize=8,
+    fig.legend(handles=handles, loc='center', ncol=4, frameon=False, prop=prop, fontsize=9.5,
                bbox_to_anchor=(0.5, bottom - 0.80 * legend_in / height))
     fig.suptitle(f"「{payload['name']}」各大类：主卡 {payload['main_used']} 人 / "
                  f"备牌换入 {payload['side_used']} 人 / 合计 {payload['total_used']} 人",
-                 fontproperties=prop, fontsize=15, y=1 - 0.16 / height)
+                 fontproperties=prop, fontsize=17, y=1 - 0.18 / height)
     if lines:
         header = f"≤{BAR_MIN_PLAYERS - 1} 人卡组（{len(lines)} 个，全列；括号=有该张数的玩家数/该卡组人数）："
         fig.text(0.006, (note_in + text_in - 0.02) / height, "\n".join([header] + lines),
-                 ha='left', va='top', fontproperties=prop, fontsize=7.2, linespacing=1.3,
+                 ha='left', va='top', fontproperties=prop, fontsize=9.0, linespacing=1.35,
                  color='#222222')
     fig.text(0.5, 0.006,
              f'条形只画 ≥{BAR_MIN_PLAYERS} 人的卡组（长度=该大类带卡率，条内=玩家数）；'
              '备牌=第 2/3 局相对第 1 局的净换入（未换入≠没带）；分母为各大类有确证首局的人数。',
-             ha='center', fontproperties=prop, fontsize=7, color='#555555')
+             ha='center', fontproperties=prop, fontsize=8.5, color='#555555')
     output = io.BytesIO()
     fig.savefig(output, format='png', dpi=100, facecolor='white')
     plt.close(fig)
