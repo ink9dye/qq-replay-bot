@@ -1858,10 +1858,10 @@ class BotService:
     def _card_flow_reply(self, card_name):
         from .card_flow import render_flow
         try:
-            blob, data = render_flow(self.store.path, self.data_dir, self.clock(), card_name)
+            pages, data = render_flow(self.store.path, self.data_dir, self.clock(), card_name)
         except ValueError as exc:
             return f"单卡流向查询失败：{exc}"
-        image_url = "base64://" + base64.b64encode(blob).decode("ascii")
+        image_urls = ["base64://" + base64.b64encode(page).decode("ascii") for page in pages]
         shown = data.get('shown')
         shown = len(shown) if shown is not None else len(data['items'])
         total_used = data.get('total_used')
@@ -1872,9 +1872,9 @@ class BotService:
                 f"有构筑 {data['covered']}/{data.get('total_players') or data['current']} 人；"
                 f"主卡 {data.get('main_used', 0)} 人 / 备牌换入 {data.get('side_used', 0)} 人 / "
                 f"合计 {total_used} 人；{shown} 个卡组有人带卡（共 {len(data['items'])} 类）\n"
-                f"图上方：≥3 人的卡组（条内=玩家数）；图下方：≤2 人卡组全列（{len(small)} 个，"
-                f"含主卡/side/合计三档人数）")
-        return CardReply(text, image_url)
+                f"共 {len(pages)} 张：先看≥3人卡组条形，再看≤2人卡组明细（{len(small)} 个，全列）；"
+                f"主卡/换入/合计均保留，条内数字为人数。")
+        return CardReply(text, image_urls=image_urls)
 
     def _card_winrate_reply(self, card_name):
         from .card_winrate import collect, message
@@ -2472,4 +2472,5 @@ def load_bot_config(path: Path) -> dict:
     if not isinstance(raw, dict):
         raise RuntimeError("配置文件必须是一个 JSON 对象")
     return {key: value for key, value in raw.items() if not str(key).startswith("_")}
+
 
