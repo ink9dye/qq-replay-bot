@@ -259,7 +259,9 @@ class CardSearch:
             reply = self._detail(card)
             extra = '\n'.join(lines)
             if note:extra += ('\n' if extra else '')+note
-            return CardReply(str(reply)+'\n\n'+extra, reply.image_url)
+            result = CardReply(str(reply)+'\n\n'+extra, reply.image_url)
+            result.selected_card = card
+            return result
 
     @staticmethod
     def _fetch(path):
@@ -371,7 +373,9 @@ class CardSearch:
         if block:
             lines.append("\n".join(block))
         lines.append(f"百鸽：https://ygocdb.com/card/{card_id}")
-        return CardReply("\n\n".join(lines), card_image_payload(card_id, self.data_dir))
+        reply = CardReply("\n\n".join(lines), card_image_payload(card_id, self.data_dir))
+        reply.selected_card = card
+        return reply
 
     def _pendulum_scale(self, card_id):
         """从本地 YGOPro 文本里取灵摆刻度；没有本地库时返回 None。"""
@@ -393,17 +397,28 @@ class CardSearch:
             moment = self.clock() if now is None else now
             return moment - session["time"] < max_age
 
-    def handle(self, user, action, value=""):
+    def handle(self, user, action, value="", purpose=None):
         # handle_text 在线程中执行；保护候选和缓存，避免同一用户并发串页。
         with self.lock:
+            user = str(user)
+            if action == "search":
+                self.sessions.pop(user, None)
+            else:
+                purpose = (self.sessions.get(user) or {}).get("purpose")
             try:
-                return self._handle(str(user), action, value)
+                reply = self._handle(user, action, value)
             except OSError:
                 if action == "search":
-                    return self._local_search(value, user)
-                return "查卡接口暂时连不上，请稍后重试。"
+                    reply = self._local_search(value, user)
+                else:
+                    return "查卡接口暂时连不上，请稍后重试。"
             except (ValueError, KeyError, TypeError):
                 return "查卡暂时失败：数据不是合法 JSON 或格式异常，请稍后重试。"
+            if user in self.sessions:
+                self.sessions[user]["purpose"] = purpose
+            if getattr(reply, "selected_card", None):
+                reply.purpose = purpose
+            return reply
 
     def _handle(self, user, action, value):
         now = self.clock()

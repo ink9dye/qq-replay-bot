@@ -61,6 +61,10 @@ def resolve_card(data_dir, query, db=None):
     wanted = normalize(query)
     if not wanted:
         raise ValueError('卡名不能为空')
+    if wanted.isdigit() and 0 < int(wanted) <= 4294967295:
+        code = int(wanted)
+        info = _card_index(data_dir).get(str(code)) or {}
+        return code, str(info.get('cn_name') or ('#%d' % code))
     exact, loose = [], []
     for info in _card_index(data_dir).values():
         names = [info.get(key) for key in ('cn_name', 'sc_name', 'md_name', 'nwbbs_n', 'cnocg_n')]

@@ -231,6 +231,11 @@ def parse_command(text: str) -> dict:
         if rest:
             return {"op": "error", "message": "直接发送“前百饼图”即可。"}
         return {"op": "top100_pie"}
+    if head == "卡片":
+        name = " ".join(rest).strip()
+        if not name or len(name) > 100:
+            return {"op": "error", "message": "格式：卡片 关键词（最多100字），例如：卡片 灰流丽"}
+        return {"op": "card_profile", "name": name}
     if head == "使用量":
         name = " ".join(rest).strip()
         if not name:

@@ -90,6 +90,9 @@ class ManualClock:
 # 慢命令先回一句“正在…”，结果再单独发：和既有“构筑图生成中”“历史查询中”“查价中”
 # 保持一致的体验。只给确实要等几秒以上的命令加，避免每条指令都刷屏。
 SLOW_COMMAND_HINTS = {
+    "card_profile": "卡片资料读取中，完成后合并为一条聊天记录。",
+    "card_select": "卡片读取中，完成后把结果发到这里。",
+    "card_next": "正在读取下一页卡片候选。",
     "stats_page": "正在生成统计链接，约几秒…",
     "replays": "正在读取录像目录，约几秒…",
     "top100_pie": "前百饼图生成中，约几秒…",
@@ -695,11 +698,11 @@ class BotService:
         if op in ("random", "guess_start", "guess_answer", "guess_reveal", "limits_card", "limits_table"):
             return self.card_extras.handle(conversation or user, op, command.get("value", ""))
         if op in ("card_select", "card_next"):
-            return self.card_search.handle((conversation + ":" + user) if conversation else user,
+            return self._card_query_reply((conversation + ":" + user) if conversation else user,
                                            "select" if op == "card_select" else "next",
                                            command.get("index", ""))
         if op == "card_search":
-            return self.card_search.handle((conversation + ":" + user) if conversation else user, "search", command["query"])
+            return self._card_query_reply((conversation + ":" + user) if conversation else user, "search", command["query"])
         if op == "top100_rank_build":
             return self._top100_rank_build_text(user, command["rank"])
         if op == "top100_deck":
@@ -708,12 +711,9 @@ class BotService:
             return self._top100_pie_reply()
         if op == "ocg_pie":
             return self.ocg_pie.reply()
-        if op == "card_usage":
-            return self._card_usage_reply(command["name"])
-        if op == "card_flow":
-            return self._card_flow_reply(command["name"])
-        if op == "card_winrate":
-            return self._card_winrate_reply(command["name"])
+        if op in ("card_usage", "card_flow", "card_winrate", "card_profile"):
+            return self._card_query_reply((conversation + ":" + user) if conversation else user,
+                                          "search", command["name"], purpose=op)
         if op == "price_quote":
             return self._price_quote_blocking(command)
 
@@ -830,9 +830,9 @@ class BotService:
             session_key = (conversation + ":" + user) if conversation else user
             if self.card_search.has_candidates(session_key, max_age=120):
                 if answer.isascii() and answer.isdigit() and len(answer) <= 4:
-                    return self.card_search.handle(session_key, 'select', answer)
+                    return self._card_query_reply(session_key, 'select', answer)
                 if answer.casefold() == 'next':
-                    return self.card_search.handle(session_key, 'next')
+                    return self._card_query_reply(session_key, 'next')
             player = command.get("text") or ""
             if self.store.get_subscription(user, player):
                 return self._replay_text(user, player)
@@ -1613,6 +1613,10 @@ class BotService:
             task.add_done_callback(self._price_quote_tasks.discard)
             return
         hint = SLOW_COMMAND_HINTS.get(parsed_command.get('op'))
+        if not hint and (text.strip().isdigit() or text.strip().casefold() == 'next'):
+            session_key = (conversation + ':' + str(user_id)) if conversation else str(user_id)
+            if self.card_search.has_candidates(session_key, max_age=120):
+                hint = "卡片读取中，完成后把结果发到这里。"
         if hint and self.authorized(user_id) and (
                 parsed_command.get('op') != 'stats_page'
                 or self._statistics_allowed(user_id, conversation)):
@@ -1855,6 +1859,33 @@ class BotService:
             return reply
         return reply
 
+    def _card_query_reply(self, session_key, action, value="", purpose=None):
+        from .card_search import card_name
+        reply = self.card_search.handle(session_key, action, value, purpose=purpose)
+        card = getattr(reply, 'selected_card', None)
+        purpose = getattr(reply, 'purpose', None)
+        if not card or not purpose:
+            return reply
+        code = str(int(card['id']))
+        handlers = (('使用量', 'card_usage', self._card_usage_reply),
+                    ('单卡流向', 'card_flow', self._card_flow_reply),
+                    ('单卡胜率', 'card_winrate', self._card_winrate_reply))
+        if purpose != 'card_profile':
+            return next(handler(code) for _, op, handler in handlers if op == purpose)
+        sections = [{'text': f"卡片：{card_name(card)}（{int(code):08d}）\n卡片详情、使用量、单卡流向、单卡胜率。"},
+                    {'text': '【卡片详情】\n' + str(reply), 'images': reply.image_urls}]
+        for title, _, handler in handlers:
+            try:
+                result = handler(code)
+                sections.append({'text': f'【{title}】\n{result}',
+                                 'images': list(getattr(result, 'image_urls', None) or [])})
+            except Exception as exc:
+                self.write_log(f"卡片资料 {title} 读取失败：{type(exc).__name__}: {exc}")
+                sections.append({'text': f'【{title}】读取失败，请稍后单独查询。'})
+        result = CardReply('\n\n'.join(node['text'] for node in sections))
+        result.forward_cards = sections
+        return result
+
     def _card_flow_reply(self, card_name):
         from .card_flow import render_flow
         try:
@@ -2058,7 +2089,9 @@ class BotService:
     async def _slow_text_job(self, user_id, text, conversation, receiver, send, forward=None, self_id=None):
         """先回一句“正在…”，再在后台跑慢命令；结果（含合并转发卡片）单独发。"""
         try:
-            if parse_command(text).get('op') in ('top100_deck', 'top100_pie', 'card_usage', 'card_flow', 'card_winrate'):
+            if (parse_command(text).get('op') in ('top100_deck', 'top100_pie', 'card_usage', 'card_flow', 'card_winrate',
+                                                'card_profile', 'card_select', 'card_next')
+                    or text.strip().isdigit() or text.strip().casefold() == 'next'):
                 async with self._statistics_queue_lock():
                     reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
             else:
@@ -2078,8 +2111,17 @@ class BotService:
                     await send(receiver, page)
                 return
             pages = getattr(reply, 'forward_cards', None)
-            if pages and forward is not None and await forward(receiver, pages, self_id):
-                return
+            if pages:
+                try:
+                    if forward is not None and await forward(receiver, pages, self_id):
+                        return
+                except Exception as exc:
+                    self.write_log(f"合并转发失败：{type(exc).__name__}: {exc}")
+                if all(isinstance(node, dict) for node in pages):
+                    for node in pages:
+                        await send(receiver, CardReply(node.get('text') or '',
+                                                       image_urls=node.get('images') or []))
+                    return
             await send(receiver, str(reply) if pages else reply)
         except Exception as exc:
             self.write_log(f"慢命令结果发送失败：{exc}")
