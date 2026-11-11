@@ -1868,12 +1868,15 @@ class BotService:
         if total_used is None:
             total_used = data.get('used') or 0
         small = data.get('small_groups') or []
+        if len(pages) == 2:
+            pages_text = f"共 2 张：第 1 张 ≥3 人卡组条形，第 2 张 ≤2 人卡组明细（{len(small)} 个，全列）"
+        else:
+            pages_text = "共 1 张：≥3 人卡组的条形（没有 ≤2 人卡组需要列）"
         text = (f"前100单卡流向：{data['name']}（{data['code']:08d}）\n"
                 f"有构筑 {data['covered']}/{data.get('total_players') or data['current']} 人；"
                 f"主卡 {data.get('main_used', 0)} 人 / 备牌换入 {data.get('side_used', 0)} 人 / "
                 f"合计 {total_used} 人；{shown} 个卡组有人带卡（共 {len(data['items'])} 类）\n"
-                f"共 {len(pages)} 张：先看≥3人卡组条形，再看≤2人卡组明细（{len(small)} 个，全列）；"
-                f"主卡/换入/合计均保留，条内数字为人数。")
+                f"{pages_text}；主卡/换入/合计均保留，条内数字为人数。")
         return CardReply(text, image_urls=image_urls)
 
     def _card_winrate_reply(self, card_name):

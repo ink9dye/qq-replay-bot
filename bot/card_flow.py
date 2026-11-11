@@ -127,126 +127,184 @@ def _group_line(group):
             + _bucket_text(group['total'], '合计'))
 
 
+
+
+def _font_file():
+    prop = _font()
+    if prop is None:
+        raise ValueError('缺少中文字体，无法生成单卡流向图')
+    return prop.get_file()
+
+
+SIZES = dict(title=44, sub=30, section=28, name=30, body=24, cell=23, foot=22)
+
+
+def _fonts():
+    from PIL import ImageFont
+    path = _font_file()
+    return {key: ImageFont.truetype(path, size) for key, size in SIZES.items()}
+
+
+def _wrap(draw, text, font, width):
+    lines, line = [], ''
+    for char in str(text):
+        if line and draw.textlength(line + char, font=font) > width:
+            lines.append(line)
+            line = ''
+        line += char
+    return lines + [line] if line else lines
+
+
+def _cell(bucket):
+    if not bucket or not bucket.get('known'):
+        return '无证据'
+    bits = [f'{copies}张×{bucket[key]}人' for copies, key in ((1, 'one'), (2, 'two'), (3, 'three'))
+            if bucket.get(key)]
+    return ('、'.join(bits) if bits else '0人') + f" /{bucket['known']}"
+
+
+BOX_COLORS = ('#4E79A7', '#EDC948', '#E15759')
+INK, MUTED, RULE = '#172B4D', '#52647A', '#DDE5EE'
+PAGE_W, MARGIN = 1500, 32
+
+
+def _chart_image(payload, groups, fonts):
+    from PIL import Image, ImageDraw
+
+    width = PAGE_W
+    measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
+    blocks = []
+    for group in groups:
+        names = _wrap(measure, group['deck'], fonts['name'], width - 2 * MARGIN)
+        height = len(names) * 40 + 3 * 50 + 24
+        blocks.append((group, names, height))
+    header = 52 + 44 + 44 + 56
+    footer = 96
+    height = header + sum(block[2] for block in blocks) + footer
+    image = Image.new('RGB', (width, height), '#FFFFFF')
+    draw = ImageDraw.Draw(image)
+
+    def text(x, y, value, font='body', fill=INK):
+        draw.text((x, y), str(value), font=fonts[font], fill=fill)
+
+    y = 18
+    for line in _wrap(draw, f"「{payload['name']}」单卡流向", fonts['title'], width - 2 * MARGIN):
+        text(MARGIN, y, line, 'title')
+        y += 52
+    text(MARGIN, y, f"主卡 {payload['main_used']} 人 · 备牌换入 {payload['side_used']} 人 · "
+                    f"合计 {payload['total_used']} 人", 'sub')
+    y += 44
+    text(MARGIN, y, f"≥3 人的卡组：条形长度=该卡组带卡率，条内数字=人数（{len(groups)} 个）", 'section', MUTED)
+    y += 40
+    for index, label in enumerate(('1张', '2张', '3张及以上')):
+        x = MARGIN + index * 210
+        draw.rectangle((x, y + 6, x + 24, y + 30), fill=BOX_COLORS[index])
+        text(x + 34, y + 2, label, 'cell', MUTED)
+    y = header
+    bar_x0, bar_x1 = MARGIN + 120, width - MARGIN - 210
+    for group, names, block_height in blocks:
+        draw.line((MARGIN, y - 10, width - MARGIN, y - 10), fill=RULE, width=2)
+        for line in names:
+            text(MARGIN, y, line, 'name')
+            y += 40
+        for row, key in enumerate(('main', 'side', 'total')):
+            bucket = group[key]
+            label = ('主卡', '换入', '合计')[row]
+            text(MARGIN, y + 8, label, 'body', MUTED)
+            by = y + 6
+            draw.rectangle((bar_x0, by, bar_x1, by + 34), fill='#E9EEF4')
+            left = float(bar_x0)
+            known = bucket['known']
+            for part, color in zip(('one', 'two', 'three'), BOX_COLORS):
+                count = bucket[part]
+                if not count or not known:
+                    continue
+                span = (bar_x1 - bar_x0) * count / known
+                draw.rectangle((round(left), by, round(left + span), by + 34), fill=color)
+                if span >= 40:
+                    value = str(count)
+                    tw = draw.textlength(value, font=fonts['cell'])
+                    text(left + (span - tw) / 2, by + 2, value, 'cell',
+                         '#172B4D' if part == 'two' else '#FFFFFF')
+                left += span
+            status = f"{bucket['used']}/{known}人" if known else '无证据'
+            text(bar_x1 + 16, y + 8, status, 'cell', MUTED)
+            y += 50
+        y += 24
+    text(MARGIN, height - footer + 24, '主卡=确证首局；换入=第2/3局相对首局净增；未换入≠没带', 'foot', MUTED)
+    text(MARGIN, height - footer + 58, '条形只画 ≥3 人的卡组；≤2 人的见下一张明细', 'foot', MUTED)
+    return image
+
+
+def _detail_image(payload, groups, fonts):
+    from PIL import Image, ImageDraw
+
+    width = PAGE_W
+    measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
+    name_w = 660
+    cell_w = (width - 2 * MARGIN - name_w) // 3
+    rows = []
+    for group in groups:
+        names = _wrap(measure, group['deck'], fonts['name'], name_w - 12)
+        cells = []
+        for key in ('main', 'side', 'total'):
+            cells.append(_wrap(measure, _cell(group[key]), fonts['cell'], cell_w - 12))
+        rows.append((names, cells, max(len(names), *(len(c) for c in cells))))
+    header = 52 + 44 + 44 + 56
+    footer = 96
+    height = header + sum(rows_i[2] * 36 + 18 for rows_i in rows) + footer
+    image = Image.new('RGB', (width, height), '#FFFFFF')
+    draw = ImageDraw.Draw(image)
+
+    def text(x, y, value, font='body', fill=INK):
+        draw.text((x, y), str(value), font=fonts[font], fill=fill)
+
+    y = 18
+    for line in _wrap(draw, f"「{payload['name']}」单卡流向 · 明细", fonts['title'], width - 2 * MARGIN):
+        text(MARGIN, y, line, 'title')
+        y += 52
+    text(MARGIN, y, f"主卡 {payload['main_used']} 人 · 备牌换入 {payload['side_used']} 人 · "
+                    f"合计 {payload['total_used']} 人", 'sub')
+    y += 44
+    text(MARGIN, y, f"≤2 人的卡组：全部 {len(groups)} 个，逐组列出（张数×人数 / 该组人数）", 'section', MUTED)
+    y += 44
+    text(MARGIN, y, '卡组', 'cell', MUTED)
+    for index, label in enumerate(('主卡', '换入', '合计')):
+        text(MARGIN + name_w + index * cell_w, y, label, 'cell', MUTED)
+    y = header
+    for names, cells, line_count in rows:
+        draw.line((MARGIN, y - 8, width - MARGIN, y - 8), fill=RULE, width=2)
+        for index, line in enumerate(names):
+            text(MARGIN, y + index * 36, line, 'name')
+        for index, cell in enumerate(cells):
+            for row, line in enumerate(cell):
+                text(MARGIN + name_w + index * cell_w, y + row * 36, line, 'cell')
+        y += line_count * 36 + 18
+    text(MARGIN, height - footer + 24, '主卡=确证首局；换入=第2/3局相对首局净增；未换入≠没带', 'foot', MUTED)
+    text(MARGIN, height - footer + 58, '合计=主卡+换入（下界）；括号里的分母=该卡组人数', 'foot', MUTED)
+    return image
+
+
 def render_flow(database, data_dir, now, card_name):
-    """固定窄版分页，保持全部卡组、分布及原统计口径。"""
+    """最多两张图：≥3 人卡组的条形图 + ≤2 人卡组的全量明细表。"""
+    import io
+
     payload = collect_flow(database, data_dir, now, card_name)
-    return render_flow_pages(payload), payload
-
-
-def render_flow_pages(payload):
-    from PIL import Image, ImageDraw, ImageFont
-
     if not payload['shown']:
         raise ValueError('暂无带卡数据')
-    font_path = _font()
-    if font_path is None:
-        raise ValueError('缺少中文字体，无法生成单卡流向图')
-    fonts = {size: ImageFont.truetype(font_path.get_file(), size) for size in (23, 25, 28, 34)}
-    width, limit, margin = 720, 840, 24
-    colors = ('#4E79A7', '#EDC948', '#E15759')
-    ink, muted = '#172B4D', '#52647A'
-    measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
-
-    def wrap(text, size, available):
-        lines, line = [], ''
-        for char in str(text):
-            if line and measure.textlength(line + char, font=fonts[size]) > available:
-                lines.append(line)
-                line = ''
-            line += char
-        return lines + [line]
-
-    def bucket_text(bucket):
-        if not bucket.get('known'):
-            return '无证据'
-        bits = [f'{n}张×{bucket[k]}人' for n, k in enumerate(BINS, 1) if bucket[k]]
-        return '、'.join(bits) if bits else '0人'
-
-    # 分页只作用于展示；不修改 collect_flow 的分组、顺序或分母。
-    chart = [item for item in payload['shown'] if item['total']['known'] >= BAR_MIN_PLAYERS]
-    sections = []
-    for kind, groups in (('chart', chart), ('detail', payload['small_groups'])):
-        blocks = []
-        for group in groups:
-            names = wrap(group['deck'], 28, width - 2 * margin)
-            cells = [wrap(bucket_text(group[k]) + f" /{group[k]['known']}", 25, 208) for k in ('main', 'side', 'total')]
-            block_height = len(names) * 36 + (132 if kind == 'chart' else 32 * max(map(len, cells))) + 22
-            blocks.append((group, names, cells, block_height))
-        page, used = [], 0
-        for block in blocks:
-            if page and used + block[3] > limit - 230:
-                sections.append((kind, page))
-                page, used = [], 0
-            page.append(block)
-            used += block[3]
-        if page:
-            sections.append((kind, page))
-
-    output = []
-    for page_no, (kind, blocks) in enumerate(sections, 1):
-        title = wrap(payload['name'], 34, width - 2 * margin)
-        header_height = 134 + 42 * len(title)
-        height = header_height + sum(b[3] for b in blocks) + 66
-        image = Image.new('RGB', (width, height), '#FFFFFF')
-        draw = ImageDraw.Draw(image)
-
-        def text(x, y, value, size=25, fill=ink):
-            draw.text((x, y), str(value), font=fonts[size], fill=fill)
-
-        y = 14
-        for line in title:
-            text(margin, y, line, 34)
-            y += 42
-        text(margin, y, f"主卡 {payload['main_used']}人 · 换入 {payload['side_used']}人 · 合计 {payload['total_used']}人", 25)
-        y += 36
-        section = '≥3人卡组 · 条长=带卡比例' if kind == 'chart' else '≤2人卡组 · 全部明细'
-        text(margin, y, f'{section}    {page_no}/{len(sections)}', 23, muted)
-        y += 36
-        if kind == 'chart':
-            for index, label in enumerate(('1张', '2张', '3张及以上')):
-                x = margin + index * 208
-                draw.rectangle((x, y + 5, x + 20, y + 23), fill=colors[index])
-                text(x + 30, y, label, 23, muted)
-        else:
-            for i, label in enumerate(('主卡', '换入', '合计')):
-                text(margin + i * 224, y, label + '（/分母）', 23, muted)
-        y = header_height
-        for group, names, cells, block_height in blocks:
-            start = y
-            draw.line((margin, y - 8, width - margin, y - 8), fill='#DDE5EE', width=2)
-            for line in names:
-                text(margin, y, line, 28)
-                y += 36
-            if kind == 'chart':
-                for key, label in (('main', '主卡'), ('side', '换入'), ('total', '合计')):
-                    bucket = group[key]
-                    text(margin, y, label, 25, muted)
-                    x0, x1 = 94, 552
-                    draw.rectangle((x0, y + 3, x1, y + 34), fill='#E9EEF4')
-                    left = float(x0)
-                    for part, color in zip(BINS, colors):
-                        count = bucket[part]
-                        span = (x1 - x0) * count / bucket['known'] if bucket['known'] else 0
-                        if span:
-                            draw.rectangle((round(left), y + 3, round(left + span), y + 34), fill=color)
-                            if span >= 34:
-                                value = str(count)
-                                tw = measure.textlength(value, font=fonts[23])
-                                text(left + (span - tw) / 2, y + 1, value, 23,
-                                     '#172B4D' if part == 'two' else '#FFFFFF')
-                            left += span
-                    status = f"{bucket['used']}/{bucket['known']}人" if bucket['known'] else '无证据'
-                    text(566, y, status, 23, muted)
-                    y += 42
-            else:
-                for i, (key, label) in enumerate((('main', '主卡'), ('side', '换入'), ('total', '合计'))):
-                    x = margin + i * 224
-                    for j, line in enumerate(cells[i]):
-                        text(x, y + j * 32, line, 25)
-            y = start + block_height
-        text(margin, height - 60, '主卡=确证首局；换入=第2/3局相对首局净增', 23, muted)
-        text(margin, height - 32, '未换入≠没带；合计人数去重；条内数字=人数', 23, muted)
-        blob = io.BytesIO()
-        image.save(blob, format='PNG')
-        output.append(blob.getvalue())
-    return output
+    fonts = _fonts()
+    chart = [item for item in payload['shown']
+             if item['total']['known'] >= BAR_MIN_PLAYERS]
+    chart.sort(key=lambda item: (-item['total']['rate'], -item['total']['used'], item['deck']))
+    detail = payload['small_groups']
+    pages = []
+    if chart:
+        pages.append(_chart_image(payload, chart, fonts))
+    if detail:
+        pages.append(_detail_image(payload, detail, fonts))
+    blobs = []
+    for page in pages:
+        output = io.BytesIO()
+        page.save(output, format='PNG')
+        blobs.append(output.getvalue())
+    return blobs, payload
