@@ -150,41 +150,47 @@ def collect(database, data_dir, now, card_name):
             player = person['player']
             row = latest.get(player) or {}
             build = row.get('build')
-            main = copies.get(build, 0) if build else 0
-            side = side_out = 0
-            known = False
-            # 备牌没有直接记录（录像不含备牌表），只能看第 2/3 局相对第 1 局的净换入。
             games = sessions.get(player) or []
             first = [r for r in games if r.get('observed_game_no') == 1
                      and r.get('observed_identity_confirmed') is True]
             later = [r for r in games if (r.get('observed_game_no') or 0) > 1]
-            if len(first) == 1 and later and first[0].get('build') == build:
+            # 主卡只认确证第 1 局；没有首局就不把“最新观测”当主卡（那可能是换备后的卡表）。
+            main_known = len(first) == 1
+            main = copies.get(first[0].get('build'), 0) if main_known else copies.get(build, 0)
+            side = side_out = 0
+            side_known = False
+            # 备牌没有直接记录（录像不含备牌表），只能看第 2/3 局相对第 1 局的净换入。
+            if main_known and later:
                 later_counts = [copies.get(r.get('build'), 0) for r in later]
                 side = max(0, max(later_counts) - main)
                 side_out = max(0, main - min(later_counts))
-                known = True
+                side_known = True
             records.append(dict(player=player, rank=int(person.get('rank') or 999),
-                                main=main, side=side, side_out=side_out, known=known,
+                                main=main, side=side, side_out=side_out,
+                                main_known=main_known, known=side_known,
                                 total=main + side, build=build, has_build=bool(row)))
     records.sort(key=lambda item: item['rank'])
     main_dist = {0: 0, 1: 0, 2: 0, 3: 0}
     side_dist = {0: 0, 1: 0, 2: 0, 3: 0}
     total_dist = {0: 0, 1: 0, 2: 0, 3: 0}
     for row in records:
-        main_dist[min(row['main'], 3)] += 1
-        total_dist[min(row['total'], 3)] += 1
+        if row['main_known']:
+            main_dist[min(row['main'], 3)] += 1
+            total_dist[min(row['total'], 3)] += 1
         if row['known']:
             side_dist[min(row['side'], 3)] += 1
     known_players = sum(1 for row in records if row['known'])
+    main_known_players = sum(1 for row in records if row['main_known'])
     return dict(code=code, name=name, records=records,
                 covered=sum(1 for row in records if row['has_build']),
                 current=len(records), side_available=known_players > 0,
                 side_known=known_players, side_unknown=len(records) - known_players,
+                main_known=main_known_players, main_unknown=len(records) - main_known_players,
                 side_used=sum(1 for row in records if row['known'] and row['side'] > 0),
                 main_dist=main_dist, side_dist=side_dist, total_dist=total_dist,
-                main_total=sum(row['main'] for row in records),
+                main_total=sum(row['main'] for row in records if row['main_known']),
                 side_total=sum(row['side'] for row in records if row['known']),
-                total_total=sum(row['total'] for row in records))
+                total_total=sum(row['total'] for row in records if row['main_known']))
 
 
 def _pie(ax, items, title, prop):
@@ -234,13 +240,17 @@ def render(database, data_dir, now, card_name):
         return [(f'{key}张', dist[key], palette[key]) for key in (0, 1, 2, 3)]
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 6.4), dpi=100)
-    _pie(axes[0], items(payload['main_dist']), '主卡投入（人数）', prop)
+    main_items = items(payload['main_dist'])
+    if payload['main_unknown']:
+        main_items = main_items + [('未知', payload['main_unknown'], unknown_color)]
+    _pie(axes[0], main_items, '主卡投入（确证首局，人数）', prop)
     if payload['side_available']:
         side_items = items(payload['side_dist'])
         total_items = items(payload['total_dist'])
         if unknown:
             side_items = side_items + [('未知', unknown, unknown_color)]
-            total_items = total_items + [('未知', unknown, unknown_color)]
+        if payload['main_unknown']:
+            total_items = total_items + [('未知', payload['main_unknown'], unknown_color)]
         _pie(axes[1], side_items, '备牌换入（证据，人数）', prop)
         _pie(axes[2], total_items, '总投入（主卡+换入，人数）', prop)
     else:
@@ -252,8 +262,8 @@ def render(database, data_dir, now, card_name):
                  f"有构筑 {payload['covered']}/{payload['current']} 人",
                  fontproperties=prop, fontsize=20, y=0.99)
     fig.text(0.5, 0.015,
-             '备牌=最近一场第 2/3 局相对第 1 局的净换入（录像无备牌表：未换入≠没带；'
-             f'有证据 {payload["side_known"]} 人、未知 {unknown} 人）；总投入=主卡+换入（下界）。',
+             '主卡=确证第 1 局；备牌=最近一场第 2/3 局相对第 1 局的净换入（录像无备牌表：未换入≠没带）；'
+             f'主卡未知 {payload["main_unknown"]} 人、备牌未知 {unknown} 人；总投入=主卡+换入（下界）。',
              ha='center', fontproperties=prop, fontsize=10, color='#8A5A00')
     output = io.BytesIO()
     fig.savefig(output, format='png', dpi=100, bbox_inches='tight', facecolor='white')
