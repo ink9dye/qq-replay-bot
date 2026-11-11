@@ -1868,32 +1868,12 @@ class BotService:
         if total_used is None:
             total_used = data.get('used') or 0
         small = data.get('small_groups') or []
-
-        def bucket_text(bucket, label):
-            if not bucket or not bucket.get('known'):
-                return f"{label} 无证据"
-            bits = []
-            for copies, key in ((1, 'one'), (2, 'two'), (3, 'three')):
-                count = bucket.get(key) or 0
-                if count:
-                    bits.append(f"{copies}张({count}/{bucket['known']})")
-            return f"{label} " + ("、".join(bits) if bits else "无")
-
-        lines = []
-        for group in small:
-            lines.append(f"{group['deck']} {group['total']['used']}/{group['total']['known']}："
-                         + bucket_text(group['main'], '主卡') + "；"
-                         + bucket_text(group['side'], 'side') + "；"
-                         + bucket_text(group['total'], '合计'))
-        tail = ""
-        if lines:
-            tail = ("\n≤2 人卡组（%d 个，全列）：\n" % len(lines)) + "\n".join(lines)
         text = (f"前100单卡流向：{data['name']}（{data['code']:08d}）\n"
                 f"有构筑 {data['covered']}/{data.get('total_players') or data['current']} 人；"
                 f"主卡 {data.get('main_used', 0)} 人 / 备牌换入 {data.get('side_used', 0)} 人 / "
                 f"合计 {total_used} 人；{shown} 个卡组有人带卡（共 {len(data['items'])} 类）\n"
-                "条形只画 ≥3 人的卡组（长度=该大类带卡率，条内数字=玩家数）；≤2 人的见下"
-                + tail)
+                f"图上方：≥3 人的卡组（条内=玩家数）；图下方：≤2 人卡组全列（{len(small)} 个，"
+                f"含主卡/side/合计三档人数）")
         return CardReply(text, image_url)
 
     def _card_winrate_reply(self, card_name):
