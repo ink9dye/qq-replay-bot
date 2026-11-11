@@ -22,6 +22,7 @@
 
 - 唯一生产改动：`/opt/ygobot/bot/card_winrate.py`。
 - 旧SHA256前16：`5b76161321195f90`；新SHA256前16：`65f5348715e50454`。
+- 新文件按LF归一化SHA256前16：`8956562b63d42104`（线上原文件为CRLF；Git存储为LF）。GitHub代码提交 `0a4d99d` 已推送master；重启后QQ状态online。
 - 备份：`/opt/ygobot/data/config-backups/card-winrate-order-20261111/card_winrate.py`。
 - 回滚前先比较当前线上摘要，保全后续修改；确认可回退后，以备份恢复该文件，`chown ygo:ygo`、`py_compile`，在无录制窗口重启 `ygo-qq` 并检查health及QQ在线状态。
 - 影响面：QQ单卡胜率文字回复及其只读分组统计；web/collector代码、Top5、取源与命名策略不变。
