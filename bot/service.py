@@ -1862,10 +1862,16 @@ class BotService:
         except ValueError as exc:
             return f"单卡流向查询失败：{exc}"
         image_url = "base64://" + base64.b64encode(blob).decode("ascii")
+        shown = data.get('shown')
+        shown = len(shown) if shown is not None else len(data['items'])
+        total_used = data.get('total_used')
+        if total_used is None:
+            total_used = data.get('used') or 0
         text = (f"前100单卡流向：{data['name']}（{data['code']:08d}）\n"
                 f"有构筑 {data['covered']}/{data.get('total_players') or data['current']} 人；"
-                f"带卡 {data['used']}/{data['current']} 人；"
-                f"共 {len(data['items'])} 个卡组大类") 
+                f"主卡 {data.get('main_used', 0)} 人 / 备牌换入 {data.get('side_used', 0)} 人 / "
+                f"合计 {total_used} 人；显示 {shown} 个卡组大类"
+                f"（共 {len(data['items'])} 类）") 
         return CardReply(text, image_url)
 
     def _card_winrate_reply(self, card_name):
