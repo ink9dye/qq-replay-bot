@@ -1883,14 +1883,16 @@ class BotService:
             return f"使用量查询失败：{exc}"
         image_url = "base64://" + base64.b64encode(blob).decode("ascii")
         side = (f"备牌 {data['side_total']} 张" if data['side_available']
-                else "备牌暂无记录")
+                else "备牌未记录（录像不含备牌表）")
         text = (f"前100使用量：{data['name']}（{data['code']:08d}）\n"
                 f"有构筑 {data['covered']}/{data['current']} 人；"
-                f"主卡 {data['main_total']} 张，{side}，总投入 {data['total_total']} 张\n"
+                f"主卡 {data['main_total']} 张，{side}，"
+                f"总投入 {data['total_total']} 张（仅主卡，下界）\n"
                 f"主卡投入人数：" + "，".join(f"{k}张 {v}人" for k, v in data['main_dist'].items()) +
                 ("\n备牌投入人数：" + "，".join(f"{k}张 {v}人" for k, v in data['side_dist'].items())
-                 if data['side_available'] else "\n备牌投入：当前构筑库没有备牌记录") +
-                "\n总投入人数：" + "，".join(f"{k}张 {v}人" for k, v in data['total_dist'].items()))
+                 if data['side_available'] else
+                 "\n备牌投入：未知（录像不含备牌表；0 不代表没人 side 带）") +
+                "\n总投入人数（仅主卡）：" + "，".join(f"{k}张 {v}人" for k, v in data['total_dist'].items()))
         return CardReply(text, image_url)
 
     def _top100_pie_reply(self):

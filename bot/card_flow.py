@@ -145,7 +145,7 @@ def render_flow(database, data_dir, now, card_name):
               frameon=False, prop=prop, fontsize=9)
     fig.text(0.01, 0.01,
              f'「{payload["name"]}」前100名：{payload["used"]}/100 人带 · 各大类带卡率'
-             f'（主卡+备牌合计，全部 {len(items)} 个大类；'
+             f'（仅主卡，备牌未记录；全部 {len(items)} 个大类；'
              f'大类标签=总使用人数/大类总人数 · 蓝=1张/黄=2张/红=3张及以上）',
              fontproperties=prop, fontsize=8, color='#555555')
     fig.tight_layout(rect=(0, 0.04, 1, 1))

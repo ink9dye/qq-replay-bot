@@ -72,7 +72,8 @@
 
 - 备份：`/opt/ygobot/data/backup/card-usage-game1-20261111/card_usage_pie.py.20261111-0832`（sha `296582df…`）；
 - scp + `chown ygo:ygo` + `py_compile`；**08:30:29 只重启 `ygo-qq`**（`active`，NapCat 已连接，无 Traceback，OOM 计数 0）；8787/8788 `health=200`；
-- 回滚：`cp -a` 备份回 `bot/card_usage_pie.py`，`systemctl restart ygo-qq`。
+- **09:04 备牌文案修正**（见 §8）：`service.py 27d52288 → 96f465b7`、`card_usage_pie.py 481c9e30 → 91f8bf4d`、`card_flow.py 73b8c3de → 717dbb6c`；备份 `data/backup/card-usage-wording-20261111/`；再重启 `ygo-qq`（`active`、NapCat 已连接、health=200）。线上实测回复见 §8。
+- 回滚：`cp -a` 对应备份回 `bot/` 三个文件，`systemctl restart ygo-qq`。
 
 ## 7. 影响面
 
@@ -82,5 +83,8 @@
 
 ## 8. 遗留
 
-- 备牌仍然没有数据：`stat_build_cards` 没有 `side` 分区，`备牌暂无记录` 与「总投入暂等于主卡投入」会继续出现；Side 只能由「换备」按第 1 局做差推断。
+- **备牌（Side）不是 0，是未知**：录像卡表块只有 `main`+`extra`，**没有 side 数组**（两份最近录像实测：main 后面直接是下一位的 main 数；`statistics_facts.build_fingerprint` 注释也写明「side 未在录像中完整公开」）。所以 `stat_build_cards` 没有 side 分区、`side_complete` 恒 0，「备牌暂无记录」不能读成「没人 side 带」。
+  - 换备证据（每人最近一场、有确证首局）：圣枪 **8 人**在第 2/3 局换入（最多 3 张）、1 人主卡确证 1 张（换备后换出）、另 1 人无确证首局、按「最新观测」兜底显示 2 张；88 人两局都没有，3 人无可确认首局。
+  - 09:04 文案修正（`service.py` + 两张饼图的标题/脚注）：`备牌未记录（录像不含备牌表）`、`总投入 N 张（仅主卡，下界）`、`备牌投入：未知（录像不含备牌表；0 不代表没人 side 带）`、饼图第三张改「总投入（仅主卡，人数）」，`单卡流向` 脚注的「主卡+备牌合计」改为「仅主卡，备牌未记录」。
+  - 若要显示「换入 ≥N 人」，属新增口径（复用 `换备`/`watch.sided_decks`），需另行批准。
 - `bot/card_flow.py` 里还留着一个同款、已无人调用的 `_latest_builds()`（`card_flow` 实际走 `population`），可择机删掉，避免以后被误用回「最近一局」。

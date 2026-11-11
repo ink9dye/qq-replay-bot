@@ -187,15 +187,15 @@ def render(database, data_dir, now, card_name):
         _pie(axes[1], [payload['side_dist'][key] for key in (0, 1, 2, 3)],
              labels(payload['side_dist']), '备牌投入（人数）', colors, prop)
     else:
-        _pie(axes[1], [payload['current']], ['备牌无记录'], '备牌投入（暂无记录）',
+        _pie(axes[1], [payload['current']], ['备牌未知'], '备牌投入（录像无备牌表）',
              ['#D9DEE7'], prop)
     _pie(axes[2], [payload['total_dist'][key] for key in (0, 1, 2, 3)],
-         labels(payload['total_dist'], '张'), '总投入（主+备，人数）', colors, prop)
+         labels(payload['total_dist'], '张'), '总投入（仅主卡，人数）', colors, prop)
     fig.suptitle(f"前100使用量 · {payload['name']}（{payload['code']:08d}） · "
                  f"有构筑 {payload['covered']}/{payload['current']} 人",
                  fontproperties=prop, fontsize=20, y=0.99)
     if not payload['side_available']:
-        fig.text(0.5, 0.015, '当前构筑库没有备牌记录，备牌图仅占位；总投入暂等于主卡投入。',
+        fig.text(0.5, 0.015, '录像不含备牌表：备牌图仅占位，备牌未知不等于没人带；总投入=主卡（下界）。',
                  ha='center', fontproperties=prop, fontsize=11, color='#8A5A00')
     output = io.BytesIO()
     fig.savefig(output, format='png', dpi=100, bbox_inches='tight', facecolor='white')
