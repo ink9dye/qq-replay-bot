@@ -89,27 +89,9 @@ def identity_codes(db, code):
     return identity(db, int(code))['codes'] or [int(code)]
 
 
-def _latest_builds(db, now):
-    cutoff = float(now) - 14 * 86400
-    rows = db.execute('''
-        WITH ranked AS (
-            SELECT t.rank, t.player, v.build, v.digest, r.recorded_at,
-                   b.main_complete, b.side_complete,
-                   ROW_NUMBER() OVER (PARTITION BY t.player ORDER BY r.recorded_at DESC) AS rn
-            FROM stat_current_top100 t
-            JOIN stat_views v ON v.player = t.player
-            JOIN stat_files f ON f.digest = v.digest
-            JOIN replays r ON r.id = f.replay_id
-            JOIN stat_builds b ON b.fingerprint = v.build
-            WHERE r.recorded_at >= ? AND b.main_complete = 1
-        )
-        SELECT rank, player, build, digest, recorded_at, main_complete, side_complete
-        FROM ranked WHERE rn = 1
-    ''', (cutoff,)).fetchall()
-    return [dict(row) for row in rows]
-
-
 def collect(database, data_dir, now, card_name):
+    from .statistics_dashboard import population
+    replay_root = Path(database).parent / 'replays'
     with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
                                  uri=True, timeout=5)) as db:
         db.row_factory = sqlite3.Row
@@ -117,17 +99,17 @@ def collect(database, data_dir, now, card_name):
         code, name = resolve_card(data_dir, card_name, db)
         codes = identity_codes(db, code)
         marks = ','.join('?' for _ in codes)
-        builds = _latest_builds(db, now)
-        players = {row['player']: row for row in builds}
-        top = [dict(row) for row in db.execute(
-            'SELECT player, rank FROM stat_current_top100 ORDER BY rank')]
-        for row in top:
-            players.setdefault(row['player'], {'player': row['player'], 'rank': row['rank'],
-                                               'build': None, 'digest': None})
+        # 代表构筑与「单卡流向」/网页/换备同一份：最近一场优先取首局
+        # （game_no=1）的主卡组。旧实现按 recorded_at 取最近一局，常常落到
+        # BO3 第 2/3 局的换备构筑，把 Side 换进来的卡算成主卡，于是与
+        # 「单卡流向」的带卡人数对不上（也会漏掉被换出去的卡）。
+        _, latest, people = population(db, replay_root, now)
         records = []
-        for player, row in players.items():
+        for person in people:
+            player = person['player']
+            row = latest.get(player)
             main = side = 0
-            if row.get('build'):
+            if row and row.get('build'):
                 for count in db.execute(
                         'SELECT partition, SUM(copies) AS copies FROM stat_build_cards '
                         f'WHERE build=? AND code IN ({marks}) GROUP BY partition',
@@ -136,9 +118,9 @@ def collect(database, data_dir, now, card_name):
                         main = int(count['copies'] or 0)
                     elif count['partition'] == 'side':
                         side = int(count['copies'] or 0)
-            records.append(dict(player=player, rank=int(row.get('rank') or 999),
+            records.append(dict(player=player, rank=int(person.get('rank') or 999),
                                 main=main, side=side, total=main + side,
-                                build=row.get('build'), has_build=bool(row.get('build'))))
+                                build=(row or {}).get('build'), has_build=bool(row)))
     records.sort(key=lambda item: item['rank'])
     main_dist = {0: 0, 1: 0, 2: 0, 3: 0}
     side_dist = {0: 0, 1: 0, 2: 0, 3: 0}

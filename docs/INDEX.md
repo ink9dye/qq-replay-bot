@@ -1,6 +1,6 @@
 # 文档索引（唯一导航入口）
 
-> 更新时间：2026-11-09 13:05。**新对话先读本页**，再按顺序读核心文档；历史报告只作证据，不作为现状依据。
+> 更新时间：2026-11-11 08:50。**新对话先读本页**，再按顺序读核心文档；历史报告只作证据，不作为现状依据。
 
 ## 0. 快速入口
 
@@ -56,6 +56,7 @@
 | [`CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md`](CARD_IMAGE_AND_DEVICE_DOWNLOAD_20261106.md) | 卡图与设备下载（补充；卡图现行逻辑见 WRAPUP §10） |
 | [`CARD_IMAGE_SUPERPRE_20261109.md`](CARD_IMAGE_SUPERPRE_20261109.md) | **卡图串卡（2026-11-09）**：超先行同号图 momobako 会串卡；只认 super-pre；改动/数据修复/验证/回滚 |
 | [`WRAPUP_CARD_CODE_IDENTITY_20261109.md`](WRAPUP_CARD_CODE_IDENTITY_20261109.md) | **卡号身份（2026-11-09）**：同名多号（先行号 1013xxxxx / 异画）导致「使用量/单卡流向」全 0；空号回落 + `card-equivalence.json` 全站合并（478 组 / 1102 个卡号）、影响、验证、回滚、维护 |
+| [`WRAPUP_CARD_USAGE_GAME1_20261111.md`](WRAPUP_CARD_USAGE_GAME1_20261111.md) | **使用量 改按「每人最新构筑·首局优先」（2026-11-11）**：原取「最近一局」，把 BO3 第 2/3 局的换备卡表当主卡，导致圣枪 8 人/16 张 vs 单卡流向 2 人；根因、快照复现、改动、线上验证、网页按人/按局口径对照、部署与回滚 |
 | [`QQ_OBSERVATION_PERIOD_RULES.md`](QQ_OBSERVATION_PERIOD_RULES.md) | QQ 账号观察期纪律、掉线 SOP、换号判据 |
 | [`QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md`](QQ_SEND_GUARD_AND_LOGIN_EVIDENCE_PLAN_20261106.md) | 发送守卫与登录证据计划 |
 | [`QQ_PROBE_DEPLOY_20261107.md`](QQ_PROBE_DEPLOY_20261107.md) | 自动探测恢复的部署与回滚（2026-11-07） |
