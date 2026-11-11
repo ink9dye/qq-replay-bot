@@ -1858,10 +1858,11 @@ class BotService:
     def _card_flow_reply(self, card_name):
         from .card_flow import render_flow
         try:
-            blob, data = render_flow(self.store.path, self.data_dir, self.clock(), card_name)
+            parts, data = render_flow(self.store.path, self.data_dir, self.clock(), card_name)
         except ValueError as exc:
             return f"单卡流向查询失败：{exc}"
-        image_url = "base64://" + base64.b64encode(blob).decode("ascii")
+        urls = ["base64://" + base64.b64encode(parts[key]).decode("ascii")
+                for key in ("main", "side", "total") if parts.get(key)]
         shown = data.get('shown')
         shown = len(shown) if shown is not None else len(data['items'])
         total_used = data.get('total_used')
@@ -1871,8 +1872,9 @@ class BotService:
                 f"有构筑 {data['covered']}/{data.get('total_players') or data['current']} 人；"
                 f"主卡 {data.get('main_used', 0)} 人 / 备牌换入 {data.get('side_used', 0)} 人 / "
                 f"合计 {total_used} 人；显示 {shown} 个卡组大类"
-                f"（共 {len(data['items'])} 类）") 
-        return CardReply(text, image_url)
+                f"（共 {len(data['items'])} 类）\n"
+                f"下面 3 张图：主卡 / 备牌（换入）/ 合计") 
+        return CardReply(text, image_urls=urls)
 
     def _card_winrate_reply(self, card_name):
         from .card_winrate import collect, message
