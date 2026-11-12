@@ -423,3 +423,14 @@ MoeCardWatch v1.2「录像库」：一场一行（双方/比分/卡组/局数/�
 | 2026-11-08 22:29 | 卡牌 `metrics.samples` 默认截到最近 200 条 + `samples_truncated`；网页 `full=1` 仍全量（gzip 608 KB → 33 KB） |
 | 2026-11-08 22:47 | 卡牌 `metrics` 不再含 `investment`（安卓不读；网页 `full=1`/浏览器 UA 保留）；`card-metrics` 冷算曾 28–48 s，超 query_core 8 s 超时 |
 | 2026-11-08 23:20 | `card-metrics` 进程内缓存 600 s；`card_query` 6.4 → 1.8–2.6 s；portal 冷算 10.4 → 6.85 s |
+
+
+## 10. 安卓查询接口补齐（2026-11-12，已部署）
+
+契约见 [QUERY_API_ANDROID_20261112.md](QUERY_API_ANDROID_20261112.md)，部署及回滚见 [上线收尾](WRAPUP_QUERY_API_ANDROID_20261112.md)。新增绑定GET/POST、解绑POST、玩家side-plan与卡牌usage/flow/winrate，共7个端点；沿用query access身份，绑定仅设默认查询偏好。
+
+胜率API默认Top20、limit=1..20，QQ默认Top5保持兼容。usage默认返回20条records、limit=1..100；flow完整返回items/bars/small_groups且不支持limit。统计统一经本机owner鉴权门户，不在查询进程另开事实库重算。
+
+新端点正常无记录200、未知卡号404、繁忙429并附Retry-After、服务不可用503；旧端点语义不变。新统计响应含generated_at，缓存命中保留生成时间。冷查可能暂时503，有限退避重试后可成功，不承诺每次首查均立即200。
+
+19:33:39已部署6文件并重启web/collector；用户明确允许本次带远程在录重启。QQ/NapCat未重启。Python3.12隔离48项通过，公网TLS/临时账号绑定往返/真实统计均已验收；安卓UI与真实QQ命令逐项比对不在本次验证范围。功能提交076ada2。
