@@ -111,3 +111,5 @@
 - [卡片模糊查询与合并资料收尾](WRAPUP_CARD_PROFILE_20261111.md)
 
 - [QQ单卡胜率先后攻拆分收尾](WRAPUP_CARD_WINRATE_ORDER_20261111.md)：逐小局分组、真实库验证、部署与回滚。
+
+- [前200内战最高观战优先级收尾](WRAPUP_WATCH_TOP200_PRIORITY_20261112.md)：分档规则、33项验证、部署SHA、重启验收与回滚。

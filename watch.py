@@ -984,19 +984,30 @@ def default_local_ip() -> str:
         sock.close()
 
 
+def cached_player_rank(player) -> Optional[int]:
+    """只读现有排名缓存，不为排队发起网络查询。"""
+    rank = _official_ranks.get(player)
+    if rank is None:
+        observed = _observed_room_ranks.get(player)
+        if observed and 0 <= time.time() - observed[1] < 120:
+            rank = observed[0]
+    if rank is None:
+        rank = _rank_cache.get(player)
+    return rank if isinstance(rank, int) and rank > 0 else None
+
+
 def room_rank_sum(room) -> int:
     """双方排名之和（越小越优先）；未知排名按很大的数排到最后。不联网。"""
-    total = 0
-    for player in (getattr(room, 'players', None) or []):
-        rank = _official_ranks.get(player)
-        if rank is None:
-            observed = _observed_room_ranks.get(player)
-            if observed and 0 <= time.time() - observed[1] < 120:
-                rank = observed[0]
-        if rank is None:
-            rank = _rank_cache.get(player)
-        total += int(rank) if isinstance(rank, int) and rank > 0 else 100000
-    return total
+    return sum(cached_player_rank(player) or 100000
+               for player in (getattr(room, 'players', None) or []))
+
+
+def room_is_top200_duel(room) -> bool:
+    """双方均有前200名次的双人对局，优先于其他候选。"""
+    players = getattr(room, 'players', None) or []
+    return len(players) == 2 and all(
+        (rank := cached_player_rank(player)) is not None and rank <= 200
+        for player in players)
 
 
 def arena_rank_number(name: str) -> Optional[int]:
@@ -2467,7 +2478,7 @@ class SilentWindowTracker:
 
 
 class CaptureMonitor:
-    """有界排队、最早发现优先；计数只描述当前进程实际看到的房间。"""
+    """有界排队、前200内战优先；计数只描述当前进程实际看到的房间。"""
     def __init__(self, limit=200):
         self.limit = max(1, min(2000, int(limit)))
         self.rooms = {}
@@ -2477,7 +2488,7 @@ class CaptureMonitor:
         self.waiting = self.overflow = self.cooling = 0
 
     def candidates(self, rooms, matched, active, cooldown, now, starts=None, remote_until=None):
-        """排队顺序：先按开局时间早的分组；同一 5 分钟窗口内的，按双方排名之和更小优先。"""
+        """前200内战优先；各档按开局时间切5分钟批次，批内排名和更小优先。"""
         matched = list({room.key:room for room in matched}.values())
         current = {r.key for r in rooms}
         for key in list(self.rooms):
@@ -2503,15 +2514,18 @@ class CaptureMonitor:
                 started = info.get('first_seen')
             return float(started or now)
 
-        # 开局时间差 ≤5 分钟视为同一批：批内按排名和；
-        # 跨批按开始时间早优先（先按时间排，再按 5 分钟窗口切组）。
-        pending.sort(key=lambda r: (start_of(r), r.key))
+        # 前200内战是最高档，不受其他档较早开局的影响。
+        # 各档独立按5分钟窗口切组，沿用批内排名和、跨批早开局优先。
+        tiers = {r.key: 0 if room_is_top200_duel(r) else 1 for r in pending}
+        pending.sort(key=lambda r: (tiers[r.key], start_of(r), r.key))
         ordered = []
         index = 0
         while index < len(pending):
             base = start_of(pending[index])
             end = index + 1
-            while end < len(pending) and start_of(pending[end]) - base <= JOIN_PRIORITY_WINDOW_SECONDS:
+            while (end < len(pending)
+                   and tiers[pending[end].key] == tiers[pending[index].key]
+                   and start_of(pending[end]) - base <= JOIN_PRIORITY_WINDOW_SECONDS):
                 end += 1
             group = pending[index:end]
             group.sort(key=lambda r: (room_rank_sum(r), start_of(r), r.key))
