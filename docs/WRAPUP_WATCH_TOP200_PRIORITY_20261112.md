@@ -38,6 +38,8 @@
 - 新PID已写入新鲜的 `capture-status.json`，自动排名范围200、top100启用。
 - 8787/8788 `/health` 均200，collector/web/qq均active。
 - 8个在线客户端心跳恢复；随后任务板已实际派发1个新任务并认领，`joined_observations=1`，尚无新增录像回传时完成初次验收。
+- 后续实际复核：已派发5个、认领5个、收到3份录像上传，失败0；8端在线，启动后仍无Traceback。新文件LF归一SHA256为 `3912f874deff1107cbb652a39fc88beec67a126ba4f6b5c3335ce5c475648c4e`，本地与线上一致。
+- 代码、10项新增测试、索引与收尾已推送GitHub master，功能提交 `800b1fb`。
 - 本次启动后的journal无Traceback。真实任务的排序竞争没有现场逐项比对；规则正确性由测试和线上源码调用验证，派发链路另由实际认领验证。
 
 systemd提示collector单元文件/override磁盘版本有其他未reload变更；本次未执行daemon-reload，沿用已加载单元，仅重启进程，避免加载其他工作的配置。
