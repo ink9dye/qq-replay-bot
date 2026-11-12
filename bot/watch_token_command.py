@@ -83,6 +83,11 @@ def confidential_allowed(service, user, conversation="", capability=None) -> boo
     if _in_group(conversation):
         group = str(conversation).split(":", 1)[1]
         return group in {str(item) for item in (groups or [])}
+    if (capability in ("watch_token", "query_enroll")
+            and str(conversation).startswith("confidential-private:")):
+        group = str(conversation).split(":", 1)[1]
+        if group in {str(item) for item in (groups or [])}:
+            return True
     return (str(user) in {str(item) for item in (users or [])} or _is_admin(service, user)
             or delegated_user(user) or (capability is not None and granted(service, user, capability)))
 

@@ -645,9 +645,11 @@ class BotService:
         op = command.get("op")
         if op in ("stats_page", "watch_devices", "game_counts") and not self._statistics_allowed(user, conversation):
             return None
-        from .watch_token_command import delegated_user, granted
+        from .watch_token_command import confidential_allowed, delegated_user, granted
         confidential_access = (op in ("query_enroll", "watch_token")
-                               and (delegated_user(user) or granted(self, user, op)))
+                               and (delegated_user(user) or granted(self, user, op)
+                                    or (conversation.startswith("confidential-private:")
+                                        and confidential_allowed(self, user, conversation, op))))
         if not self.authorized(user) and not confidential_access:
             if command.get("op") == "help":
                 text = self.help_text(user, conversation)
@@ -1549,6 +1551,35 @@ class BotService:
                 or self.accept_group_guess(event, text)
                 or self.accept_group_card_shortcut(event, text))
 
+    async def _confidential_private_context(self, event, op):
+        """临时私聊仅通过NapCat实际群成员查询授权，不猜target_id的含义。"""
+        from .watch_token_command import confidential_allowed
+        user = str(event.get("user_id") or "")
+        if (op not in ("query_enroll", "watch_token")
+                or event.get("message_type") != "private"
+                or event.get("sub_type") != "group"
+                or not user.isascii() or not user.isdigit()
+                or confidential_allowed(self, user, "", op)):
+            return ""
+        remote = self.config.get("remote") or {}
+        stats = self.config.get("statistics") or {}
+        groups = remote.get("token_groups") if "token_groups" in remote else stats.get("allowed_groups", [])
+        groups = {str(g) for g in (groups or []) if str(g).isascii() and str(g).isdigit()}
+        source = event.get("group_id")
+        if source is not None:
+            groups &= {str(source)}
+        for group in sorted(groups):
+            try:
+                result = await self.qq.call("get_group_member_info",
+                    {"group_id": int(group), "user_id": int(user), "no_cache": True}, timeout=3)
+                data = result.get("data") or {}
+                if (result.get("retcode") == 0 and str(data.get("user_id")) == user
+                        and str(data.get("group_id")) == group):
+                    return "confidential-private:" + group
+            except Exception:
+                continue
+        return ""
+
     async def on_qq_event(self, event: dict) -> None:
         if self.qq is None:
             return
@@ -1567,6 +1598,8 @@ class BotService:
         forward = self.qq.send_group_forward if is_group else self.qq.send_private_forward
         conversation = "group:" + str(receiver) if is_group else ""
         parsed_command = parse_command(text)
+        if not is_group:
+            conversation = await self._confidential_private_context(event, parsed_command.get("op"))
         # 保密名单群里的「开通查询」「令牌分发」：结果只私聊发给指令发送者，群里不回显。
         if is_group and parsed_command.get("op") in ("query_enroll", "watch_token"):
             from .watch_token_command import confidential_allowed

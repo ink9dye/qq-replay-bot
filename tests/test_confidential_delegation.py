@@ -125,6 +125,74 @@ class DelegationTests(unittest.TestCase):
         self.service._query_enroll.assert_not_called()
         self.assertIsNone(self.call('1278389701', '令牌分发 1347226440', 'group:456'))
 
+    def temp_context(self, result, *, event=None, op='watch_token'):
+        from unittest.mock import AsyncMock
+        self.service.qq = SimpleNamespace(call=AsyncMock(return_value=result))
+        event = event or {'message_type': 'private', 'sub_type': 'group', 'user_id': 1174338198}
+        return asyncio.run(self.service._confidential_private_context(event, op))
+
+    def test_temp_member_can_issue_with_private_context(self):
+        context = self.temp_context({'retcode': 0, 'data': {'user_id': 1174338198, 'group_id': 123}})
+        self.assertEqual(context, 'confidential-private:123')
+        self.service.authorized = lambda *_: False
+        with patch.object(tokens, '_issue', return_value='private-token') as issue:
+            self.assertEqual(self.call('1174338198', '令牌分发', context), 'private-token')
+            issue.assert_called_once_with(self.service, '1174338198', 1, context)
+        self.assertFalse(tokens.granted(self.service, '1174338198', 'watch_token'))
+        self.assertFalse(tokens.confidential_allowed(self.service, '1174338198', context))
+
+    def test_temp_context_supports_query_without_broad_permission(self):
+        context = self.temp_context({'retcode': 0, 'data': {'user_id': 1174338198, 'group_id': 123}}, op='query_enroll')
+        self.service.authorized = lambda *_: False
+        self.assertEqual(self.call('1174338198', '开通查询', context), 'test-code')
+        self.assertIn('没有使用权限', self.call('1174338198', '订阅 test', context))
+
+    def test_temp_bad_membership_and_missing_data_fail_closed(self):
+        for result in [{'retcode': 1}, {'retcode': 0, 'data': {}},
+                       {'retcode': 0, 'data': {'user_id': 99999, 'group_id': 123}},
+                       {'retcode': 0, 'data': {'user_id': 1174338198, 'group_id': 456}}]:
+            self.assertEqual(self.temp_context(result), '')
+
+    def test_explicit_non_confidential_source_never_probes_other_groups(self):
+        event = {'message_type': 'private', 'sub_type': 'group', 'group_id': 456, 'user_id': 1174338198}
+        self.assertEqual(self.temp_context({}, event=event), '')
+        self.service.qq.call.assert_not_awaited()
+
+    def test_ordinary_private_and_unrelated_commands_never_probe(self):
+        self.assertEqual(self.temp_context({}, event={'message_type': 'private', 'sub_type': 'friend', 'user_id': 1174338198}), '')
+        self.service.qq.call.assert_not_awaited()
+        self.assertEqual(self.temp_context({}, op='subscribe'), '')
+        self.service.qq.call.assert_not_awaited()
+
+    def test_existing_grant_works_when_temp_source_is_missing(self):
+        tokens.grant(self.service, '1174338198', 'watch_token')
+        self.assertEqual(self.temp_context({}), '')
+        self.service.qq.call.assert_not_awaited()
+        with patch.object(tokens, '_issue', return_value='granted-token'):
+            self.assertEqual(self.call('1174338198', '令牌分发'), 'granted-token')
+
+    def test_temp_api_failure_does_not_grant(self):
+        from unittest.mock import AsyncMock
+        self.service.qq = SimpleNamespace(call=AsyncMock(side_effect=TimeoutError))
+        event = {'message_type': 'private', 'sub_type': 'group', 'user_id': 1174338198}
+        self.assertEqual(asyncio.run(self.service._confidential_private_context(event, 'watch_token')), '')
+        self.assertFalse(tokens.granted(self.service, '1174338198', 'watch_token'))
+
+    def test_temp_event_keeps_reply_private(self):
+        from unittest.mock import AsyncMock
+        s = self.service
+        s._top100_deck_candidates = {}
+        s.qq = SimpleNamespace(
+            call=AsyncMock(return_value={'retcode': 0, 'data': {'user_id': 1174338198, 'group_id': 123}}),
+            send_private=AsyncMock(return_value=True), send_group=AsyncMock(),
+            send_group_forward=AsyncMock(), send_private_forward=AsyncMock())
+        event = {'message_type': 'private', 'sub_type': 'group', 'user_id': 1174338198,
+                 'message': '令牌分发', 'temp_source': 0}
+        with patch.object(tokens, '_issue', return_value='private-token'):
+            asyncio.run(s.on_qq_event(event))
+        s.qq.send_private.assert_awaited_once_with(1174338198, 'private-token')
+        s.qq.send_group.assert_not_awaited()
+
 
 if __name__ == '__main__':
     unittest.main()
