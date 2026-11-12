@@ -221,6 +221,15 @@ class QueryApi(private val server: String, private val trustSelfSigned: Boolean)
         }
     }
 
+    /**
+     * 用指定令牌吊销会话。
+     *
+     * 本地已经清空会话时 [logout] 拿不到令牌，所以退出登录要先把令牌抓出来再调这个。
+     */
+    fun revoke(accessToken: String) {
+        queued { request("POST", "/query-api/logout", null, accessToken) }
+    }
+
     fun me(): QueryIdentity = queued {
         val json = rootOf(authed("GET", "/query-api/me"))
         parseIdentity(json)

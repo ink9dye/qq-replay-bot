@@ -57,14 +57,23 @@ object QuerySession {
         _session.value = null
     }
 
-    /** 主动退出：尽力通知服务端吊销当前一对，再清本地。 */
+    /** 主动退出：本地立刻清会话，服务端的吊销放到后台线程。 */
     fun logout() {
-        val api = api()
-        try {
-            api.logout()
-        } catch (_: Exception) {
+        val token = currentAccessToken() ?: run {
+            expire()
+            return
         }
+        val api = api()
+        // 先清本地，UI 立即回到登录页
         expire()
+        // 必须离开主线程：onClick 是主线程，直接发请求会触发 NetworkOnMainThreadException，
+        // 异常被吞掉后服务端那对令牌就永远吊销不了。
+        Thread {
+            try {
+                api.revoke(token)
+            } catch (_: Exception) {
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     fun api(): QueryApi = QueryApi(server, trustSelfSigned)

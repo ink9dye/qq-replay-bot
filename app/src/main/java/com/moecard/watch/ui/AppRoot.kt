@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.moecard.watch.BuildConfig
 import com.moecard.watch.query.net.QuerySession
 import com.moecard.watch.ui.query.CardDetailScreen
 import com.moecard.watch.ui.query.DeckDetailScreen
@@ -147,7 +148,7 @@ fun AppRoot() {
                 }
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "戏王版权局 · v1.3",
+                    "戏王版权局 · v${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.outline,
                     modifier = Modifier.padding(horizontal = 16.dp),
