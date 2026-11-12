@@ -223,14 +223,10 @@ class LiveEvidence {
                 else -> null to "unknown"
             }
             val capture = when {
-                // 带「第N局录像」公告的单份录像：
-                //  1) 先按本端序号精确配对——从开局看起时它最可靠，也能挡住“上一局胜负没配上”
-                //     时把旧胜负串给下一局；
-                //  2) 配不上再按到达顺序取最早的一条——中途进房收不到之前的 MSG_START，
-                //     本端序号会整体错位（2026-11-06 实测：第 2 局的胜负被第 1 局抢走）。
-                announcedNo != null && n == 1 ->
-                    blobSerial?.let { s -> pendingWins.firstOrNull { it.serial == s } }
-                        ?: pendingWins.firstOrNull()
+                // 带「第N局录像」公告时，MC 是按局序依次推胜负和录像的：
+                // 单份录像直接取**最早**一条待配胜负，不能按本端序号挑（中途进房会整体错位，
+                // 2026-11-06 实测：第 2 局的胜负被第 1 局抢走、第 3 局的胜负被配到第 2 局）。
+                announcedNo != null && n == 1 -> pendingWins.firstOrNull()
                 else -> matchCapture(blobSerial, index == n - 1, n)
             }
             // association 只说明“凭什么把这份胜负配给这份录像”，口径与官方参考包一致。
