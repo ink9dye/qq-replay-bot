@@ -2,6 +2,7 @@ package com.moecard.watch.query.model
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 
 /**
  * 查询端数据模型。两个数据源：
@@ -614,21 +615,463 @@ fun parseCard(code: Long, detailsPayload: Any?, metricsPayload: Any?): CardDetai
     val details = if (detailsPayload is JSONObject) detailsPayload else null
     val text = details?.optJSONObject("text")
     val metrics = if (metricsPayload is JSONObject) metricsPayload else null
-
-    // 现行服务端 /query-api/card/<code> 返回 details.{code,name,description,…}；
-    // 老版本/门户透传是 details.text.{name,desc,types}。两种都兼容。
-    fun str(obj: JSONObject?, key: String): String? =
-        obj?.optString(key)?.takeIf { it.isNotBlank() }
-
+    // 线上 /query-api/card/{code} 的 details 是 {code,name,description,base_partition,...}，
+    // 而查卡源（ygocdb）是 {cn_name,text:{name,desc,types,image_url}}；两种都兼容。
     return CardDetail(
         code = code,
-        name = str(details, "cn_name") ?: str(text, "name") ?: str(details, "name"),
-        types = str(text, "types") ?: str(details, "types"),
-        desc = str(text, "desc") ?: str(details, "description") ?: str(details, "desc"),
-        pdesc = str(text, "pdesc") ?: str(details, "pdesc"),
-        imageUrl = str(details, "image_url") ?: str(text, "image_url"),
+        name = details?.optText("cn_name") ?: details?.optText("name") ?: text?.optText("name"),
+        types = text?.optText("types") ?: details?.optText("types"),
+        desc = details?.optText("description") ?: details?.optText("desc") ?: text?.optText("desc"),
+        pdesc = text?.optText("pdesc") ?: details?.optText("pdesc"),
+        imageUrl = details?.optText("image_url") ?: text?.optText("image_url"),
         details = details,
         metrics = metrics,
+    )
+}
+
+// ---------- 绑定 / 换备 / 卡牌统计（2026-11-12 新增） ----------
+//
+// 契约见 服务端API对接.md：binding、player/{name}/side-plan、card/{code}/(usage|flow|winrate)。
+// 全部防御解析：字段缺失给默认值，不因为一个 null 把整页打挂。
+
+/** JSON null 与字符串 "null" 都当成缺失（org.json 的 optString 会把 null 读成 "null"）。 */
+internal fun JSONObject.optText(key: String): String? {
+    if (isNull(key)) return null
+    val v = optString(key, "").trim()
+    return if (v.isBlank() || v == "null") null else v
+}
+
+/** GET /query-api/binding：未绑定返回 player = null。 */
+data class BindingInfo(val player: String?)
+
+fun parseBinding(payload: Any?): BindingInfo {
+    val root = payload as? JSONObject
+    // org.json 的 optString 会把 JSON null 变成字符串 "null"，必须显式判 isNull
+    val player = if (root == null || root.isNull("player")) "" else root.optString("player", "").trim()
+    return BindingInfo(if (player.isBlank() || player == "null") null else player)
+}
+
+/** POST /query-api/binding：known = 最近 14 天收录里是否有这个名字。 */
+data class BindResult(val player: String, val known: Boolean, val changed: Boolean)
+
+fun parseBindResult(payload: Any?): BindResult {
+    val root = payload as? JSONObject ?: JSONObject()
+    return BindResult(
+        player = root.optString("player", "").trim(),
+        known = root.optBoolean("known", true),
+        changed = root.optBoolean("changed", false),
+    )
+}
+
+// ---------- 换备（Side Plan） ----------
+
+/** 一张被换入/换出的卡。minCopies~maxCopies 是张数区间，与 QQ「换备」文案一致。 */
+data class SideCard(
+    val code: Long,
+    val name: String,
+    val partition: String,
+    val sessions: Int,
+    val sideGames: Int,
+    val minCopies: Int,
+    val maxCopies: Int,
+) {
+    val copiesLabel: String
+        get() = if (minCopies == maxCopies) "$minCopies 张" else "$minCopies~$maxCopies 张"
+}
+
+/** 先攻 / 后攻一侧的汇总。 */
+data class SideSeat(
+    val sideGames: Int,
+    val added: List<SideCard>,
+    val removed: List<SideCard>,
+)
+
+/** 单场换边明细（原实现 _session_row 的字段子集）。 */
+data class SideSession(
+    val id: String,
+    val recordedAt: Double,
+    val opponent: String?,
+    val gameCount: Int,
+    val sideGames: Int,
+    val added: List<SideCard>,
+    val removed: List<SideCard>,
+)
+
+data class SideOpponent(
+    val deck: String,
+    val matches: Int,
+    val recentMatches: Int,
+    val sideGames: Int,
+    val seatUnknownGames: Int,
+    val sampleLow: Boolean,
+    val first: SideSeat,
+    val second: SideSeat,
+    val sessions: List<SideSession>,
+)
+
+data class SidePlan(
+    val player: String,
+    val deck: String?,
+    val totalMatches: Int,
+    val opponents: List<SideOpponent>,
+    val opponentRange: Int?,
+    val excludedMatches: Int,
+    val unverifiedMatches: Int,
+    val notes: List<String>,
+    val generatedAt: Double,
+)
+
+private fun parseSideCards(arr: JSONArray?): List<SideCard> {
+    if (arr == null) return emptyList()
+    val out = ArrayList<SideCard>(arr.length())
+    for (i in 0 until arr.length()) {
+        val o = arr.optJSONObject(i) ?: continue
+        val code = o.optLong("code", 0L)
+        if (code <= 0L) continue
+        val minCopies = o.optInt("min_copies", 0)
+        out.add(
+            SideCard(
+                code = code,
+                name = o.optText("name") ?: "#$code",
+                partition = o.optString("partition", "main"),
+                sessions = o.optInt("sessions", 0),
+                sideGames = o.optInt("side_games", 0),
+                minCopies = minCopies,
+                maxCopies = o.optInt("max_copies", minCopies),
+            )
+        )
+    }
+    return out
+}
+
+private fun parseSideSeat(o: JSONObject?): SideSeat = SideSeat(
+    sideGames = o?.optInt("side_games", 0) ?: 0,
+    added = parseSideCards(o?.optJSONArray("added")),
+    removed = parseSideCards(o?.optJSONArray("removed")),
+)
+
+fun parseSidePlan(payload: Any?): SidePlan {
+    val root = payload as? JSONObject ?: JSONObject()
+    val opponents = ArrayList<SideOpponent>()
+    val arr = root.optJSONArray("opponents")
+    if (arr != null) {
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val sessions = ArrayList<SideSession>()
+            val sarr = o.optJSONArray("sessions")
+            if (sarr != null) {
+                for (j in 0 until sarr.length()) {
+                    val s = sarr.optJSONObject(j) ?: continue
+                    sessions.add(
+                        SideSession(
+                            id = s.optString("id", ""),
+                            recordedAt = s.optDouble("recorded_at", 0.0),
+                            opponent = s.optText("opponent"),
+                            gameCount = s.optInt("game_count", 0),
+                            sideGames = s.optInt("side_games", 0),
+                            added = parseSideCards(s.optJSONArray("added")),
+                            removed = parseSideCards(s.optJSONArray("removed")),
+                        )
+                    )
+                }
+            }
+            opponents.add(
+                SideOpponent(
+                    deck = o.optText("deck") ?: "?",
+                    matches = o.optInt("matches", 0),
+                    recentMatches = o.optInt("recent_matches", 0),
+                    sideGames = o.optInt("side_games", 0),
+                    seatUnknownGames = o.optInt("seat_unknown_games", 0),
+                    sampleLow = o.optBoolean("sample_low", false),
+                    first = parseSideSeat(o.optJSONObject("first")),
+                    second = parseSideSeat(o.optJSONObject("second")),
+                    sessions = sessions,
+                )
+            )
+        }
+    }
+    val scope = root.optJSONObject("rank_scope")
+    val notes = ArrayList<String>()
+    val narr = root.optJSONArray("notes")
+    if (narr != null) {
+        for (i in 0 until narr.length()) {
+            val t = narr.optString(i, "")
+            if (t.isNotBlank()) notes.add(t)
+        }
+    }
+    return SidePlan(
+        player = root.optText("player") ?: "",
+        deck = root.optText("deck"),
+        totalMatches = root.optInt("total_matches", 0),
+        opponents = opponents,
+        opponentRange = if (scope != null && scope.has("opponent_range") && !scope.isNull("opponent_range")) {
+            scope.optInt("opponent_range", 0)
+        } else null,
+        excludedMatches = scope?.optInt("excluded_matches", 0) ?: 0,
+        unverifiedMatches = scope?.optInt("unverified_matches", 0) ?: 0,
+        notes = notes,
+        generatedAt = root.optDouble("generated_at", 0.0),
+    )
+}
+
+// ---------- 卡牌三统计 ----------
+
+/** 0/1/2/3+ 张的人数分布（3 表示 3 张及以上，与 QQ 饼图口径一致）。 */
+data class CountDist(val buckets: List<Pair<Int, Int>>) {
+    fun countOf(n: Int): Int = buckets.firstOrNull { it.first == n }?.second ?: 0
+    val total: Int get() = buckets.sumOf { it.second }
+}
+
+private fun parseDist(o: JSONObject?): CountDist {
+    if (o == null) return CountDist(emptyList())
+    val list = ArrayList<Pair<Int, Int>>()
+    // 固定 0/1/2/3 四档；缺哪档补 0，保证 UI 不会因为缺 key 少画一列
+    for (n in 0..3) {
+        list.add(n to o.optInt(n.toString(), 0))
+    }
+    return CountDist(list)
+}
+
+data class UsageRecord(
+    val player: String,
+    val rank: Int,
+    val main: Int,
+    val side: Int,
+    val total: Int,
+    val mainKnown: Boolean,
+    val sideKnown: Boolean,
+    val hasBuild: Boolean,
+)
+
+data class CardUsage(
+    val code: Long,
+    val name: String,
+    val covered: Int,
+    val current: Int,
+    val excluded: Int,
+    val totalPlayers: Int,
+    val mainDist: CountDist,
+    val sideDist: CountDist,
+    val totalDist: CountDist,
+    val mainTotal: Int,
+    val sideTotal: Int,
+    val totalTotal: Int,
+    val sideUsed: Int,
+    val records: List<UsageRecord>,
+    val recordsTotal: Int,
+    val truncated: Boolean,
+    val generatedAt: Double,
+)
+
+fun parseCardUsage(payload: Any?): CardUsage {
+    val root = payload as? JSONObject ?: JSONObject()
+    val records = ArrayList<UsageRecord>()
+    val arr = root.optJSONArray("records")
+    if (arr != null) {
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            records.add(
+                UsageRecord(
+                    player = o.optString("player", ""),
+                    rank = o.optInt("rank", 0),
+                    main = o.optInt("main", 0),
+                    side = o.optInt("side", 0),
+                    total = o.optInt("total", 0),
+                    mainKnown = o.optBoolean("main_known", false),
+                    // 服务端历史字段名是 known（= side_known）；两种都认
+                    sideKnown = o.optBoolean("side_known", o.optBoolean("known", false)),
+                    hasBuild = o.optBoolean("has_build", false),
+                )
+            )
+        }
+    }
+    return CardUsage(
+        code = root.optLong("code", 0L),
+        name = root.optText("name") ?: "",
+        covered = root.optInt("covered", 0),
+        current = root.optInt("current", 0),
+        excluded = root.optInt("excluded", 0),
+        totalPlayers = root.optInt("total_players", 0),
+        mainDist = parseDist(root.optJSONObject("main_dist")),
+        sideDist = parseDist(root.optJSONObject("side_dist")),
+        totalDist = parseDist(root.optJSONObject("total_dist")),
+        mainTotal = root.optInt("main_total", 0),
+        sideTotal = root.optInt("side_total", 0),
+        totalTotal = root.optInt("total_total", 0),
+        sideUsed = root.optInt("side_used", 0),
+        records = records,
+        recordsTotal = root.optInt("records_total", records.size),
+        truncated = root.optBoolean("truncated", false),
+        generatedAt = root.optDouble("generated_at", 0.0),
+    )
+}
+
+/** 单卡流向里某一个卡组的 main/side/total 桶；rate 为 0~1，无分母为 null。 */
+data class FlowBucket(
+    val known: Int,
+    val used: Int,
+    val one: Int,
+    val two: Int,
+    val three: Int,
+    val rate: Double?,
+) {
+    val percentText: String
+        get() = rate?.let { String.format(Locale.ROOT, "%.0f%%", it * 100) } ?: "—"
+}
+
+private fun parseFlowBucket(o: JSONObject?): FlowBucket = FlowBucket(
+    known = o?.optInt("known", 0) ?: 0,
+    used = o?.optInt("used", 0) ?: 0,
+    one = o?.optInt("one", 0) ?: 0,
+    two = o?.optInt("two", 0) ?: 0,
+    three = o?.optInt("three", 0) ?: 0,
+    rate = if (o == null || o.isNull("rate")) null else o.optDouble("rate", 0.0),
+)
+
+data class FlowDeck(
+    val deck: String,
+    val players: Int,
+    val main: FlowBucket,
+    val side: FlowBucket,
+    val total: FlowBucket,
+)
+
+data class CardFlow(
+    val code: Long,
+    val name: String,
+    val covered: Int,
+    val current: Int,
+    val totalPlayers: Int,
+    val mainUsed: Int,
+    val sideUsed: Int,
+    val totalUsed: Int,
+    val items: List<FlowDeck>,
+    val generatedAt: Double,
+)
+
+fun parseCardFlow(payload: Any?): CardFlow {
+    val root = payload as? JSONObject ?: JSONObject()
+    val items = ArrayList<FlowDeck>()
+    // 优先 items（全量卡组）；老服务端只给 bars 时退化成 bars
+    val arr = root.optJSONArray("items") ?: root.optJSONObject("bars")?.optJSONArray("total")
+    if (arr != null) {
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val deck = o.optText("deck") ?: "?"
+            items.add(
+                FlowDeck(
+                    deck = deck,
+                    players = o.optInt("players", 0),
+                    main = parseFlowBucket(o.optJSONObject("main")),
+                    side = parseFlowBucket(o.optJSONObject("side")),
+                    total = parseFlowBucket(o.optJSONObject("total")),
+                )
+            )
+        }
+    }
+    return CardFlow(
+        code = root.optLong("code", 0L),
+        name = root.optText("name") ?: "",
+        covered = root.optInt("covered", 0),
+        current = root.optInt("current", 0),
+        totalPlayers = root.optInt("total_players", 0),
+        mainUsed = root.optInt("main_used", 0),
+        sideUsed = root.optInt("side_used", 0),
+        totalUsed = root.optInt("total_used", 0),
+        items = items,
+        generatedAt = root.optDouble("generated_at", 0.0),
+    )
+}
+
+/** 胜率分母：games = wins + losses + draws，rate 为 0~100，无分母为 null。 */
+data class RateBase(
+    val games: Int,
+    val wins: Int,
+    val losses: Int,
+    val draws: Int,
+    val rate: Double?,
+) {
+    val rateText: String
+        get() = rate?.let { String.format(Locale.ROOT, "%.1f%%", it) } ?: "—"
+}
+
+private fun parseRateBase(o: JSONObject?): RateBase? {
+    if (o == null) return null
+    if (!o.has("games") && !o.has("wins")) return null
+    return RateBase(
+        games = o.optInt("games", 0),
+        wins = o.optInt("wins", 0),
+        losses = o.optInt("losses", 0),
+        draws = o.optInt("draws", 0),
+        rate = if (o.isNull("rate")) null else o.optDouble("rate", 0.0),
+    )
+}
+
+data class MatchupRow(
+    val deck: String,
+    val games: Int,
+    val wins: Int,
+    val rate: Double?,
+    val lowSample: Boolean,
+) {
+    val rateText: String
+        get() = rate?.let { String.format(Locale.ROOT, "%.1f%%", it) } ?: "—"
+}
+
+data class CardWinrate(
+    val code: Long,
+    val name: String,
+    val base: RateBase?,
+    val rows: List<MatchupRow>,
+    val totalDecks: Int,
+    val qualifiedDecks: Int,
+    val notes: List<String>,
+    val first: RateBase?,
+    val second: RateBase?,
+    val unknown: RateBase?,
+    val generatedAt: Double,
+)
+
+fun parseCardWinrate(payload: Any?): CardWinrate {
+    val root = payload as? JSONObject ?: JSONObject()
+    val matchups = root.optJSONObject("matchups")
+    val rows = ArrayList<MatchupRow>()
+    val arr = matchups?.optJSONArray("rows")
+    if (arr != null) {
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            rows.add(
+                MatchupRow(
+                    deck = o.optText("deck_type") ?: o.optText("deck") ?: "?",
+                    games = o.optInt("games", 0),
+                    wins = o.optInt("wins", 0),
+                    rate = if (o.isNull("rate")) null else o.optDouble("rate", 0.0),
+                    lowSample = o.optBoolean("low_sample", false),
+                )
+            )
+        }
+    }
+    val notes = ArrayList<String>()
+    val narr = matchups?.optJSONArray("notes")
+    if (narr != null) {
+        for (i in 0 until narr.length()) {
+            val t = narr.optString(i, "")
+            if (t.isNotBlank()) notes.add(t)
+        }
+    }
+    val order = root.optJSONObject("order")
+    return CardWinrate(
+        code = root.optLong("code", 0L),
+        name = root.optText("name") ?: "",
+        base = parseRateBase(matchups?.optJSONObject("base")),
+        rows = rows,
+        totalDecks = matchups?.optInt("total_decks", 0) ?: 0,
+        qualifiedDecks = matchups?.optInt("qualified_decks", 0) ?: 0,
+        notes = notes,
+        first = parseRateBase(order?.optJSONObject("first")),
+        second = parseRateBase(order?.optJSONObject("second")),
+        unknown = parseRateBase(order?.optJSONObject("unknown")),
+        generatedAt = root.optDouble("generated_at", 0.0),
     )
 }
 

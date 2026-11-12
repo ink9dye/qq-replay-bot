@@ -40,7 +40,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -73,6 +73,7 @@ import com.moecard.watch.query.model.CardDetail
 import com.moecard.watch.query.model.ReplayGame
 import com.moecard.watch.query.model.ReplayMatch
 import com.moecard.watch.query.model.ReplaySearch
+import com.moecard.watch.query.model.SidePlan
 import com.moecard.watch.query.model.dpCurve
 import com.moecard.watch.query.model.resultFor
 import com.moecard.watch.query.net.CardTextApi
@@ -110,6 +111,7 @@ class PlayerDetailViewModel : ViewModel() {
 
     val official = MutableStateFlow<OfficialState>(OfficialState.Loading)
     val decks = MutableStateFlow<QueryState<BuildData?>>(QueryState.Idle)
+    val sidePlan = MutableStateFlow<QueryState<SidePlan?>>(QueryState.Idle)
     val replaySearch = MutableStateFlow<QueryState<ReplaySearch?>>(QueryState.Idle)
     val replayFilters = MutableStateFlow(ReplayFilters())
     val replayLoadingMore = MutableStateFlow(false)
@@ -141,6 +143,7 @@ class PlayerDetailViewModel : ViewModel() {
         loadedPlayer = player
         official.value = OfficialState.Loading
         decks.value = QueryState.Idle
+        sidePlan.value = QueryState.Idle
         replaySearch.value = QueryState.Idle
         replayFilters.value = ReplayFilters()
         replayExhausted.value = false
@@ -162,6 +165,30 @@ class PlayerDetailViewModel : ViewModel() {
                 official.value = OfficialState.Failed(e.message ?: "官方接口加载失败")
             }
         }
+    }
+
+    /**
+     * 懒加载：进入换备页签时才拉。单次 1~3 s（服务端要算构筑 + 换边局），
+     * 失败单独重试，不牵连其它页签。
+     */
+    fun loadSidePlan(player: String) {
+        if (sidePlan.value !is QueryState.Idle) return
+        sidePlan.value = QueryState.Loading
+        viewModelScope.launch {
+            try {
+                val data = withContext(Dispatchers.IO) { QuerySession.api().sidePlan(player) }
+                sidePlan.value = QueryState.Ready(data)
+            } catch (e: AuthException) {
+                QuerySession.expire()
+            } catch (e: Exception) {
+                sidePlan.value = QueryState.Failed(e.message ?: "换备加载失败")
+            }
+        }
+    }
+
+    fun retrySidePlan(player: String) {
+        sidePlan.value = QueryState.Idle
+        loadSidePlan(player)
     }
 
     /** 懒加载：进入构筑页签时才拉。 */
@@ -370,8 +397,8 @@ fun PlayerDetailScreen(player: String) {
                 }
             }
         }
-        TabRow(selectedTabIndex = tab) {
-            listOf("概览", "DP曲线", "对战历史", "构筑", "录像").forEachIndexed { i, label ->
+        ScrollableTabRow(selectedTabIndex = tab, edgePadding = 0.dp) {
+            listOf("概览", "DP曲线", "对战历史", "构筑", "换备", "录像").forEachIndexed { i, label ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(label) })
             }
         }
@@ -386,12 +413,16 @@ fun PlayerDetailScreen(player: String) {
                     val day = dayKey(match.startTime)
                     val filters = ReplayFilters(opponent = match.opponent, from = day, to = day)
                     vm.searchReplays(player, filters)
-                    tab = 4
+                    tab = 5
                 },
             )
             3 -> {
                 LaunchedEffect(player) { vm.loadDecks(player) }
                 DecksTab(vm, player)
+            }
+            4 -> {
+                LaunchedEffect(player) { vm.loadSidePlan(player) }
+                SidePlanTab(vm, player)
             }
             else -> {
                 LaunchedEffect(player) {

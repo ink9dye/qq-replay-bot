@@ -108,7 +108,9 @@ fun SearchScreen(
                     selected = type == t,
                     onClick = {
                         vm.type.value = t
-                        if (query.isNotBlank() && vm.state.value != SearchViewModel.UiState.Idle) {
+                        // 已输入关键词时切类型应重查一次；原来只在“查过一次”后才重查，
+                        // 先打字再切类型会停在空页面。
+                        if (query.isNotBlank()) {
                             vm.search(query)
                         }
                     },

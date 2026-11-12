@@ -139,11 +139,8 @@ fun CardDetailScreen(code: Long, presetName: String?) {
                     ByDeckBlock(c)
                 }
 
+                CardStatsSection(code)
                 Spacer(Modifier.height(8.dp))
-                ReservedCard(
-                    "卡组胜率统计",
-                    "按卡组维度查看携带该卡的卡组胜率排名。服务端暂无对应端点，等后续候选提供。",
-                )
                 ReservedCard(
                     "条件筛选",
                     "按时间 / 段位等条件过滤统计。查询接口暂不支持筛选参数。",
@@ -183,7 +180,14 @@ private fun ByDeckBlock(c: CardDetail) {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Text("按卡组分布", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
-            for (i in 0 until byDeck.length()) {
+            if (byDeck.length() > 12) {
+                Text(
+                    "共 ${byDeck.length()} 个卡组，这里只列前 12 个",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+            for (i in 0 until minOf(byDeck.length(), 12)) {
                 val item = byDeck.optJSONObject(i) ?: continue
                 val deck = item.optString("deck_type", "?")
                 val m = item.optJSONObject("metrics") ?: continue
