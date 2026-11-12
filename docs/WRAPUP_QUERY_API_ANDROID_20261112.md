@@ -44,4 +44,4 @@
 
 ## 证据与后续
 
-完整摘要、脱敏公网请求状态/耗时、重启后状态及基线回归对照，位于工作区 `workflow-results/query-api-android-20261112/`；其中原candidate/manifest为开发阶段证据，当前状态以deployment-manifest.json及本收尾为准。接口契约见 [QUERY_API_ANDROID_20261112.md](QUERY_API_ANDROID_20261112.md)。本轮已完成用户授权的服务端补齐和上线，不追加优化。
+完整摘要、脱敏公网请求状态/耗时、重启后状态及基线回归对照，位于工作区 `workflow-results/query-api-android-20261112/`；其中原candidate/manifest为开发阶段证据，当前状态以deployment-manifest.json及本收尾为准。接口契约见 [统一接口文档 QUERY_API.md](QUERY_API.md)。本轮已完成用户授权的服务端补齐和上线，不追加优化。

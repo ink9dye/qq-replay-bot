@@ -1,10 +1,12 @@
 # 服务端总接口文档
 
-本文是服务端对外的**总接口文档**，把原来的查询接口和录像库接口合成一份：
+本文是服务端对外接口的统一契约入口，包含查询、录像库及统计网页录像筛选接口。参数和返回结构在本文维护，上线过程与回滚保留在收尾文档。
+
+快速定位：[查询总表](#2-用户接口查询接口) · [管理接口](#3-qq-开通与管理查询接口) · [录像库](#7-录像库接口replay-api只读2026-11-06-上线) · [绑定/换备/单卡统计](#10-绑定换备与单卡统计2026-11-12已上线)。
 
 | 接口 | 用途 | 章节 |
 |---|---|---|
-| `/query-api` | 查询接口（前百、玩家、构筑、单卡、录像链接、订阅），8443 TLS 入口 | 1–6 |
+| `/query-api` | 查询接口（前百、玩家、构筑、单卡、录像、订阅、绑定、换备），8443 TLS入口 | 1–6、10 |
 | `/replay-api` | 录像库：按对局检索/整场下载，PC 客户端 v1.5 使用，8787 入口 | 7 |
 | `/statistics/api/recordings` | 统计网页「录像筛选」接口，8787/8788 | 8 |
 
@@ -51,23 +53,30 @@
 | GET /query-api/player/名称/pt | 路径名称百分号编码 | data为门户积分历史 |
 | GET /query-api/player/名称/history | 同上 | data为门户历史结果 |
 | GET /query-api/player/名称/decks | 同上 | data为门户玩家构筑（`cards` 含 `partition=main/extra/side`，补齐 `card.name`）；Side 为推测，标 `inferred:true`，并附 `side_inferred` |
-| GET /query-api/player/名称/replays | 同上 | data.items及data.link；逐项url为下载链接，link含目录URL、expires_at、public |
+| GET /query-api/player/名称/replays | 同上 | data.items；逐项url为认证下载/短期签名链接，当前link=null |
 | GET /query-api/charts/pie | 无 | data.items、pie、covered、current、unidentified；与门户前百快照共源 |
 | GET /query-api/search?type=player& q=关键词 | 实际URL去掉空格；type支持player/card/deck，q最多80字 | player/card沿门户；deck按当前前百deck_distribution名称检索，最多30项 |
 | GET /query-api/card/卡号 | 1～4294967295 | data.details及data.metrics；统计不可用时metrics可为null，卡片信息仍返回 |
 | GET /query-api/subscriptions | 本人查询令牌 | data.items，仅本人订阅 |
 | POST /query-api/subscriptions | op=subscribe或unsubscribe、player；订阅可带rank_top=1～100整数或null、notify布尔值 | ok及操作结果；未知op、错误类型返回400 |
+| GET /query-api/replay/{id} | 查询access或有效短期签名 | 录像二进制下载，见本节下载说明 |
+| GET /query-api/binding | 当前查询身份 | data.player；未绑定为null，见§10.2 |
+| POST /query-api/binding | JSON player | data.player/known/changed，见§10.2 |
+| POST /query-api/binding/unbind | 无正文 | data.removed；重复解绑false，见§10.2 |
+| GET /query-api/player/{name}/side-plan | 玩家名及筛选参数 | 换备先后攻分列，见§10.3 |
+| GET /query-api/card/{code}/usage | limit=1..100，默认20 | 使用量与裁剪后的records，见§10.4.2 |
+| GET /query-api/card/{code}/flow | 不支持limit | 完整卡组流向分组，见§10.4.3 |
+| GET /query-api/card/{code}/winrate | limit=1..20，默认20 | 总体、先后攻、对阵Top20，见§10.4.4 |
 
-玩家路径名称最多100字，不能含斜杠；查询不猜首局、不更改统计口径。构筑搜索限定当前前百分布，不承诺历史全库搜索。录像只返回14天内现存文件，每次最多1000条；目录链接按当前查询用户创建，缓存包含用户身份。没有公网分享地址时不向远程用户返回不可用的回环链接。
+玩家路径名称最多100字，不能含斜杠；查询不猜首局、不更改统计口径。构筑搜索限定当前前百分布，不承诺历史全库搜索。录像只返回14天内现存文件，每次最多1000条。当前逐项URL为绝对/query-api/replay/{id}下载地址；可带查询access下载，也可使用列表签发的exp/sig短期签名（默认5小时）供浏览器打开。不依赖public_base_url，不返回回环地址，不创建share_links；link保留为null。签名URL本身是临时下载凭证，不记日志或当永久链接保存。
 
-订阅写入同时要求query.writes_enabled=true与账号writes=true；账号权限变动按请求实时验证。调用方不能通过正文选择其他账号。订阅与QQ使用同一张既有subscriptions表；本次没有新建自动推送任务。录像GET在需要时沿现有分享机制创建/复用share_links记录，不能称为数据库完全只读。
+订阅写入同时要求query.writes_enabled=true与账号writes=true；账号权限变动按请求实时验证。调用方不能通过正文选择其他账号。订阅与QQ使用同一张既有subscriptions表；本次没有新建自动推送任务。当前录像列表/下载不再创建share_links；身份绑定及订阅仍是写操作，不将整个query-api称为数据库完全只读。
 
 查询读取通常返回{"ok":true,"data":...}，认证/管理/订阅写入直接返回字段。预期错误：400输入无效、401认证失败、403无写权限、404无对应路径、409账号已开通、429限流/繁忙、503查询未启用或上游不可用。/query-api/command保留为已认证请求501，不提供命令文本透传。客户端应使用结构化端点，不能把所有200业务结果都理解为“有数据”。
 
 
 
-> decks 的 Side 说明（2026-11-06 23:40）：stat_build_cards 没有真实 side 分区，cards 里的 partition=side 来自构筑页同一套推测（statistics_build_detail.infer_side）：同场多局差异 + 收敛，每张带 inferred:true、copies、sources、
-ame；顶层 side_inferred={complete,conflict,reason,order} 说明是否完整、是否冲突、原因和排序。completeness.side 仍为 false（无直接记录），不要把它当真实 Side。
+> decks 的 Side 说明（2026-11-06 23:40）：stat_build_cards 没有真实 side 分区，cards 里的 partition=side 来自构筑页同一套推测（statistics_build_detail.infer_side）：同场多局差异 + 收敛，每张带 inferred:true、copies、sources、name；顶层 side_inferred={complete,conflict,reason,order} 说明是否完整、是否冲突、原因和排序。completeness.side 仍为 false（无直接记录），不要把它当真实 Side。
 
 ## 3. QQ 开通与管理（查询接口）
 
@@ -95,7 +104,7 @@ ame；顶层 side_inferred={complete,conflict,reason,order} 说明是否完整�
 
 ## 4. 资源边界（查询接口）
 
-query最多同时处理2个请求，繁忙返回429；不占用watch的请求闸门。查询JSON正文最多64KiB，连接读超时10秒，拒绝不完整/非法正文后关闭连接。新增查询缓存最多32条、总编码字节8MiB、单条4MiB，缓存未命中计算串行化；只改变新增query层，不改网页既有缓存。饼图和构筑名称搜索复用roster，避免在collector重复做全库统计。默认禁用订阅写入，部署时再显式开启。
+查询分轻/重闸门，默认light_gate=6、heavy_gate=2，等待默认0.5/1.5秒；参数可配置，按实际配置生效，不将所有query合称最多2路。繁忙返回429，不占watch闸门。JSON正文最多64KiB，连接读超时10秒；缓存最多32条、总编码8MiB、单条4MiB，同键未命中复用既有单飞，不同键可并行，不宣称跨进程全局单飞。统计上游调用默认8秒超时，冷查可暂时503；新端点细则见§10.1。
 
 ## 5. 部署与回滚（查询接口）
 
@@ -104,12 +113,14 @@ query最多同时处理2个请求，繁忙返回429；不占用watch的请求闸
 3. 安装前完成Python编译、相关回归；生成/安装证书是独立操作。tools/gen_query_cert.sh只生成新证书，拒绝覆盖现有证书，不自动安装或重载nginx。
 4. deploy/nginx-query-api.conf是独立8443 TLS入口模板，需核实际nginx配置和证书路径后增量合入、nginx -t，再按许可平滑加载。不替换8787。公网屏蔽全部/query-api/admin前缀，应用层也拒绝转发管理请求。
 5. 自签证书需要调用方显式信任；本次不修改安卓信任配置，因此不能宣称现有APK已经能连接。服务器接口可以先通过携带该证书的独立客户端验收。
-6. 加载涉及collector、QQ、web以及nginx；对应源码归属ygo:ygo。线上重启须用户确认，且避开在录/在途任务。需要watch加载时只运行一次activation-check；状态未知或在录则记待加载，不等待循环、不强制重启。
+6. 按实际文件归属加载对应服务，不默认同时重启collector、QQ、web或重载nginx；对应源码归属ygo:ygo。线上重启须用户确认，且避开在录/在途任务。需要watch加载时只运行一次activation-check；状态未知或在录则记待加载，不等待循环、不强制重启。
 7. 验收新接口、既有观战设备认证、8787/8788健康及管理公网隔离。摘要匹配不代表进程已加载。回滚恢复备份源码/配置及此前nginx配置；保留新增认证库和任务归属账本留证，不删除录像或事实数据。
 
-## 6. 当前验证边界（查询接口）
+## 6. 验证状态与边界（查询接口）
 
-本地语法、查询HTTP/认证及真实门户桥接有测试证据；相关广回归的历史失败单独留档。浏览器工具初始化超时，管理UI真实点击仍待验收，JS语法检查已通过。线上配置、TLS安装、服务加载、正式账号及真实设备验收未执行。仅凭本文件不能称为生产已生效。
+2026-11-12的7个新增端点已部署到生产：Python3.12隔离48项通过，公网TLS/临时测试身份绑定共享读取、卡牌三接口和换备、Top20与Top5的统计一致性均验收通过。健康8787/8788为200，web/collector已加载，QQ/NapCat未重启。完整证据与回滚见[上线收尾](WRAPUP_QUERY_API_ANDROID_20261112.md)。
+
+这不代表安卓实际UI、真实QQ消息发送、管理UI点击已全部验收。旧查询76项中的7项失败在改前线上基线同样复现，未当作本次新回归；明细见收尾证据。§5描述一般部署流程，历史候选版本、首次启用说明不作为当前运行状态。
 
 ## 7. 录像库接口（`/replay-api`，只读，2026-11-06 上线）
 
@@ -391,7 +402,7 @@ MoeCardWatch v1.2「录像库」：一场一行（双方/比分/卡组/局数/�
 统计网页「录像筛选」页的查询接口，和上面的 `/query-api`、`/replay-api` 是两套东西：
 
 - 本地 owner 页面：`http://127.0.0.1:8788/statistics/api/recordings?<params>`（需 owner cookie）
-- 公开统计链接：`http://<服务器>:8787/stats/<token>/statistics/api/recordings?<params>`（由 collector 进程内 portal 直接调用同一份代码，不经过 HTTP 8788）
+- 公开统计链接：`http://<服务器>:8787/stats/<token>/statistics/api/recordings?<params>`（当前由collector的统计代理转发到ygo-web，不在collector重算）
 
 现有参数（节选）：`mode`（drawn/not_drawn/used）、`match`、`card`、`not_card`、`deck`、`series`、`opponent_*`、`self_range` / `opponent_range`（100/200/all）、`start` / `end`（ISO 时间）、`outcome`、`first`、`phase`。
 
@@ -425,12 +436,267 @@ MoeCardWatch v1.2「录像库」：一场一行（双方/比分/卡组/局数/�
 | 2026-11-08 23:20 | `card-metrics` 进程内缓存 600 s；`card_query` 6.4 → 1.8–2.6 s；portal 冷算 10.4 → 6.85 s |
 
 
-## 10. 安卓查询接口补齐（2026-11-12，已部署）
+## 10. 绑定、换备与单卡统计（2026-11-12已上线）
 
-契约见 [QUERY_API_ANDROID_20261112.md](QUERY_API_ANDROID_20261112.md)，部署及回滚见 [上线收尾](WRAPUP_QUERY_API_ANDROID_20261112.md)。新增绑定GET/POST、解绑POST、玩家side-plan与卡牌usage/flow/winrate，共7个端点；沿用query access身份，绑定仅设默认查询偏好。
+本节为7个新增端点的完整契约，和§2同属/query-api。功能版本076ada2；部署、测试与回滚记录见[上线收尾](WRAPUP_QUERY_API_ANDROID_20261112.md)。本节字段为结构示例，数组可省略条目，示例数字不代表同一真实快照。
 
-胜率API默认Top20、limit=1..20，QQ默认Top5保持兼容。usage默认返回20条records、limit=1..100；flow完整返回items/bars/small_groups且不支持limit。统计统一经本机owner鉴权门户，不在查询进程另开事实库重算。
+### 10.1 通用约定
 
-新端点正常无记录200、未知卡号404、繁忙429并附Retry-After、服务不可用503；旧端点语义不变。新统计响应含generated_at，缓存命中保留生成时间。冷查可能暂时503，有限退避重试后可成功，不承诺每次首查均立即200。
+公网入口为 `https://<服务器>:8443/query-api/`，使用 `Authorization: Bearer <query access token>`；自签证书须显式信任，不关闭证书校验。绑定身份只取token中的identity，不接受正文或参数选择其他账号。观战令牌和管理令牌不能代替查询access。
 
-19:33:39已部署6文件并重启web/collector；用户明确允许本次带远程在录重启。QQ/NapCat未重启。Python3.12隔离48项通过，公网TLS/临时账号绑定往返/真实统计均已验收；安卓UI与真实QQ命令逐项比对不在本次验证范围。功能提交076ada2。
+成功包装为 `{"ok":true,"data":{}}`，失败为 `{"ok":false,"error":"错误码"}`；繁忙响应可附retry_after秒数及Retry-After响应头。
+
+| HTTP | error | 含义 |
+|---|---|---|
+| 400 | bad_player / bad_code / bad_param | 名字、卡号或参数非法；未知/重复参数也拒绝 |
+| 400 | player_required | 绑定玩家名缺失或去首尾空白后为空 |
+| 401 | unauthorized | 查询access缺失、过期、吊销或令牌用途错误 |
+| 404 | no_build | 玩家或指定digest无可用构筑，仅适用于换备 |
+| 404 | card_not_found | 本地卡库及既有可信身份映射无法识别该卡号 |
+| 429 | busy | 查询闸门或上游繁忙、绑定写入限流；按Retry-After退避 |
+| 503 | query_unavailable | 依赖不可用、上游超时或统计尚未能可靠产出；可有限退避重试 |
+
+以上错误约定仅适用于本节新端点；旧端点保留原错误语义，查询关闭等通用状态仍有效。冷查usage/winrate实测曾在约8秒返回503，重试后成功，不能将503理解成“没有使用记录”。已知卡牌无记录正常200；使用相关计数为0，无有效分母的胜率为null。coverage、0张分布、usage.records中未携带该卡的玩家及flow.items中使用量为0的卡组，均按真实统计保留，不一律清空。
+
+| 端点 | 缓存与限制 |
+|---|---|
+| GET binding | 不缓存 |
+| POST binding / binding/unbind | 绑定、改绑、解绑合计每账号10次/分钟；不要求订阅writes权限 |
+| side-plan | 查询层30秒缓存，包含玩家及全部筛选参数 |
+| usage / flow / winrate | 查询层300秒缓存；区分端点、卡号及适用的limit |
+
+统计端点沿用heavy闸门（默认2路），不占watch闸门。查询层及门户复用现有有界缓存/并发机制；不保证网页、QQ、API跨进程全局单飞。绑定与统计端点均跟随query.enabled，本次没有新增binding_enabled配置。
+
+所有统计响应data含generated_at，表示底层结果生成时间，缓存命中不刷新。时间均为UTC Unix秒，可带小数；计数/卡号为整数。flow.rate为0–1，winrate.rate为0–100；无分母为null，真实零值为0。平局进胜率分母，未知结果不当负局；不同接口不保证同一快照。
+
+新增字段向后兼容，客户端忽略未知字段。JSON为UTF-8；玩家名去首尾空白后最多100个Unicode码点，拒绝控制字符、斜杠和反斜杠。路径段空格编码为%20、字面加号为%2B、百分号为%25，只解码一次，不对路径使用unquote_plus。没有分页的列表不将total_decks等字段解释为可分页总数。
+
+### 10.2 身份绑定
+
+与QQ共用qq_bindings；绑定仅设置默认查询玩家，不证明拥有MC账号、不授予额外权限。GET只返回player，不暴露表内updated_at。
+
+### 10.2.1 `GET /query-api/binding`
+
+响应：
+
+```json
+{"ok": true, "data": {"player": "捏爆你的小旺仔"}}
+```
+
+未绑定：`{"ok":true,"data":{"player":null}}` —— **不要返回 404**，客户端据此显示"未绑定"。
+
+### 10.2.2 `POST /query-api/binding`
+
+请求：
+
+```json
+{"player": "捏爆你的小旺仔"}
+```
+
+响应：
+
+```json
+{"ok": true, "data": {"player": "捏爆你的小旺仔", "known": true, "changed": true}}
+```
+
+字段语义：
+
+| 字段 | 说明 |
+|---|---|
+| `player` | 实际写入的名字（归一化后的真实名） |
+| `known` | `store.has_player(player)`：最近 14 天收录里有没有这个名字 |
+| `changed` | 与旧绑定不同才为 true |
+
+校验与处理：
+
+1. player 必须为字符串；缺失或去首尾空白后为空 → `400 player_required`；类型错误、超过100个 Unicode 码点、含控制字符或 `/`、`\` → `400 bad_player`。
+2. **归一化**：复用 `Service._canonical_player()` 的语义 —— 在 `store.player_names()` 里做"空格归一后唯一匹配"替换（`久 远` → 真实写法）；不唯一或不命中就按原文保存。
+3. `known=false` **仍然保存**（可能最近没打），由客户端提示"最近 14 天没收录到这个名字"。
+4. 不需要 `query.writes_enabled`：这是个人绑定，不是订阅/统计写入。绑定、改绑、解绑按账号共用上述限流；本版不新增配置开关。
+5. 不进入 QQ 那边的 `_bind_pending` 流程，一次调用成事。
+
+### 10.2.3 `POST /query-api/binding/unbind`
+
+请求无正文。响应：
+
+```json
+{"ok": true, "data": {"removed": true}}
+```
+
+本来就未绑定 → `removed:false`，**不报错**。
+
+### 10.3 换备（Side Plan）
+
+### 10.3.1 `GET /query-api/player/{name}/side-plan`
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `name`（路径） | 字符串 ≤100 字 | 必填 | 玩家名，百分号编码；按 §1 编码与校验 |
+| `digest` | 64 位小写 hex | 空 | 指定某套构筑；空=最新一套 |
+| `top` | 1–12 | 6 | 取最常遇到的 N 个对手卡组 |
+| `recent` | 1–10 | 5 | 每个对手取最近 N 场 |
+| `min_side_games` | 1–100 的整数 | 3 | 低于该值标 `sample_low` |
+| `opponent_range` | 200 / 0 | 200 | 只看对手前 200；`0`=关闭过滤。**默认必须 200**，否则数字和 QQ/网页对不上 |
+
+响应：
+
+```json
+{"ok":true,"data":{
+  "version":1,"generated_at":1793940116.0,
+  "player":"捏爆你的小旺仔",
+  "deck":"刻魔泪冠",
+  "selected":{"digest":"…","recorded_at":1793940116.0,"observation_kind":"first"},
+  "total_matches":37,
+  "top_decks":6,"recent_matches":5,"min_side_games":3,
+  "opponents":[
+    {
+      "deck":"珠泪哀歌",
+      "matches":9,
+      "recent_matches":5,
+      "side_games":6,
+      "seat_unknown_games":0,
+      "sample_low":false,
+      "first":{
+        "side_games":3,
+        "added":[{"code":14558127,"name":"灰流丽","partition":"main",
+                  "sessions":2,"side_games":2,
+                  "copies":{"1":2},"min_copies":1,"max_copies":1}],
+        "removed":[{"code":23434538,"name":"增殖的G","partition":"main",
+                    "sessions":1,"side_games":1,
+                    "copies":{"3":1},"min_copies":3,"max_copies":3}]
+      },
+      "second":{"side_games":3,"added":[],"removed":[]},
+      "sessions":[
+        {"id":14930,"recorded_at":1793940116.0,"game_numbers":[1,2,3],
+         "side_games":2,"added":[],"removed":[]}
+      ]
+    }
+  ],
+  "rank_scope":{"opponent_range":200,"excluded_matches":2,"unverified_matches":1},
+  "notes":["只统计当前构筑（主卡相同）的场次；每个对手取最近 5 场。","…"]
+}}
+```
+
+要点：
+
+- `first` / `second` = **先攻 / 后攻**（按该换边局玩家自己的 `first_player` 座位，不是首局座位）。
+- `added` / `removed` 必须补 `name`（直接复用统计门户已做的卡名装饰，不在查询层重复补名；局内 sessions 的卡牌项也遵循同样规则）。
+- `copies` 是"张数 → 场次"的直方图；`min_copies`/`max_copies` 是区间，客户端显示成 `1~2 张`。
+- `404 no_build`：`query()` 返回 None 时（该玩家最近 14 天没有可用构筑）。QQ 现在回中文句子，API 要换成错误码。
+- 已有构筑但没有符合条件的对手场次：200、opponents=[]；与 no_build 区分。指定 digest 对该玩家无可用构筑时也返回 no_build。
+- opponent_range=0 在适配层转换为既有实现的关闭过滤值（如 None），不可假定直接传整数 0 语义相同。
+- 参数严格校验，非法值返回 400 bad_param，不静默截到边界；整数参数不接受小数、布尔值或重复参数。
+- 顺序直接沿用原实现（对手排行、sessions、换入换出卡牌），不在安卓专用接口另排一遍。
+- 耗时以实际验收为准；复用现有有界上游超时，不为接口随意放宽到30秒以上。
+
+### 10.4 卡牌统计
+
+### 10.4.1 公共约定
+
+- `{code}`：仅十进制整数，范围 1–4294967295；非法 → 400 bad_code。合法但卡库和既有可信映射均不识别 → 404 card_not_found；仅“没有统计记录”不能判为不存在。
+- 卡号通过本地精确查询及既有 card_identity 异画/先行号规则确定身份组；不改变映射、合并算法或参数。不能只把 code 转成卡名再走模糊匹配。接口使用精确卡号入口，复用原计算核心；QQ原调用行为保持兼容。
+- 返回 requested_code（本次请求整数）、code（既有身份规则实际选用的代表号）、name（该身份中文名）。二者可相同；映射依据必须来自既有可信规则。
+- usage 支持 limit=1..100，默认20；winrate 支持 limit=1..20，默认20；flow 不支持 limit，传入返回400 bad_param。limit 必须为整数，非法值返回400 bad_param，不静默截断。
+- 每个统计响应 data 含 generated_at。聚合值必须基于完整数据，不能裁剪后重算；不得修改共享缓存字典来裁剪响应。
+- 已知卡牌无记录返回正常空统计；服务故障返回503，详见 §10.1。
+- 以下 JSON 只展示字段结构与类型，不是同一批真实数据；空数组/空对象及字符串“…”表示示例省略，不代表实际统计值。实际响应必须为标准 JSON，不含 NaN、Infinity 或省略号字面量。
+
+### 10.4.2 `GET /query-api/card/{code}/usage`
+
+复用使用量统计结果，只裁剪 records。响应结构示例：
+
+```json
+{"ok":true,"data":{
+  "requested_code":14558127,"code":14558127,"name":"灰流丽","generated_at":1793940116.0,
+  "covered":100,"current":100,"excluded":0,"total_players":100,
+  "main_dist":{"0":2,"1":3,"2":8,"3":87},
+  "side_dist":{"0":74,"1":12,"2":9,"3":5},
+  "total_dist":{"0":1,"1":2,"2":7,"3":90},
+  "main_total":280,"side_total":45,"total_total":325,
+  "side_used":26,"side_available":true,
+  "records":[
+    {"player":"…","rank":1,"main":3,"side":1,"side_out":0,"total":4,
+     "main_known":true,"known":true,"build":"…","has_build":true}
+  ],
+  "limit":20,"records_total":100,"truncated":true
+}}
+```
+
+records 只取原实现顺序的前 limit 条；records_total 为裁剪前条数，truncated = records_total > len(records)。各分布与总数不受 limit 影响，顺序沿用原实现。
+
+口径提示（写进 `notes` 或字段注释即可，别改算法）：主卡只认**确证第 1 局**；`side` 是从第 2/3 局相对首局的净换入反推，录像本身不含备牌表。
+
+### 10.4.3 `GET /query-api/card/{code}/flow`
+
+响应结构示例（不返回逐玩家 records 和绘图内部 shown）：
+
+```json
+{"ok":true,"data":{
+  "requested_code":14558127,"code":14558127,"name":"灰流丽","generated_at":1793940116.0,
+  "covered":86,"current":100,"total_players":100,
+  "main_used":87,"side_used":26,"total_used":90,
+  "items":[
+    {"deck":"珠泪哀歌","players":12,
+     "main":{"known":12,"used":12,"one":1,"two":2,"three":9,"rate":1.0},
+     "side":{"known":12,"used":4,"one":1,"two":1,"three":2,"rate":0.333},
+     "total":{"known":12,"used":12,"one":1,"two":1,"three":10,"rate":1.0}}
+  ],
+  "bars":{"main":[],"side":[],"total":[]},
+  "small_groups":[{"deck":"…","players":2,"main":{},"side":{},"total":{}}]
+}}
+```
+
+`items` 为全部卡组、`bars` 仅包含达到现有样本阈值的卡组、`small_groups` 为低样本卡组。第一版三者完整保留，不支持 limit、不独立截断；顺序和阈值均沿用 collect_flow。用真实全量响应测量体积，不承诺 <32 KB。
+
+### 10.4.4 `GET /query-api/card/{code}/winrate`
+
+响应结构示例：
+
+```json
+{"ok":true,"data":{
+  "requested_code":14558127,"code":14558127,"name":"灰流丽","generated_at":1793940116.0,
+  "matchups":{
+    "version":1,"unit":"used_small_game_perspective",
+    "population":"top100","partition":"main",
+    "limit":20,"min_games":10,"fallback_games":5,
+    "base":{"games":1240,"wins":660,"losses":540,"draws":40,
+            "rate":53.23,"unknown_outcome":0},
+    "rows":[{"deck_type":"珠泪哀歌","games":120,"wins":70,"losses":50,
+             "rate":58.33,"low_sample":false}],
+    "total_decks":18,"qualified_decks":11,
+    "notes":["…"]
+  },
+  "order":{
+    "first":{"games":640,"wins":350,"losses":290,"draws":0,"rate":54.69,"unknown_outcome":0},
+    "second":{"games":600,"wins":310,"losses":250,"draws":40,"rate":51.67,"unknown_outcome":0},
+    "unknown":{"games":0,"wins":0,"losses":0,"draws":0,"rate":null,"unknown_outcome":0}
+  }
+}}
+```
+
+`order.first` / `order.second` 是**先攻/后攻**（现有分组），直接来自 `card_winrate._compute` 里的 `order`，不要自己重算。
+
+`matchups.rows` 对安卓 API 默认最多20项，支持 limit=1..20；样本不足时可更少。matchups.limit 返回本次有效选择上限。保留 total_decks、qualified_decks 原有含义，不将其直接解释成可分页总数。未知座位只进入总体及 order.unknown，不挪入先攻或后攻。
+
+条数只影响对阵列表；总体、先后攻和未知座位统计基于完整样本。API和数据层缓存区分limit；QQ原调用仍默认5。筛选沿用每行至少10局，不足目标条数时用5–9局补位并标low_sample；没有足够样本时可少于20行，不降阈值凑数。API显式limit=5与QQ Top5沿用同一筛选和顺序。
+
+### 10.5 调用示例
+
+下面使用Bash及专用测试账号；令牌只在内存输入，不写入文档或命令历史。TLS证书通过受信证书库或CURL_CA_BUNDLE配置，不使用-k。示例中的玩家名替换为实际名称。
+
+```bash
+read -r -s -p 'Query access token: ' TOKEN; echo
+B='https://<服务器>:8443'
+curl -s -H "Authorization: Bearer $TOKEN" "$B/query-api/binding"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"player":"示例玩家"}' "$B/query-api/binding"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$B/query-api/binding/unbind"
+NAME=$(python3 -c 'import urllib.parse; print(urllib.parse.quote("示例玩家", safe=""))')
+curl -s -H "Authorization: Bearer $TOKEN" "$B/query-api/player/$NAME/side-plan?top=6&recent=5"
+curl -s -H "Authorization: Bearer $TOKEN" "$B/query-api/card/14558127/usage?limit=20"
+curl -s -H "Authorization: Bearer $TOKEN" "$B/query-api/card/14558127/flow"
+curl -s -H "Authorization: Bearer $TOKEN" "$B/query-api/card/14558127/winrate?limit=20"
+unset TOKEN
+```
+
+内部 `/statistics/api/query-*` 不是公网对接入口；它们要求本机Host/来源、owner cookie及内部头，由服务端查询层调用。

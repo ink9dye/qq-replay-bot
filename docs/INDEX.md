@@ -14,7 +14,7 @@
 | 健康检查 | `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/health` |
 | 交接入口 | [`PROJECT_HANDOFF.md`](../PROJECT_HANDOFF.md) 顶部摘要 + 最新条目 |
 
-- [安卓 API 补齐契约与上线状态](QUERY_API_ANDROID_20261112.md)：绑定、换备、卡牌三接口，安卓Top20/QQ Top5；已部署。
+- [统一 API 契约](QUERY_API.md)：查询/录像/订阅/绑定/换备/卡牌统计完整对接说明；安卓旧文档保留为跳转入口。
 
 - [安卓 API 补齐上线收尾](WRAPUP_QUERY_API_ANDROID_20261112.md)：部署、真实接口验收、版本及回滚。
 
