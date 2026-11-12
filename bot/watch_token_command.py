@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+import json
 import threading
 import time
 from datetime import datetime
@@ -18,6 +19,40 @@ DEFAULT_PUBLIC_URL = "http://101.201.108.188:8787"
 COOLDOWN_SECONDS = 30.0
 _LOCK = threading.RLock()
 _SAFE_WORKER = re.compile(r"[^0-9A-Za-z_-]+")
+DELEGATE_USERS = frozenset({"1278389701", "3572605808"})
+
+
+def delegated_user(user) -> bool:
+    return str(user) in DELEGATE_USERS
+
+
+def _grants(service) -> dict:
+    root = getattr(service, "data_dir", None)
+    if root is None:
+        return {}
+    try:
+        value = json.loads((Path(root) / "confidential-grants.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("invalid confidential grants")
+    return value
+
+
+def granted(service, user, capability) -> bool:
+    with _LOCK:
+        return capability in _grants(service).get(str(user), [])
+
+
+def grant(service, user, capability):
+    """仅保存功能授权，不保存令牌/激活码；原子替换，重启后继续有效。"""
+    with _LOCK:
+        rows = _grants(service)
+        rows[str(user)] = sorted(set(rows.get(str(user), [])) | {capability})
+        path = Path(service.data_dir) / "confidential-grants.json"
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+        temp.replace(path)
 
 
 def usage() -> str:
@@ -35,7 +70,7 @@ def _in_group(conversation) -> bool:
     return str(conversation or "").startswith("group:")
 
 
-def confidential_allowed(service, user, conversation="") -> bool:
+def confidential_allowed(service, user, conversation="", capability=None) -> bool:
     """保密名单判定，供「令牌分发」「开通查询」共用。
 
     优先用 remote.token_groups / token_users；没配置时沿用统计的
@@ -48,7 +83,8 @@ def confidential_allowed(service, user, conversation="") -> bool:
     if _in_group(conversation):
         group = str(conversation).split(":", 1)[1]
         return group in {str(item) for item in (groups or [])}
-    return str(user) in {str(item) for item in (users or [])} or _is_admin(service, user)
+    return (str(user) in {str(item) for item in (users or [])} or _is_admin(service, user)
+            or delegated_user(user) or (capability is not None and granted(service, user, capability)))
 
 
 def _public_url(service) -> str:
@@ -167,13 +203,21 @@ def _revoke(service, user, args, conversation) -> str:
 def handle(service, user, args, conversation="") -> str:
     """commands.parse_command 的 watch_token op 入口。"""
     tokens = [str(item).strip() for item in (args or []) if str(item).strip()]
+    if len(tokens) == 1 and re.fullmatch(r"[0-9]{5,20}", tokens[0]):
+        if not delegated_user(user):
+            return "仅指定管理员可以为其他QQ开通。"
+        if _in_group(conversation) and not confidential_allowed(service, user, conversation):
+            return ""
+        target = tokens[0]
+        grant(service, target, "watch_token")
+        return f"已为QQ {target} 开通令牌分发。\n" + _issue(service, target, 1, conversation)
     if tokens and tokens[0].casefold() in ("help", "帮助"):
         return usage()
     if tokens and tokens[0] in ("列表", "list"):
         return _list(service, user, conversation)
     if tokens and tokens[0] in ("吊销", "revoke"):
         return _revoke(service, user, tokens[1:], conversation)
-    if not confidential_allowed(service, user, conversation):
+    if not confidential_allowed(service, user, conversation, "watch_token"):
         return "令牌分发只对保密名单内的群/用户开放。"
     if len(tokens) > 1:
         return usage()

@@ -371,6 +371,9 @@ class BotService:
             text = "\n".join(line for line in text.splitlines()
                              if not line.startswith(("统计：", "观战设备：", "统计对局：",
                                                      "开通查询：", "令牌分发：")))
+        from .watch_token_command import delegated_user
+        if delegated_user(user_id) and confidential_allowed(self, user_id, conversation):
+            text += "\n管理员代开通：令牌分发 QQ号；开通查询 QQ号。结果私聊发给发出命令的管理员。"
         return text
 
     def default_query_rule_line(self) -> str:
@@ -613,7 +616,7 @@ class BotService:
         temporary.replace(path)
         self._capture_status_written=now
 
-    def _query_enroll(self, user: str) -> str:
+    def _query_enroll(self, user: str, *, delegated=False) -> str:
         from .query_core import admin_issue, admin_reissue
         cfg = self.config.get("query") or {}
         admin_token = str(cfg.get("admin_token") or "")
@@ -628,6 +631,9 @@ class BotService:
             result["after_reissue"] = True
             if result.get("ok"):
                 result["reissued"] = True
+        if delegated and result.get("ok"):
+            from .watch_token_command import grant
+            grant(self, user, "query_enroll")
         return _enroll_reply(result, int(cfg.get("code_hours") or 24))
 
     def handle_text(self, user_id, text: str, conversation: str = "") -> str:
@@ -639,7 +645,10 @@ class BotService:
         op = command.get("op")
         if op in ("stats_page", "watch_devices", "game_counts") and not self._statistics_allowed(user, conversation):
             return None
-        if not self.authorized(user):
+        from .watch_token_command import delegated_user, granted
+        confidential_access = (op in ("query_enroll", "watch_token")
+                               and (delegated_user(user) or granted(self, user, op)))
+        if not self.authorized(user) and not confidential_access:
             if command.get("op") == "help":
                 text = self.help_text(user, conversation)
                 return text + "\n\n你还没有使用权限，不能订阅或查看录像。"
@@ -658,12 +667,19 @@ class BotService:
             return self.help_text(user, conversation)
         if op == "query_enroll":
             from .watch_token_command import confidential_allowed
+            target = command.get("target")
+            if target:
+                if not delegated_user(user):
+                    return "仅指定管理员可以为其他QQ开通。"
+                if conversation.startswith("group:") and not confidential_allowed(self, user, conversation):
+                    return None
+                return self._query_enroll(target, delegated=True)
             if conversation.startswith("group:"):
                 # 保密名单内的群：结果由 on_qq_event 私聊发给指令发送者；名单外群静默。
                 if not confidential_allowed(self, user, conversation):
                     return None
                 return self._query_enroll(user)
-            if not confidential_allowed(self, user, conversation):
+            if not confidential_allowed(self, user, conversation, "query_enroll"):
                 # 群内已触发过、但私聊发送失败：允许本人一次性私聊重发。
                 if not self._take_confidential_retry(user):
                     return None
@@ -763,7 +779,7 @@ class BotService:
             return device_message(self)
         if op == "watch_token":
             from .watch_token_command import confidential_allowed
-            allowed = confidential_allowed(self, user, conversation)
+            allowed = confidential_allowed(self, user, conversation, "watch_token")
             if not allowed and not conversation.startswith("group:"):
                 # 群内私聊发送失败后的一次性私聊重发许可。
                 allowed = self._take_confidential_retry(user)

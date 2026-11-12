@@ -142,7 +142,11 @@ def parse_command(text: str) -> dict:
     if head in ("查卡", "ck", "CK"):
         return {"op": "card_search", "query": " ".join(rest)}
     if head == "开通查询":
-        return {"op": "error", "message": "直接发送“开通查询”即可。"} if rest else {"op": "query_enroll"}
+        if not rest:
+            return {"op": "query_enroll"}
+        if len(rest) == 1 and re.fullmatch(r"[0-9]{5,20}", rest[0]):
+            return {"op": "query_enroll", "target": rest[0]}
+        return {"op": "error", "message": "格式：开通查询；管理员代开通：开通查询 QQ号。"}
     if head == "查卡下一页":
         return {"op": "error", "message": "直接发送“查卡下一页”即可。"} if rest else {"op": "card_next"}
     card_select = re.fullmatch(r"选卡\s*(\d+)", head)
