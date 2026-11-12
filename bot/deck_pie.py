@@ -388,39 +388,39 @@ def single_ring(distribution, groups, threshold=THRESHOLD, representatives=None,
         item['players'] = players
         item['percent'] = _pct(players, total)
 
+    # Display intersections use the final, apportioned order and all matching fields.
+    slices.sort(key=lambda item: (-item['players'], item['name']))
+    positions = {item['name']: i for i, item in enumerate(slices)}
+    pairs = Counter()
+    for row in middle_rows:
+        fields = set([row['primary']] + list(row.get('extras') or [])) & set(positions)
+        fields = sorted(fields, key=positions.get)
+        for i, left in enumerate(fields):
+            for right in fields[i + 1:]:
+                pairs[left, right] += row['players']
     for index, item in enumerate(slices):
         item['bands'] = []
-        if item['kind'] != 'category':
-            continue
-        rows = by_primary.get(item['name'], [])
-        overlap_names = set()
-        for side, offset in (('left', -1), ('right', 1)):
-            neighbor = index + offset
-            if neighbor < 0 or neighbor >= len(slices):
+        adjacent = {name for pair in pairs for name in pair
+                    if item['name'] in pair and name != item['name']
+                    and abs(positions[name] - index) == 1}
+        for row in sorted(by_primary.get(item['name'], []),
+                          key=lambda row: (-row['players'], row['name'])):
+            if adjacent.intersection(row.get('extras') or []):
                 continue
-            partner = slices[neighbor]
-            if partner['kind'] != 'category':
+            if _pct(row['players'], total) > min_member:
+                item['bands'].append(dict(kind='member', side=None, name=row['name'],
+                    partner=None, players=row['players'], percent=_pct(row['players'], total),
+                    images=[item.get('image'), row.get('image')], image=row.get('image')))
+        for (left, right), players in pairs.items():
+            if left != item['name']:
                 continue
-            shared = [row for row in rows if partner['name'] in (row.get('extras') or [])]
-            if not shared:
-                continue
-            overlap_names.update(row['name'] for row in shared)
-            players = sum(row['players'] for row in shared)
-            item['bands'].append(dict(
-                kind='overlap', side=side, name=f"{item['name']}∩{partner['name']}",
-                partner=partner['name'], players=players, percent=_pct(players, total),
+            partner = slices[positions[right]]
+            # Each boundary may move by at most half either slice's width.
+            display_players = min(players, item['players'], partner['players'])
+            item['bands'].append(dict(kind='overlap', side='right',
+                name=left + '\u2229' + right, partner=right, players=players,
+                display_players=display_players, percent=_pct(players, total),
                 images=[item.get('image'), partner.get('image')], image=None))
-        for row in sorted(rows, key=lambda row: (-row['players'], row['name'])):
-            if row['name'] in overlap_names:
-                continue
-            if _pct(row['players'], total) <= min_member:
-                continue
-            item['bands'].append(dict(
-                kind='member', side=None, name=row['name'], partner=None,
-                players=row['players'], percent=_pct(row['players'], total),
-                images=[item.get('image'), row.get('image')], image=row.get('image')))
-        order = {'left': 0, None: 1, 'right': 2}
-        item['bands'].sort(key=lambda band: order[band['side']])
 
     shown = sum(item['players'] for item in slices)
     parts = []

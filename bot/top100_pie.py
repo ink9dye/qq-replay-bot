@@ -294,26 +294,10 @@ def _render_single_payload(payload):
         left, right = items[index], items[index + 1]
         band = find_overlap(left, right)
         players = band.get('players') if band else None
-        from_middle = False
-        if not players and left['name'] != '其他' and right['name'] != '其他':
-            # 与网页一致：只认“primary + 恰好一个 extras”的相邻交集，「其他」不参与。
-            for row in middle_rows:
-                extras = row.get('extras') or []
-                if len(extras) != 1:
-                    continue
-                if row.get('primary') == left['name'] and extras[0] == right['name']:
-                    players = row.get('players'); from_middle = True; break
-                if row.get('primary') == right['name'] and extras[0] == left['name']:
-                    players = row.get('players'); from_middle = True; break
         if not players:
             continue
-        width = float(players) * unit
+        width = float(band.get('display_players', min(players, left['players'], right['players']))) * unit
         steps[index] = (left['a1'] - width / 2, left['a1'] + width / 2)
-        if from_middle and not any(b.get('kind') == 'overlap' and b.get('partner') == right['name']
-                                   for b in left['bands']):
-            # 网页只把补出来的交集记到左侧切片（图例只出现在左块）。
-            left['bands'].append(dict(kind='overlap', name=f"{left['name']}∩{right['name']}",
-                                      players=players, partner=right['name'], side='left'))
 
     def pt(r, deg):
         t = math.radians(deg)
@@ -536,15 +520,6 @@ def _render_single_payload(payload):
                 if band.get('kind') == 'overlap':
                     lines.append(f"· 交集 {band['name']}  {band['players']}人（内环/外环各一张卡图）")
             # 不相邻的交集没有边界可画，但也要在图例里列出（如 混沌∩三幻魔）。
-            covered = {b.get('partner') for b in item['bands'] if b.get('kind') == 'overlap'}
-            for row in middle_rows:
-                extras = row.get('extras') or []
-                if len(extras) != 1 or row.get('primary') != item['name']:
-                    continue
-                partner = extras[0]
-                if partner not in slice_names or partner == '其他' or partner in covered:
-                    continue
-                lines.append(f"· 交集 {item['name']}∩{partner}  {row['players']}人（内环/外环各一张卡图）")
         elif item.get('kind') == 'other':
             for part in item.get('parts') or []:
                 lines.append(f"· {part['name']}  {part['players']}")

@@ -119,3 +119,5 @@
 - [前200内战最高观战优先级收尾](WRAPUP_WATCH_TOP200_PRIORITY_20261112.md)：分档规则、33项验证、部署SHA、重启验收与回滚。
 
 - [QQ管理员代开通与保密群临时私聊修复](WRAPUP_QQ_DELEGATION_TEMP_PRIVATE_20261112.md)：权限边界、18项验证、部署与回滚。
+
+- [Pie intersection fix (2026-11-12)](WRAPUP_PIE_INTERSECTIONS_20261112.md): deployment, verification and rollback.

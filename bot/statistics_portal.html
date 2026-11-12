@@ -273,32 +273,8 @@ window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster
       var L=items[i],Rn=items[i+1],ov=null;
       (L.bands||[]).forEach(function(b){if(b.kind==='overlap'&&b.partner===Rn.name)ov=b});
       (Rn.bands||[]).forEach(function(b){if(b.kind==='overlap'&&b.partner===L.name)ov=b});
-      if(ov){var w=ov.players*unit;steps[i]={th1:L.a1-w/2,th2:L.a1+w/2,span:w}}
+      if(ov){var w=(ov.display_players==null?Math.min(ov.players,L.players,Rn.players):ov.display_players)*unit;steps[i]={th1:L.a1-w/2,th2:L.a1+w/2,span:w}}
     }
-    // 交集：以 deck_pie.middle 为准，只补“两侧都是本图切片（非「其他」）”的相邻交集。
-    // 三幻魔等是单环切片时会被补上；魔女术等落在「其他」里的组不会出现。
-    (function(){
-      var names={};items.forEach(function(s){names[s.name]=1});
-      var mids=(data&&data.deck_pie&&data.deck_pie.middle)||[];
-      for(var i=0;i<items.length-1;i++){
-        var L=items[i],Rn=items[i+1];
-        if(steps[i]||!names[L.name]||!names[Rn.name]||L.name==='其他'||Rn.name==='其他')continue;
-        var hit=null;
-        mids.forEach(function(m){
-          if(hit||!m.extras||m.primary!==L.name||m.extras.length!==1||m.extras[0]!==Rn.name)return;
-          hit=m;
-        });
-        if(!hit)mids.forEach(function(m){
-          if(hit||!m.extras||m.primary!==Rn.name||m.extras.length!==1||m.extras[0]!==L.name)return;
-          hit=m;
-        });
-        if(!hit)continue;
-        var w=hit.players*unit;
-        steps[i]={th1:L.a1-w/2,th2:L.a1+w/2,span:w};
-        L.bands.push({kind:'overlap',side:'left',name:L.name+'∩'+Rn.name,partner:Rn.name,
-                      players:hit.players,percent:hit.players,images:[],image:null});
-      }
-    })();
     function pt(r,deg){var t=deg*Math.PI/180;return[cx+r*Math.cos(t),cy+r*Math.sin(t)]}
     function f(q){return q[0].toFixed(1)+' '+q[1].toFixed(1)}
     function ar(r,a0,a1,sw){var lg=Math.abs(a1-a0)>180?1:0;return 'A'+r.toFixed(1)+' '+r.toFixed(1)+' 0 '+lg+' '+sw+' '+f(pt(r,a1))}
@@ -418,7 +394,6 @@ window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='roster
       var isCat=(s.kind==='cat'||s.kind==='category'); if(isCat){
         ((data&&data.deck_pie&&data.deck_pie.outer)||[]).forEach(function(o){if(pieHit(o,'category'))block+=pieRow(o)});
         (s.bands||[]).forEach(function(b){if(b.kind==='overlap')block+='<div style="padding-left:16px;color:#7a5a24">· 交集 '+esc(b.name)+' '+b.players+'人（内环/外环各一张卡图）</div>'});
-        ((data&&data.deck_pie&&data.deck_pie.middle)||[]).forEach(function(m){var ex=m.extras||[];if(ex.length!==1||m.primary!==s.name)return;var pp=ex[0];if(!pieNames[pp]||pp==='其他')return;var cov=(s.bands||[]).some(function(b){return b.kind==='overlap'&&b.partner===pp});if(cov)return;block+='<div style="padding-left:16px;color:#7a5a24">· 交集 '+esc(s.name)+'∩'+esc(pp)+' '+m.players+'人（内环/外环各一张卡图）</div>'});
       }else if(s.kind==='deck'){
         // 独立卡组：列出所有带该字段的卡组（含混合构筑）；只有它自己时不重复列。
         var hits=[];((data&&data.deck_pie&&data.deck_pie.outer)||[]).forEach(function(o){if(o.name===s.name||(o.extras||[]).indexOf(s.name)>=0)hits.push(o)});
