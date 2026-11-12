@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import sqlite3
 import threading
@@ -75,7 +76,8 @@ def _trim_heap():
         pass
 CACHED_API_PATHS=frozenset('/statistics/api/'+name for name in (
     'recordings','deck-naming/groups','card-table','cards-extra','card-combo',
-    'card-report','roster','build','matrix','side-analysis','side-recent'))
+    'card-report','roster','build','matrix','side-analysis','side-recent',
+    'query-side-plan','query-card/usage','query-card/flow','query-card/winrate'))
 
 
 def owner_secret(path):
@@ -124,7 +126,8 @@ class StatisticsPortal:
         if api_path.startswith('/statistics/api/') and api_path not in CACHED_API_PATHS and api_path not in (
                 '/statistics/api/devices','/statistics/api/card-search','/statistics/api/card-info',
                 '/statistics/api/small-world-cards'):
-            if not self._query_compute_lock.acquire(timeout=QUERY_WAIT_SECONDS):
+            from .web_perf_metrics import acquire_query_lock
+            if not acquire_query_lock(self._query_compute_lock,timeout=QUERY_WAIT_SECONDS):
                 return self._query_busy_reply()
             try:
                 return self._route(path,headers,client)
@@ -149,6 +152,11 @@ class StatisticsPortal:
             target=requested if requested in ('/statistics/deck-naming','/statistics/devices') else '/statistics'
             return self._reply(303,'',extra={'Location':target,'Set-Cookie':f'{COOKIE}={value}; Path=/statistics; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}'})
         if not self._authenticated(headers.get('Cookie')):return self._reply(403,'请使用本机“打开统计页面”入口。')
+        if parsed.path.startswith('/statistics/api/query-'):
+            # Public statistics proxies only forward Host/Cookie, never this header.
+            if headers.get('X-Query-Internal') != '1':
+                return self._reply(403, 'Internal query adapter only.')
+            return self._query_extension_reply(parsed)
         if parts==['statistics','small-world']:
             return self._reply(200,Path(__file__).with_name('statistics_small_world.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if len(parts)==3 and parts[:2]==['statistics','assets'] and parts[2] in ('statistics_small_world.js','small_world_engine.js','statistics_small_world.css'):
@@ -912,7 +920,8 @@ class StatisticsPortal:
             try:hit=response_get(response_identity(self.database,key),ttl)
             except OSError:hit=None
             if hit is not None:return hit
-        if not self._query_compute_lock.acquire(timeout=QUERY_WAIT_SECONDS):
+        from .web_perf_metrics import acquire_query_lock
+        if not acquire_query_lock(self._query_compute_lock,timeout=QUERY_WAIT_SECONDS):
             # The owner may have finished just as our wait expired.
             hit=None if force or card_summary else self._query_cache_hit(key,ttl,stamp_seconds)
             if card_summary and not force:
@@ -949,6 +958,105 @@ class StatisticsPortal:
         return self._reply(503,json.dumps(dict(error='统计正在计算，请稍后重试。',
             code='query_busy',retry_after=3),ensure_ascii=False),
             'application/json; charset=utf-8',extra={'Retry-After':'3'})
+
+    def _query_extension_reply(self, parsed):
+        """Owner-authenticated, loopback-only adapters for the query API."""
+        from .query_core import query_options, query_player, QueryRequestError
+        path = parsed.path
+        args = parse_qs(parsed.query, keep_blank_values=True)
+        try:
+            if path == '/statistics/api/query-side-plan':
+                if len(args.get('player', [])) != 1:
+                    raise QueryRequestError('bad_player')
+                player = query_player(args['player'][0])
+                remaining = {k: v for k, v in args.items() if k != 'player'}
+                from urllib.parse import urlencode
+                options = query_options(urlencode(remaining, doseq=True), 'side-plan')
+
+                def compute_side(db):
+                    from .statistics_side_recent import query
+                    result = query(db, self.replay_root, float(self.clock()), player,
+                                   **dict(options, digest=options['digest'] or None,
+                                          opponent_range=options['opponent_range'] or None))
+                    if result is None:
+                        raise QueryRequestError('no_build', 404)
+                    from .statistics_card_names import index
+                    names = index(self.database.parent)
+                    def decorate(cards):
+                        for item in cards:
+                            info = names.get(str(item['code']))
+                            item['name'] = card_name(info) if info else '#%d' % item['code']
+                    for opponent in result.get('opponents', []):
+                        for seat in ('first', 'second'):
+                            for direction in ('added', 'removed'):
+                                decorate(opponent[seat][direction])
+                        for session in opponent.get('sessions', []):
+                            for direction in ('added', 'removed'):
+                                decorate(session[direction])
+                    # Preserve the source snapshot time, including cached build detail.
+                    if result.get('generated_at') is None:
+                        result['generated_at'] = float(self.clock())
+                    return result
+
+                return self._cached_query_reply_sync(
+                    ('query-side-plan', player, tuple(sorted(options.items()))),
+                    compute_side, ttl=30.0)
+            kind = path.rsplit('/', 1)[-1]
+            if path != '/statistics/api/query-card/' + kind or kind not in ('usage', 'flow', 'winrate'):
+                return self._reply(404, '{}', 'application/json')
+            code_values = args.pop('code', [])
+            if len(code_values) != 1 or not re.fullmatch(r'[0-9]{1,10}', code_values[0]):
+                raise QueryRequestError('bad_code')
+            code = int(code_values[0])
+            if not 1 <= code <= 4294967295:
+                raise QueryRequestError('bad_code')
+            from urllib.parse import urlencode
+            options = query_options(urlencode(args, doseq=True), kind)
+
+            def compute_card(db):
+                # collect owns its connection; do not hold a second read snapshot.
+                db.rollback()
+                now = float(self.clock())
+                if kind == 'usage':
+                    from .card_usage_pie import collect
+                    result = collect(self.database, self.database.parent, now, code=code)
+                    records = result['records']
+                    result = dict(result, records=records[:options['limit']],
+                                  records_total=len(records), limit=options['limit'],
+                                  truncated=len(records) > options['limit'], generated_at=now)
+                elif kind == 'flow':
+                    from .card_flow import collect_flow
+                    import copy
+                    result = copy.deepcopy(collect_flow(
+                        self.database, self.database.parent, now, code=code))
+                    result.pop('records', None)
+                    result.pop('shown', None)
+                    for item in result['items']:
+                        for partition in ('main', 'side', 'total'):
+                            if not item[partition]['known']:
+                                item[partition]['rate'] = None
+                    for item in result['small_groups']:
+                        for partition in ('main', 'side', 'total'):
+                            if not item[partition]['known']:
+                                item[partition]['rate'] = None
+                    result['generated_at'] = now
+                else:
+                    from .card_winrate import collect
+                    result = collect(self.database, self.replay_root, now,
+                                     code=code, limit=options['limit'])
+                return dict(result, requested_code=code)
+
+            return self._cached_query_reply_sync(
+                ('query-card', kind, code, tuple(sorted(options.items()))),
+                compute_card, ttl=300.0)
+        except QueryRequestError as exc:
+            return self._reply(exc.status, json.dumps(dict(error=exc.error)),
+                               'application/json; charset=utf-8')
+        except KeyError as exc:
+            if exc.args != ('card_not_found',):
+                raise
+            return self._reply(404, json.dumps(dict(error='card_not_found')),
+                               'application/json; charset=utf-8')
 
     def _query_cache_hit(self,key,ttl,stamp_seconds):
         try:

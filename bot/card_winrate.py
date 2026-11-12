@@ -94,7 +94,7 @@ def _basis(db, replay_root, now):
     return selected
 
 
-def _compute(database, replay_root, now, code):
+def _compute(database, replay_root, now, code, limit=MATCHUP_LIMIT):
     from .card_identity import identity, facts as identity_facts
     from .card_statistics import matchups, _opponent_rows
     with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
@@ -123,7 +123,7 @@ def _compute(database, replay_root, now, code):
         for row in selected:
             row['copies'] = copies.get(row['build'], 0)
         opponents = _opponent_rows(db, {row['digest'] for row in selected})
-        result = matchups(db, selected, facts, 'main', MATCHUP_LIMIT,
+        result = matchups(db, selected, facts, 'main', limit,
                           MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES, opponents=opponents)
         # 按每个小局的玩家视角分桶；复用同一份事实和对手，不重查人口或录像。
         order = {}
@@ -134,15 +134,24 @@ def _compute(database, replay_root, now, code):
     return dict(card=info['canonical_card'], matchups=result, order=order)
 
 
-def collect(database, replay_root, now, card_name):
-    code, name = resolve_card(database, card_name)
-    key = (str(Path(database).resolve()), code)
+def collect(database, replay_root, now, card_name=None, *, code=None, limit=MATCHUP_LIMIT):
+    if type(limit) is not int or not 1 <= limit <= 20:
+        raise ValueError('bad_param')
+    if code is None:
+        code, name = resolve_card(database, card_name)
+    else:
+        from .card_usage_pie import resolve_code
+        with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
+                                     uri=True, timeout=5)) as db:
+            code, name = resolve_code(Path(database).resolve().parent, code, db)
+    key = (str(Path(database).resolve()), code, limit)
     current = time.monotonic()
     with _LOCK:
         hit = _CACHE.get(key)
         if hit is not None and 0 <= current - hit[0] < CACHE_SECONDS:
             return dict(hit[1], name=name)
-    payload = _compute(database, replay_root, now, code)
+    payload = _compute(database, replay_root, now, code, limit=limit)
+    payload['generated_at'] = float(now)
     payload['name'] = name
     payload['code'] = code
     with _LOCK:

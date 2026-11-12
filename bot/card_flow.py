@@ -12,15 +12,16 @@ BINS = ('one', 'two', 'three')
 BAR_MIN_PLAYERS = 3  # 少于 3 人的大类不画条形，改在图下方列出
 
 
-def collect_flow(database, data_dir, now, card_name):
-    from .card_usage_pie import _latest_sessions, _main_copies, identity_codes, resolve_card
+def collect_flow(database, data_dir, now, card_name=None, *, code=None):
+    from .card_usage_pie import _latest_sessions, _main_copies, identity_codes, resolve_card, resolve_code
     from .statistics_dashboard import population
     replay_root = Path(database).parent / 'replays'
     with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
                                  uri=True, timeout=5)) as db:
         db.row_factory = sqlite3.Row
         db.execute('BEGIN')
-        code, name = resolve_card(data_dir, card_name, db)
+        code, name = (resolve_card(data_dir, card_name, db) if code is None
+                      else resolve_code(data_dir, code, db))
         codes = identity_codes(db, code)
         basis, latest, people = population(db, replay_root, now)
         sessions = _latest_sessions(basis['views'])

@@ -3,10 +3,12 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import re
 import sqlite3
 import time
 from urllib.parse import parse_qs, unquote
-from .query_core import PortalBusy, PortalUnavailable
+from .query_core import (PortalBusy, PortalUnavailable, QueryRequestError,
+                         query_options, query_player)
 
 class QueryHandlerMixin:
     ADMIN_UI_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
@@ -73,11 +75,20 @@ const unlock=k=>act('unlock',{key:k});
     def _is_heavy(cls, path: str) -> bool:
         return path.startswith(cls._HEAVY_PREFIXES) or path == "/query-api/command"
 
+    @staticmethod
+    def _is_query_extension(path):
+        return (path in ('/query-api/binding', '/query-api/binding/unbind')
+                or bool(re.fullmatch(r'/query-api/player/[^/]+/side-plan', path))
+                or bool(re.fullmatch(r'/query-api/card/[^/]+/(usage|flow|winrate)', path)))
+
     def _query_dispatch(self, parts, post=False):
         self.close_connection = True
         self.connection.settimeout(10)
         if getattr(self.server, "query_auth", None) is None:
             self._send(503, dict(ok=False, error="query_auth_disabled"))
+            return
+        extension = self._is_query_extension(parts.path)
+        if extension and self._query_identity() is None:
             return
         heavy = self._is_heavy(parts.path)
         light_gate = getattr(self.server, "query_light_gate", None) or getattr(self.server, "query_gate", None)
@@ -86,15 +97,18 @@ const unlock=k=>act('unlock',{key:k});
         wait = float(getattr(self.server, "query_heavy_wait" if heavy else "query_light_wait", 0.0) or 0.0)
         if gate is None or not gate.acquire(timeout=wait):
             retry = 3 if heavy else 1
-            self._send(429, dict(ok=False, error="query_busy", retry_after=retry),
+            self._send(429, dict(ok=False, error="busy" if extension else "query_busy", retry_after=retry),
                        headers={"Retry-After": str(retry)})
             return
         try:
             try:
                 return self._query_post(parts) if post else self._query_get(parts)
+            except QueryRequestError as exc:
+                headers = {'Retry-After': str(exc.retry_after)} if exc.retry_after else None
+                self._send(exc.status, dict(ok=False, error=exc.error), headers=headers)
             except PortalBusy as exc:
                 retry = max(2, min(int(getattr(exc, "retry_after", 3) or 3), 5))
-                self._send(503, dict(ok=False, error="query_busy", retry_after=retry),
+                self._send(429 if extension else 503, dict(ok=False, error="busy" if extension else "query_busy", retry_after=retry),
                            headers={"Retry-After": str(retry)})
             except (ValueError, TypeError, UnicodeError):
                 self._send(400, dict(ok=False, error="invalid_query_request"))
@@ -161,6 +175,8 @@ const unlock=k=>act('unlock',{key:k});
         core = getattr(self.server, "query_core", None)
         if core is None:
             self._send(503, dict(ok=False, error="query_disabled"))
+            return
+        if self._query_extension_get(parts, core):
             return
         if path == "/query-api/top100":
             if self._query_identity() is not None:
@@ -266,6 +282,37 @@ const unlock=k=>act('unlock',{key:k});
             return
         self._send(404, dict(ok=False, error="not_found"))
 
+    def _query_extension_get(self, parts, core):
+        path = parts.path
+        if not self._is_query_extension(path):
+            return False
+        info = self._query_identity()
+        if info is None:
+            return True
+        if path == '/query-api/binding':
+            if parts.query:
+                raise QueryRequestError('bad_param')
+            data = core.binding_get(info['identity'])
+        elif path.startswith('/query-api/card/'):
+            seg = path.split('/')
+            if not re.fullmatch(r'[0-9]{1,10}', seg[3]) or not 1 <= int(seg[3]) <= 4294967295:
+                raise QueryRequestError('bad_code')
+            data = core.card_stat(seg[4], int(seg[3]), **query_options(parts.query, seg[4]))
+        elif path.endswith('/side-plan'):
+            encoded = path.split('/')[3]
+            if re.search(r'%(?![0-9a-fA-F]{2})', encoded):
+                raise QueryRequestError('bad_player')
+            try:
+                name = query_player(unquote(encoded, errors='strict'))
+            except UnicodeError:
+                raise QueryRequestError('bad_player')
+            data = core.side_plan(name, **query_options(parts.query, 'side-plan'))
+        else:
+            self._send(404, dict(ok=False, error='not_found'))
+            return True
+        self._send(200, dict(ok=True, data=data))
+        return True
+
     def _replay_secret(self) -> str:
         app = self.server
         return str(getattr(app, "token", "") or getattr(app, "admin_token", "") or "")
@@ -360,6 +407,24 @@ const unlock=k=>act('unlock',{key:k});
                 header = self.headers.get("Authorization") or ""
                 token = header[7:].strip()
                 self._send(200, dict(ok=app.query_auth.logout(token)))
+            return
+        if path in ('/query-api/binding', '/query-api/binding/unbind'):
+            info = self._query_identity()
+            if info is None:
+                return
+            core = getattr(app, 'query_core', None)
+            if core is None:
+                raise PortalUnavailable('query_disabled')
+            if parts.query:
+                raise QueryRequestError('bad_param')
+            if path.endswith('/unbind'):
+                data = core.binding_clear(info['identity'])
+            else:
+                body = self._query_json()
+                if set(body) - {'player'}:
+                    raise QueryRequestError('bad_param')
+                data = core.binding_set(info['identity'], body.get('player', ''))
+            self._send(200, dict(ok=True, data=data))
             return
         if path == "/query-api/subscriptions":
             info = self._query_identity()

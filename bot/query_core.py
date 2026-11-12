@@ -14,6 +14,8 @@ Forwarded 类头与非常见 Host，因此这里不发任何转发头。
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 import threading
 import time
 import urllib.error
@@ -25,6 +27,52 @@ from pathlib import Path
 
 class PortalUnavailable(Exception):
     """统计门户不可达/拒绝/响应异常。"""
+
+
+class QueryRequestError(Exception):
+    def __init__(self, error, status=400, retry_after=None):
+        super().__init__(error)
+        self.error, self.status, self.retry_after = error, status, retry_after
+
+
+def query_player(value, required=False):
+    if not isinstance(value, str):
+        raise QueryRequestError('bad_player')
+    text = value.strip()
+    if not text:
+        raise QueryRequestError('player_required' if required else 'bad_player')
+    if (len(text) > 100 or '/' in text or '\\' in text
+            or any(unicodedata.category(c) == 'Cc' for c in value)):
+        raise QueryRequestError('bad_player')
+    return text
+
+
+def query_options(query, kind):
+    """Strict parsing for new endpoints; leave legacy query semantics alone."""
+    args = urllib.parse.parse_qs(query, keep_blank_values=True)
+    specs = {'usage': {'limit': (20, 1, 100)},
+             'flow': {}, 'winrate': {'limit': (20, 1, 20)},
+             'side-plan': {'top': (6, 1, 12), 'recent': (5, 1, 10),
+                           'min_side_games': (3, 1, 100),
+                           'opponent_range': (200, 0, 200)}}[kind]
+    allowed = set(specs) | ({'digest'} if kind == 'side-plan' else set())
+    if set(args) - allowed or any(len(v) != 1 for v in args.values()):
+        raise QueryRequestError('bad_param')
+    result = {}
+    for key, (default, low, high) in specs.items():
+        text = args.get(key, [str(default)])[0]
+        if not re.fullmatch(r'[0-9]{1,10}', text):
+            raise QueryRequestError('bad_param')
+        value = int(text)
+        if not low <= value <= high or key == 'opponent_range' and value not in (0, 200):
+            raise QueryRequestError('bad_param')
+        result[key] = value
+    if kind == 'side-plan':
+        digest = args.get('digest', [''])[0]
+        if digest and not re.fullmatch('[0-9a-f]{64}', digest):
+            raise QueryRequestError('bad_param')
+        result['digest'] = digest
+    return result
 
 
 class PortalBusy(PortalUnavailable):
@@ -86,7 +134,9 @@ class PortalClient:
         for attempt in (1, 2):
             try:
                 request = urllib.request.Request(
-                    url, headers={"Cookie": self._session_cookie(force=attempt == 2)})
+                    url, headers={"Cookie": self._session_cookie(force=attempt == 2),
+                                  **({"X-Query-Internal": "1"} if path.startswith(
+                                      "/statistics/api/query-") else {})})
                 with _OPENER.open(request, timeout=self.timeout) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except PortalUnavailable:
@@ -99,6 +149,13 @@ class PortalClient:
                     pass
                 finally:
                     exc.close()
+                if path.startswith('/statistics/api/query-') and exc.code == 404:
+                    try:
+                        missing = json.loads(body.decode('utf-8')).get('error')
+                    except (ValueError, UnicodeError, AttributeError):
+                        missing = None
+                    if missing in ('no_build', 'card_not_found'):
+                        raise QueryRequestError(missing, 404)
                 if exc.code == 503 and body:
                     try:
                         doc = json.loads(body.decode("utf-8"))
@@ -139,6 +196,8 @@ class QueryCore:
         self._cache_bytes = 0
         self._inflight: OrderedDict = OrderedDict()
         self._negative: OrderedDict = OrderedDict()
+        self._binding_windows = {}
+        self._binding_lock = threading.Lock()
 
     def close(self):
         if self._owned_store and self.store is not None:
@@ -185,6 +244,61 @@ class QueryCore:
                     _, expired = self._cache.popitem(last=False)
                     self._cache_bytes -= expired[2]
         return value
+
+    def binding_get(self, identity):
+        if self.store is None:
+            raise PortalUnavailable('binding_store_unavailable')
+        return dict(player=self.store.get_binding(identity))
+
+    def _binding_write_allow(self, identity):
+        if self.store is None:
+            raise PortalUnavailable('binding_store_unavailable')
+        now = self.clock()
+        self._binding_windows = {key: [t for t in times if now - t < 60]
+                                 for key, times in self._binding_windows.items()
+                                 if times and now - times[-1] < 60}
+        times = self._binding_windows.get(identity, [])
+        if len(times) >= 10 or identity not in self._binding_windows and len(self._binding_windows) >= 4096:
+            retry = max(1, int(60 - (now - times[0])) + 1) if times else 60
+            raise QueryRequestError('busy', 429, retry)
+        self._binding_windows[identity] = times + [now]
+
+    def binding_set(self, identity, player):
+        text = query_player(player, required=True)
+        with self._binding_lock:
+            self._binding_write_allow(identity)
+            names = self.store.player_names()
+            if text not in names:
+                target = re.sub(r'\s+', ' ', text)
+                matches = {name for name in names
+                           if re.sub(r'\s+', ' ', name.strip()) == target}
+                if len(matches) == 1:
+                    text = matches.pop()
+            changed = self.store.get_binding(identity) != text
+            known = self.store.has_player(text)
+            if changed:
+                self.store.set_binding(identity, text, time.time())
+        return dict(player=text, known=known, changed=changed)
+
+    def binding_clear(self, identity):
+        with self._binding_lock:
+            self._binding_write_allow(identity)
+            return dict(removed=self.store.delete_binding(identity))
+
+    def side_plan(self, name, **options):
+        params = dict(player=name, **options)
+        key = ('side-plan', name, tuple(sorted(options.items())))
+        return self._cached(key, 30.0, lambda: self.portal.get_json(
+            '/statistics/api/query-side-plan', params))
+
+    def card_stat(self, kind, code, **options):
+        params = dict(code=code, **options)
+        key = ('card-stat', kind, code, tuple(sorted(options.items())))
+        payload = self._cached(key, 300.0, lambda: self.portal.get_json(
+            '/statistics/api/query-card/' + kind, params))
+        if not isinstance(payload, dict):
+            raise PortalUnavailable('invalid_card_stat')
+        return dict(payload, requested_code=code)
 
     def top100(self):
         # 门户对 roster 有 300s 缓存 + 后台预热；这里再兜一层，避免门户重启后的冷查询打到用户。

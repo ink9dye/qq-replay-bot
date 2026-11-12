@@ -132,14 +132,35 @@ def _main_copies(db, builds, codes):
     return result
 
 
-def collect(database, data_dir, now, card_name):
+def resolve_code(data_dir, code, db):
+    """Exact API lookup; preserve the existing verified identity groups."""
+    from .card_identity import identity
+    from .card_search import card_name
+    if type(code) is not int or not 1 <= code <= 4294967295:
+        raise ValueError('bad_code')
+    names = _card_index(data_dir)
+    if not names:
+        raise OSError('card_catalog_unavailable')
+    group = identity(db, code)
+    canonical = group['canonical_card']
+    info = names.get(str(canonical)) or names.get(str(code))
+    if info is None:
+        info = next((names[str(member)] for member in group['codes']
+                     if str(member) in names), None)
+    if info is None:
+        raise KeyError('card_not_found')
+    return canonical, card_name(info)
+
+
+def collect(database, data_dir, now, card_name=None, *, code=None):
     from .statistics_dashboard import population
     replay_root = Path(database).parent / 'replays'
     with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
                                  uri=True, timeout=5)) as db:
         db.row_factory = sqlite3.Row
         db.execute('BEGIN')
-        code, name = resolve_card(data_dir, card_name, db)
+        code, name = (resolve_card(data_dir, card_name, db) if code is None
+                      else resolve_code(data_dir, code, db))
         codes = identity_codes(db, code)
         # 代表构筑与「单卡流向」/网页/换备同一份：最近一场优先取首局
         # （game_no=1）的主卡组。旧实现按 recorded_at 取最近一局，常常落到
