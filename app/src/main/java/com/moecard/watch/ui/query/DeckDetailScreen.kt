@@ -119,6 +119,10 @@ object RosterCache {
         cached = System.currentTimeMillis() to data
         return data
     }
+
+    fun clear() {
+        cached = null
+    }
 }
 
 @Composable

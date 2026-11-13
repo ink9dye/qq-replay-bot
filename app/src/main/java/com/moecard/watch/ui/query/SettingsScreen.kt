@@ -96,6 +96,9 @@ fun SettingsScreen(onLoggedOut: () -> Unit) {
         BindingSection()
 
         Spacer(Modifier.height(16.dp))
+        CacheSection()
+
+        Spacer(Modifier.height(16.dp))
         Text("当前会话", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         val s = session
@@ -316,6 +319,37 @@ private fun BindingSection() {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline,
             )
+        }
+    }
+}
+
+/**
+ * 本地缓存：构筑 / 换备各缓存 5 分钟、前百 60 秒。
+ * 服务器算得慢的时候用它清一下，避免一直读到旧结果。
+ */
+@Composable
+private fun CacheSection() {
+    var cleared by remember { mutableStateOf(false) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.outlinedCardColors(),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Text("本地缓存", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "构筑 / 换备各保留 5 分钟，前百榜单 60 秒。数据更新了但页面还是旧的，可以清一次。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = {
+                PlayerTabCache.clear()
+                RosterCache.clear()
+                cleared = true
+            }) {
+                Text(if (cleared) "已清空" else "清空本地缓存")
+            }
         }
     }
 }

@@ -193,13 +193,18 @@ class QueryApi(private val server: String, private val trustSelfSigned: Boolean)
         }
         val msg = if (detail.isNotBlank() && detail != base) "$base：$detail" else base
         // 429 = 闸门满；503 query_busy = 门户忙，两者都值得退避重试。
-        // 503 query_unavailable / query_disabled 属真故障，重试 10 次只会让用户干等 30 秒。
         if (status == 429 || (status == 503 && detail == "query_busy")) return BusyException(msg)
+        // 503 query_unavailable 在实测里是「上游计算锁 8s / sqlite busy 3s 等不到」，
+        // 属于概率性超时：隔几秒重试往往就好（构筑 3/3、搜索 2/3 成功），所以单独标记。
+        if (status == 503 && detail == "query_unavailable") return UnavailableException(msg)
         return RuntimeException(msg)
     }
 
     /** 429（闸门满）/ 503（门户忙）单独成类，交给 queued() 自动重试。 */
     private class BusyException(msg: String) : RuntimeException(msg)
+
+    /** 上游计算超时：只退避重试 2 次（3s、6s），不无限等。 */
+    private class UnavailableException(msg: String) : RuntimeException(msg)
 
     /**
      * 全局串行闸门 + 繁忙重试：自建查询接口同一时刻只允许一条在途
@@ -209,16 +214,26 @@ class QueryApi(private val server: String, private val trustSelfSigned: Boolean)
     private fun <T> queued(block: () -> T): T {
         gate.acquire()
         try {
-            var attempt = 0
+            var busyAttempt = 0
+            var timeoutAttempt = 0
             while (true) {
                 try {
                     return block()
                 } catch (e: BusyException) {
-                    attempt++
-                    if (attempt >= 10) {
-                        throw RuntimeException("服务器持续繁忙（已重试 $attempt 次），请稍后再试", e)
+                    busyAttempt++
+                    if (busyAttempt >= 10) {
+                        throw RuntimeException("服务器持续繁忙（已重试 $busyAttempt 次），请稍后再试", e)
                     }
                     Thread.sleep(3000)
+                } catch (e: UnavailableException) {
+                    // 上游算不过来（8s 计算锁 / 3s sqlite busy），等一会儿多数能成；
+                    // 但只退避 2 次：既不让用户干等，也不继续占着服务的 heavy 槽位。
+                    timeoutAttempt++
+                    if (timeoutAttempt > 2) {
+                        throw RuntimeException("服务器计算超时，请稍后重试", e)
+                    }
+                    val wait = if (timeoutAttempt == 1) 3000L else 6000L + (0..1500).random()
+                    Thread.sleep(wait)
                 }
             }
         } finally {

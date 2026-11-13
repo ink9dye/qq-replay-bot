@@ -61,10 +61,21 @@ class SearchViewModel : ViewModel() {
      * 单类型单发 + 350ms 防抖：回车搜索立即发出；
      * 切 Tab 触发的重查走防抖，快速连点只发最后一条（服务端闸门只有 2 并发）。
      */
+    /** 输入提示（例如玩家搜索不足 2 字）。 */
+    val hint = MutableStateFlow<String?>(null)
+
     fun search(q: String, immediate: Boolean = false) {
         val t = type.value
         val query = q.trim()
         if (query.isEmpty()) return
+        // 单字玩家搜索在服务端会走最慢的路径（实测 8.3s 必超时、重试也救不回来），
+        // 直接在客户端拦掉，避免白占 heavy 槽位。
+        if (t == "player" && query.codePointCount(0, query.length) < 2) {
+            hint.value = "玩家搜索请至少输入 2 个字"
+            state.value = UiState.Idle
+            return
+        }
+        hint.value = null
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             if (!immediate) kotlinx.coroutines.delay(350)
@@ -102,6 +113,14 @@ fun SearchScreen(
             keyboardActions = KeyboardActions(onSearch = { vm.search(query, immediate = true) }),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
         )
+        vm.hint.collectAsStateWithLifecycle().value?.let { h ->
+            Text(
+                h,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
         TabRow(selectedTabIndex = listOf("player", "card", "deck").indexOf(type)) {
             listOf("player" to "玩家", "card" to "卡片", "deck" to "卡组").forEach { (t, label) ->
                 Tab(

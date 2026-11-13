@@ -106,6 +106,37 @@ data class ReplayFilters(
     val to: String = "",
 )
 
+/**
+ * 玩家页里两个"重接口"的本地缓存：构筑（门户要抢 8s 计算锁）与换备（1~6s）。
+ * 服务端本来就按 300s 缓存，客户端再存 5 分钟，切页签/来回进页面就不用再赌锁。
+ */
+object PlayerTabCache {
+    private const val TTL = 5 * 60_000L
+    private val builds = HashMap<String, Pair<Long, BuildData>>()
+    private val sides = HashMap<String, Pair<Long, SidePlan>>()
+
+    fun build(player: String): BuildData? = builds[player]
+        ?.takeIf { System.currentTimeMillis() - it.first < TTL }?.second
+
+    fun putBuild(player: String, data: BuildData) {
+        builds[player] = System.currentTimeMillis() to data
+        if (builds.size > 40) builds.remove(builds.keys.first())
+    }
+
+    fun side(player: String): SidePlan? = sides[player]
+        ?.takeIf { System.currentTimeMillis() - it.first < TTL }?.second
+
+    fun putSide(player: String, data: SidePlan) {
+        sides[player] = System.currentTimeMillis() to data
+        if (sides.size > 40) sides.remove(sides.keys.first())
+    }
+
+    fun clear() {
+        builds.clear()
+        sides.clear()
+    }
+}
+
 class PlayerDetailViewModel : ViewModel() {
     private val api = MoeCardApi()
 
@@ -165,6 +196,8 @@ class PlayerDetailViewModel : ViewModel() {
                 official.value = OfficialState.Failed(e.message ?: "官方接口加载失败")
             }
         }
+        // 构筑是最常用的页签，且服务端要抢锁、容易超时：进页面就先取（有缓存则秒回）。
+        loadDecks(player)
     }
 
     /**
@@ -173,10 +206,15 @@ class PlayerDetailViewModel : ViewModel() {
      */
     fun loadSidePlan(player: String) {
         if (sidePlan.value !is QueryState.Idle) return
+        PlayerTabCache.side(player)?.let {
+            sidePlan.value = QueryState.Ready(it)
+            return
+        }
         sidePlan.value = QueryState.Loading
         viewModelScope.launch {
             try {
                 val data = withContext(Dispatchers.IO) { QuerySession.api().sidePlan(player) }
+                PlayerTabCache.putSide(player, data)
                 sidePlan.value = QueryState.Ready(data)
             } catch (e: AuthException) {
                 QuerySession.expire()
@@ -194,10 +232,15 @@ class PlayerDetailViewModel : ViewModel() {
     /** 懒加载：进入构筑页签时才拉。 */
     fun loadDecks(player: String) {
         if (decks.value !is QueryState.Idle) return
+        PlayerTabCache.build(player)?.let {
+            decks.value = QueryState.Ready(it)
+            return
+        }
         decks.value = QueryState.Loading
         viewModelScope.launch {
             try {
                 val data = withContext(Dispatchers.IO) { QuerySession.api().decks(player) }
+                PlayerTabCache.putBuild(player, data)
                 decks.value = QueryState.Ready(data)
             } catch (e: AuthException) {
                 QuerySession.expire()
