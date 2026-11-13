@@ -2,6 +2,34 @@
 from .statistics_dashboard import population
 
 
+def deck_candidates(db, root, now, args):
+    """Visible deck labels in the existing ranked population; no card facts needed."""
+    from .statistics_rank_scope import parse_ranges, population_scope
+    from .statistics_recording_filters import snapshot
+    from .statistics_recording_names import decorate
+    ranges = parse_ranges(args)
+    term = args.get('q', [''])[0].strip()
+    if len(term) > 128:
+        raise ValueError('卡组名称最多128字。')
+    recording = args.get('page', ['cards'])[0] == 'recordings'
+    with population_scope(*ranges) as scope:
+        basis, rows, *_ = snapshot(db, root, now, with_facts=False,
+                                  include_opponents=True, annotate_series=False)
+        if recording:
+            decorate(db, rows, root, now, identity=basis.get('identity'),
+                     alive=basis.get('source_alive'))
+        names = {'deck': set(), 'opponent': set()}
+        for row in rows:
+            own = (row.get('match_deck_type') if recording else None) or row.get('deck_type')
+            other = (row.get('opponent_match_deck_type') if recording else None) or row.get('opponent_deck_type')
+            for key, name in (('deck', own), ('opponent', other)):
+                if name and term.casefold() in name.casefold():
+                    names[key].add(name)
+    return dict(version=1, **{key: sorted(values) for key, values in names.items()},
+                self_range=ranges[0], opponent_range=ranges[1],
+                complete=not scope['unknown'], pending_rank_players=len(scope['pending']))
+
+
 def query(db,replay_root,now):
     basis,latest,people=population(db,replay_root,now)
     groups={'deck':{},'series':{}}

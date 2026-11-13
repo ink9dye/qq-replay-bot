@@ -13,11 +13,11 @@ function setup(){
   setAttribute(k,v){this.attrs[k]=String(v)}getAttribute(k){return this.attrs[k]}removeAttribute(k){delete this.attrs[k]}
   addEventListener(k,fn,capture){(this.listeners[k]??=[]).push({fn,capture:!!capture})}
   dispatchEvent(event){event.preventDefault??=()=>{event.defaultPrevented=true};event.stopImmediatePropagation??=()=>{event.stopped=true};for(const x of [...(this.listeners[event.type]||[])].sort((a,b)=>b.capture-a.capture)){x.fn(event);if(event.stopped)break}return !event.defaultPrevented}
-  focus(){document.activeElement=this;this.dispatchEvent({type:'focus'})}scrollIntoView(){}
+  focus(){document.activeElement=this;this.dispatchEvent({type:'focus'})}blur(){document.activeElement=null;this.dispatchEvent({type:'blur'})}scrollIntoView(){}
   get options(){return this.children}get selectedOptions(){return this.children.filter(x=>x.selected)}
  }
  const document={readyState:'loading',activeElement:null,createElement:t=>new E(t),createTextNode:t=>Object.assign(new E('text'),{textContent:t}),getElementById:id=>nodes.get(id),querySelectorAll:()=>[],addEventListener(){}};
- const context={document,window:null,Event:class{constructor(type,options){this.type=type;Object.assign(this,options)}},MutationObserver:class{constructor(fn){observers.push(fn)}observe(){}},console,setTimeout,clearTimeout};context.window=context;
+ const context={document,window:null,URLSearchParams,addEventListener(){},Event:class{constructor(type,options){this.type=type;Object.assign(this,options)}},MutationObserver:class{constructor(fn){observers.push(fn)}observe(){}},console,setTimeout,clearTimeout};context.window=context;
  vm.createContext(context);vm.runInContext(read('statistics_autocomplete.js'),context);
  const make=(id,tag='input')=>{const parent=new E('div'),n=new E(tag,id);parent.append(n);return n};
  return {context,document,make,E,observers,fire:(n,key,more={})=>n.dispatchEvent({type:key,...more})};
@@ -48,16 +48,16 @@ test('recording picker preserves main-only restriction, multiselect and chip rem
  const chips=select.parent.children[1];chips.children[0].children[1].onclick();assert.deepEqual(select.selectedOptions.map(o=>o.value),['2']);parts=null;update();assert.equal(list.children.length,3);
 });
 function recordingSetup(fail){
- const s=setup(),ids=['deck','opponent','deck-list','opponent-list','cardSearch','opponentCardSearch','notCardSearch','opponentNotCardSearch','card','opponent_card','not_card','opponent_not_card','outcome','phase'];for(const id of ids)s.make(id);
+ const s=setup(),ids=['deck','opponent','deck-list','opponent-list','cardSearch','opponentCardSearch','notCardSearch','opponentNotCardSearch','card','opponent_card','not_card','opponent_not_card','outcome','phase','self_range','opponent_range'];for(const id of ids)s.make(id);
  const old=new s.E('option');old.value='1';old.selected=true;s.document.getElementById('card').append(old);s.document.getElementById('outcome').value='loss';s.document.getElementById('phase').value='side_second';
- const calls=[];Object.assign(s.context,{$:s.document.getElementById,SS:{el:t=>new s.E(t),api:async name=>{calls.push(name);if(name===fail)throw Error('failure');return name==='groups'?{deck_groups:[{name:'雷盟'}]}:{rows:[{name:'灰流丽',code:1,base_partition:'main'},{name:'额外',code:2,base_partition:'extra'}]}}},updateOwn(){},updateOpponent(){},updateOwnNot(){},updateOpponentNot(){},load(){calls.push('load')}});
+ const calls=[];Object.assign(s.context,{$:s.document.getElementById,SS:{el:t=>new s.E(t),api:async name=>{calls.push(name);if(name.split('?')[0]===fail)throw Error('failure');return name.split('?')[0]==='groups'?{deck:['\u96f7\u76df'],deck_groups:[{name:'雷盟'}]}:{rows:[{name:'灰流丽',code:1,base_partition:'main'},{name:'额外',code:2,base_partition:'extra'}]}}},updateOwn(){},updateOpponent(){},updateOwnNot(){},updateOpponentNot(){},load(){calls.push('load')}});
  const html=read('statistics_recordings.html'),source=html.slice(html.indexOf('let deckChoicesLoading='),html.indexOf('</script>',html.indexOf('let deckChoicesLoading=')));vm.runInContext(source,s.context);return {...s,calls};
 }
 test('failed deck candidates do not block cards or reset outcome/phase selections',async()=>{
- const s=recordingSetup('groups');await new Promise(r=>setImmediate(r));assert.equal(s.document.getElementById('card').options.length,2);assert.equal(s.document.getElementById('card').selectedOptions[0].value,1);assert.equal(s.document.getElementById('not_card').options.length,1);assert.equal(s.document.getElementById('outcome').value,'loss');assert.equal(s.document.getElementById('phase').value,'side_second');assert.equal(s.calls.at(-1),'load');
+ const s=recordingSetup('groups');assert.deepEqual(s.calls,['load']);s.fire(s.document.getElementById('deck'),'focus');s.fire(s.document.getElementById('cardSearch'),'focus');await new Promise(r=>setImmediate(r));assert.equal(s.document.getElementById('card').options.length,2);assert.equal(s.document.getElementById('card').selectedOptions[0].value,1);assert.equal(s.document.getElementById('not_card').options.length,1);assert.equal(s.document.getElementById('outcome').value,'loss');assert.equal(s.document.getElementById('phase').value,'side_second');assert.equal(s.calls.filter(c=>c==='load').length,1);
 });
 test('failed card candidates leave deck candidates usable',async()=>{
- const s=recordingSetup('card-table');await new Promise(r=>setImmediate(r));assert.equal(s.document.getElementById('deck-list').options[0].value,'雷盟');assert.match(s.document.getElementById('cardSearch').dataset.candidateError,/暂不可用/);
+ const s=recordingSetup('card-options');assert.deepEqual(s.calls,['load']);s.fire(s.document.getElementById('deck'),'focus');s.fire(s.document.getElementById('cardSearch'),'focus');await new Promise(r=>setImmediate(r));assert.equal(s.document.getElementById('deck-list').options[0].value,'雷盟');assert.match(s.document.getElementById('cardSearch').dataset.candidateError,/暂不可用/);
 });
 test('report ignores stale response and Escape invalidates in-flight candidates',async()=>{
  const s=setup();for(const id of ['q','list','chips','hint'])s.make(id);const pending=[];Object.assign(s.context,{$:s.document.getElementById,SS:{el:(tag,text,cls)=>Object.assign(new s.E(tag),{textContent:text,className:cls}),api:()=>new Promise(resolve=>pending.push(resolve))}});
@@ -72,4 +72,34 @@ test('investment search ignores old responses and loads statistics only after ch
  const html=read('statistics_investment.html'),start=html.indexOf('let cardCandidates=');vm.runInContext(html.slice(start,html.indexOf('async function load()',start)),s.context);
  input.value='旧';input.focus();const a=s.context.find();input.value='灰';const b=s.context.find();pending[1]({cards:[{code:14558127,name:'灰流丽'}]});await b;pending[0]({cards:[{code:1,name:'旧'}]});await a;
  const list=input.parent.children[1];assert.equal(list.children[0].children[0].textContent,'灰流丽');assert.equal(loaded,0);s.fire(list.children[0],'click');assert.equal(loaded,1);
+});
+function batchSetup(){
+ const s=setup();for(const id of ['deck','self_range','opponent_range'])s.make(id);
+ s.document.getElementById('self_range').value='200';s.document.getElementById('opponent_range').value='100';
+ const pending=[],calls=[],picks=new Set(['已选']);s.context.StatisticsSamples={api:q=>{calls.push(q);return new Promise(resolve=>pending.push(resolve))}};
+ const batch=s.context.StatisticsAutocomplete.deckBatch('deck',picks);
+ return {...s,batch,picks,pending,calls,input:s.document.getElementById('deck'),confirm:s.document.getElementById('deck').parent.children[1].children[0],clear:s.document.getElementById('deck').parent.children[1].children[1]};
+}
+test('batch confirm adds every scoped name, deduplicates, preserves old picks and clears independently',async()=>{
+ const s=batchSetup();s.input.value='闪刀';const p=s.confirm.onclick();assert.match(s.calls[0],/self_range=200&opponent_range=100/);
+ s.pending[0]({version:1,complete:true,deck:['闪刀','闪刀混沌','已选']});await p;
+ assert.deepEqual([...s.picks],['已选','闪刀','闪刀混沌']);assert.equal(s.input.value,'');
+ const chips=s.input.parent.parent.children[1];chips.children[1].children[1].onclick();assert.deepEqual([...s.picks],['已选','闪刀混沌']);
+ s.clear.onclick();assert.equal(s.picks.size,0);assert.equal(s.input.value,'');
+});
+test('clear, changed input and changed rank scope invalidate late batch responses',async()=>{
+ for(const action of ['clear','input','scope']){
+  const s=batchSetup();s.input.value='闪刀';const p=s.confirm.onclick();
+  if(action==='clear')s.clear.onclick();
+  if(action==='input'){s.input.value='其他';s.fire(s.input,'input')}
+  if(action==='scope'){const range=s.document.getElementById('self_range');range.value='all';s.fire(range,'change')}
+  s.pending[0]({version:1,complete:true,deck:['闪刀']});await p;
+  assert.equal(s.picks.has('闪刀'),false);assert.equal(s.confirm.disabled,false);
+ }
+});
+test('empty, incomplete or oversized candidates never silently clear or partially add picks',async()=>{
+ for(const result of [{version:1,complete:true,deck:[]},{version:1,complete:false,deck:['闪刀']},{version:1,complete:true,deck:Array.from({length:101},(_,i)=>'卡组'+i)}]){
+  const s=batchSetup();s.input.value='闪刀';const p=s.confirm.onclick();s.pending[0](result);await p;
+  assert.deepEqual([...s.picks],['已选']);assert.equal(s.input.value,'闪刀');assert.equal(s.confirm.disabled,false);
+ }
 });

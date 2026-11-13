@@ -4,13 +4,14 @@ from urllib.parse import quote
 
 import test_card_statistics as C
 import test_top100 as T
+from recording_filter_fixture import set_up
 from bot.statistics_portal import StatisticsPortal
 from bot.statistics_recording_filters import query
 
 
 class RecordingParamTests(unittest.TestCase):
     def setUp(self):
-        C.CardStatisticsTests.setUp(self)
+        set_up(self)
         self.store.replace_top100(T.roster(['甲','乙']),C.NOW)
 
     def q(self,args):
@@ -88,5 +89,5 @@ class RecordingParamTests(unittest.TestCase):
 
     def test_new_filter_version_preserves_card_filter_contract(self):
         response=self.q({})
-        self.assertEqual(response['card_filters_version'],2)
-        self.assertEqual(response['recording_filters_version'],3)
+        self.assertEqual(response['card_filters_version'],3)
+        self.assertEqual(response['recording_filters_version'],4)

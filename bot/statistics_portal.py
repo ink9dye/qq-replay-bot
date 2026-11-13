@@ -98,7 +98,8 @@ class StatisticsPortal:
         self._query_cache_lock=threading.Lock()
         self._card_metrics_cache={}
         self._card_metrics_lock=threading.Lock()
-        self._query_compute_lock=threading.RLock()
+        from .web_perf_metrics import ObservedQueryLock
+        self._query_compute_lock=ObservedQueryLock()
         self._refresh=None
         if background:
             from .statistics_refresh import QueryRefresh
@@ -123,11 +124,12 @@ class StatisticsPortal:
     def route(self,path,headers,client):
         api_path=urlsplit(path).path
         # Cached queries own their gate: cache hits must never queue behind a cold query.
-        if api_path.startswith('/statistics/api/') and api_path not in CACHED_API_PATHS and api_path not in (
+        candidate_groups=api_path=='/statistics/api/groups'
+        if api_path.startswith('/statistics/api/') and not candidate_groups and api_path not in CACHED_API_PATHS and api_path not in (
                 '/statistics/api/devices','/statistics/api/card-search','/statistics/api/card-info',
-                '/statistics/api/small-world-cards'):
+                '/statistics/api/small-world-cards','/statistics/api/card-options','/statistics/api/sample'):
             from .web_perf_metrics import acquire_query_lock
-            if not acquire_query_lock(self._query_compute_lock,timeout=QUERY_WAIT_SECONDS):
+            if not acquire_query_lock(self._query_compute_lock,timeout=QUERY_WAIT_SECONDS,task=api_path):
                 return self._query_busy_reply()
             try:
                 return self._route(path,headers,client)
@@ -406,6 +408,9 @@ class StatisticsPortal:
             except (ValueError,TypeError):
                 return self._reply(400,json.dumps({'error':'卡组条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
             return self._cached_query_reply(('card-table',parsed.query),lambda db:scoped_query(ranges,lambda:overview(db,self.replay_root,float(self.clock()),basis,decks)))
+        if parts==['statistics','api','card-options']:
+            from .statistics_card_overview import choices
+            return self._cached_query_reply(('card-options',),lambda db:choices(db,self.replay_root,float(self.clock())))
         if parts==['statistics','cards-report']:
             return self._reply(200,Path(__file__).with_name('statistics_cards_report.html').read_text(encoding='utf8'),'text/html; charset=utf-8')
         if parts==['statistics','cards-extra']:
@@ -675,7 +680,7 @@ class StatisticsPortal:
             args=parse_qs(parsed.query);player=args.get('player',[''])[0];digest=args.get('digest',[''])[0] if parts[1]=='api' else parts[2]
             try:
                 with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
-                    db.row_factory=sqlite3.Row;db.execute('BEGIN');result=details(db,self.replay_root,float(self.clock()),player,digest)
+                    db.row_factory=sqlite3.Row;db.execute('BEGIN');result=details(db,self.replay_root,float(self.clock()),player,digest,file_only=parts[1]=='sample')
                     if result is None:return self._reply(404,'样本已失效、被排除或不属于当前榜单。')
                     detail,file=result
                     if parts[1]=='sample':
@@ -690,13 +695,26 @@ class StatisticsPortal:
                 return self._reply(200,json.dumps(detail,ensure_ascii=False),'application/json; charset=utf-8')
             except (sqlite3.Error,OSError):return self._reply(503,'来源暂不可用。')
         if parts==['statistics','api','groups']:
+            args=parse_qs(parsed.query)
+            if args.get('candidates')==['1']:
+                from .statistics_groups import deck_candidates
+                try:
+                    from urllib.parse import urlencode
+                    term=args.get('q',[''])[0].strip()
+                    if len(term)>128:raise ValueError('卡组名称最多128字。')
+                    scope_args={k:v for k,v in args.items() if k!='q'}
+                    reply=self._cached_query_reply(('deck-options',urlencode(sorted(scope_args.items()),doseq=True)),
+                        lambda db:deck_candidates(db,self.replay_root,float(self.clock()),scope_args),ttl=600.0)
+                    if reply[0]!=200:return reply
+                    data=json.loads(reply[2])
+                    for side in ('deck','opponent'):
+                        data[side]=[name for name in data[side] if term.casefold() in name.casefold()]
+                    return self._reply(200,json.dumps(data,ensure_ascii=False),'application/json; charset=utf-8',reply[3])
+                except ValueError as exc:
+                    return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
             from .statistics_groups import query as groups
-            try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
-                    db.row_factory=sqlite3.Row;db.execute('BEGIN')
-                    result=groups(db,self.replay_root,float(self.clock()))
-                return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
-            except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')
+            return self._cached_query_reply(('group-list',parsed.query),
+                lambda db:groups(db,self.replay_root,float(self.clock())),ttl=10.0)
         if len(parts)==3 and parts[:2]==['statistics','source']:
             from .statistics_groups import source_file
             player=parse_qs(parsed.query).get('player',[''])[0]
@@ -894,7 +912,14 @@ class StatisticsPortal:
         return self._roster_reply(force=getattr(self,'_refresh',None) is None, background=True)
 
     def _cached_query_reply(self,key,callback,ttl=10.0,stamp_seconds=30,force=False,background=False):
-        if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings','matrix','cards-extra','deck-detail'):
+        if getattr(self,'_refresh',None) is not None and key and key[0] in ('deck-options','card-options'):
+            from .statistics_roster_version import snapshot_version
+            # Small persisted labels only. Refresh at most every ten minutes,
+            # yield to queued statistics, and serve dated last-success immediately.
+            return self._refresh.get(key,
+                lambda:self._cached_query_reply_sync(key,callback,600.0,stamp_seconds,force),
+                lambda:snapshot_version(self.database),600.0,background=True)
+        if getattr(self,'_refresh',None) is not None and key and key[0] in ('roster','card-report','recordings','matrix','cards-extra','deck-detail','card-table','group-list'):
             from urllib.parse import parse_qs,urlencode
             # deck-detail 的 key[1] 是玩家名，不是查询串：不能按参数归一化，否则不同玩家会撞成同一个 key。
             if len(key)>1 and key[0]!='deck-detail':key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
@@ -921,7 +946,8 @@ class StatisticsPortal:
             except OSError:hit=None
             if hit is not None:return hit
         from .web_perf_metrics import acquire_query_lock
-        if not acquire_query_lock(self._query_compute_lock,timeout=QUERY_WAIT_SECONDS):
+        gate=self._query_compute_lock
+        if not acquire_query_lock(gate,timeout=QUERY_WAIT_SECONDS,task=key[0] if key else 'other'):
             # The owner may have finished just as our wait expired.
             hit=None if force or card_summary else self._query_cache_hit(key,ttl,stamp_seconds)
             if card_summary and not force:
@@ -931,7 +957,7 @@ class StatisticsPortal:
         try:
             return self._cached_query_reply_locked(key,callback,ttl,stamp_seconds,force)
         finally:
-            self._query_compute_lock.release()
+            gate.release()
 
     def _card_metrics_cache_get(self,key,ttl=CARD_METRICS_CACHE_SECONDS):
         now=time.monotonic()

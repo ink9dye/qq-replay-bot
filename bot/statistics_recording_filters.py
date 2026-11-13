@@ -32,7 +32,9 @@ def snapshot(db,root,now,include_opponents=False,annotate_series=True,with_facts
                  "AND NOT EXISTS(SELECT 1 FROM stat_exclusions e WHERE e.digest=v.digest "
                  "AND (e.player='' OR e.player=v.player) AND e.scope='default')")
             for r in db.execute(sql,(now,*chunk)):
-                ids[(r['digest'],r['player'])]=dict(r)
+                # Keep candidate row identity: series annotation must update the
+                # same dictionaries later filtered by _query, including metadata.
+                ids.setdefault((r['digest'],r['player']),dict(r))
         basis['_opponent_views']=ids
     if annotate_series:
         from .card_series import reference as series_reference,annotate as annotate_series
@@ -80,6 +82,54 @@ def snapshot(db,root,now,include_opponents=False,annotate_series=True,with_facts
         row['opponent']=other[0]['player']if len(other)==1 else None
         row['opponent_deck_type']=other[0]['deck_type']if len(other)==1 else None
     return basis,rows,draws,used,carried,canonical
+
+
+
+def _opening_facts(db,subjects,codes):
+    from .card_identity import facts
+    mapping,_,_=reference(db)
+    positive={};known=set()
+    db.execute('CREATE TEMP TABLE _recording_opening_selected(digest,player,PRIMARY KEY(digest,player))')
+    try:
+        db.executemany('INSERT INTO _recording_opening_selected VALUES(?,?)',subjects)
+        for code in codes:
+            aliases=mapping.get(code,(code,[code]))[1] or [code]
+            for key,fact in facts(db,aliases,'main','_recording_opening_selected').items():
+                count=fact.get('initial_count')
+                row=subjects.get(key)
+                if row is None or count is None:continue
+                known.add((*key,code))
+                if count>0:positive.setdefault(key,set()).add(code)
+    finally:db.execute('DROP TABLE _recording_opening_selected')
+    return positive,known
+
+
+def _selected_facts(db,ids,canonical,codes):
+    carried={};all_carried={};draws={};used={}
+    digests={r['digest'] for r in ids.values()}
+    builds={r['build'] for r in ids.values()}
+    for chunk in _chunks(builds):
+        marks=','.join('?' for _ in chunk)
+        # copies>0 是表级 CHECK，过滤它只会迫使每行回表；去掉后走覆盖索引。
+        for r in db.execute("SELECT build,partition,code FROM stat_build_cards "
+                            f"WHERE build IN ({marks})",chunk):
+            code=canonical(r['code']);all_carried.setdefault(r['build'],set()).add(code)
+            if r['partition']=='main':carried.setdefault(r['build'],set()).add(code)
+    draws={k:set() for k in ids};used={k:set() for k in ids}
+    facts_present=set()
+    mapping,_,_=reference(db)
+    aliases=set(codes)|{code for code,value in mapping.items() if value[0] in codes}
+    code_marks=','.join('?' for _ in aliases)
+    for chunk in _chunks(digests):
+        marks=','.join('?' for _ in chunk)
+        for f in db.execute('SELECT digest,player,code,drawn,used FROM stat_card_facts '
+                            f'WHERE digest IN ({marks}) AND code IN ({code_marks})',(*chunk,*aliases)):
+            code=canonical(f['code']);facts_present.add((f['digest'],f['player'],code))
+            key=(f['digest'],f['player']);row=ids.get(key)
+            if row is None:continue
+            if f['drawn']==1 and code in carried.get(row['build'],set()):draws[key].add(code)
+            if f['used']==1 and code in all_carried.get(row['build'],set()):used[key].add(code)
+    return draws,used,carried,all_carried,facts_present
 
 
 def _draw_rankings(context):
@@ -224,7 +274,7 @@ def _query(db,root,now,args,limit=2000,ranges=None):
                 and (not early_firsts or str(row['first_player']) in early_firsts))
     needs_facts=any(args.get(key) for key in ('card','opponent_card','not_card','opponent_not_card'))
     basis,rows,draws,used,carried,canonical=snapshot(db,root,now,include_opponents=True,
-        annotate_series=bool(args.get('series')or args.get('opponent_series')),with_facts=needs_facts,row_filter=row_filter)
+        annotate_series=bool(args.get('series')or args.get('opponent_series')),with_facts=False,row_filter=row_filter)
     from .statistics_recording_names import decorate
     # 复用同一次快照的身份信息与存活判定，避免逐行重复读证据表和重复 stat。
     decorate(db,rows,root,now,identity=basis.get('identity'),alive=basis.get('source_alive'))
@@ -262,10 +312,10 @@ def _query(db,root,now,args,limit=2000,ranges=None):
             if kind and kind+'_'+order in phases:kept.append(row)
         rows=kept
     values=lambda name:args.get(name,[])
-    mode=_scalar_arg(args,'mode',('drawn','not_drawn','used'),'drawn')
+    mode=_scalar_arg(args,'mode',('opening','drawn','not_drawn','used'),'opening')
     match=_scalar_arg(args,'match',('any','all'),'any')
     not_match=_scalar_arg(args,'not_match',('any','all'),'all')
-    opponent_mode=_scalar_arg(args,'opponent_mode',('drawn','not_drawn','used'),'drawn')
+    opponent_mode=_scalar_arg(args,'opponent_mode',('opening','drawn','not_drawn','used'),'opening')
     opponent_match=_scalar_arg(args,'opponent_match',('any','all'),'any')
     opponent_not_match=_scalar_arg(args,'opponent_not_match',('any','all'),'all')
     deck_values=_list_arg(args,'deck',label='我方卡组')
@@ -298,6 +348,14 @@ def _query(db,root,now,args,limit=2000,ranges=None):
     none_keys=('deck','opponent','card','opponent_card','not_card','opponent_not_card','first','outcome')
     all_carried={};facts_present=set()
     if conditions:
+        wanted={row['digest'] for row in rows
+                if deck_matches(row['deck_type'] or '__unknown__',deck_values,contains)
+                and deck_matches(row['opponent_deck_type'] or '__unknown__',opponent_values,contains)}
+        subjects={key:row for key,row in basis['_opponent_views'].items() if key[0] in wanted}
+        draws,used,carried,all_carried,facts_present=_selected_facts(db,subjects,canonical,set().union(*(c[1] for c in conditions)))
+        basis['_all_carried']=all_carried;basis['_facts_present']=facts_present
+        opening_codes=set().union(*(c[1] for c in conditions if c[2]=='opening'))
+        opening,opening_known=_opening_facts(db,subjects,opening_codes) if opening_codes else ({},set())
         all_carried=basis.get('_all_carried')
         if all_carried is None:
             all_carried={}
@@ -316,7 +374,7 @@ def _query(db,root,now,args,limit=2000,ranges=None):
                                        f'WHERE digest IN ({marks})',chunk):
                     facts_present.add((fact['digest'],fact['player'],canonical(fact['code'])))
     reasons={'opponent_evidence_missing':0,'self_evidence_missing':0,
-             'draw_process_incomplete':0,'card_fact_missing':0,'condition_not_met':0}
+             'draw_process_incomplete':0,'initial_evidence_missing':0,'card_fact_missing':0,'condition_not_met':0}
     result=[]
     for row in rows:
         if any(args.get(key+'_none')==['1']for key in none_keys):continue
@@ -340,7 +398,14 @@ def _query(db,root,now,args,limit=2000,ranges=None):
                 failure='opponent_evidence_missing' if opponent_side else 'self_evidence_missing';break
             key=(subject['digest'],subject['player'])
             observed=(used if mode=='used'else draws).get(key,set())
-            if mode=='not_drawn':
+            if mode=='opening':
+                observed=opening.get(key,set()) & carried.get(subject['build'],set())
+                unknown={code for code in codes if code in carried.get(subject['build'],set())
+                         and (*key,code) not in opening_known}
+                uncertain=(not (codes & observed) and bool(unknown)) if match=='any' else (
+                    not codes<=observed and codes<=observed|unknown)
+                if uncertain:failure='initial_evidence_missing';break
+            elif mode=='not_drawn':
                 if not subject['draw_complete']:
                     failure='draw_process_incomplete';break
                 observed=carried.get(subject['build'],set())-observed
@@ -357,7 +422,7 @@ def _query(db,root,now,args,limit=2000,ranges=None):
     result.sort(key=lambda r:r['recorded_at'],reverse=True)
     unique_recordings=len({r['digest'] for r in result})
     samples=result if limit is None else result[:limit]
-    return dict(recording_filters_version=3,card_filters_version=2,
+    return dict(recording_filters_version=3,card_filters_version=3,
                 samples=samples,total=len(result),limited=(limit is not None and len(result)>limit),
                 unique_recordings=unique_recordings,roster=basis['roster'],metrics=win_rate(result),
                 filter_reasons=reasons if conditions else {},

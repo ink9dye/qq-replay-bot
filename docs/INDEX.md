@@ -121,3 +121,5 @@
 - [QQ管理员代开通与保密群临时私聊修复](WRAPUP_QQ_DELEGATION_TEMP_PRIVATE_20261112.md)：权限边界、18项验证、部署与回滚。
 
 - [Pie intersection fix (2026-11-12)](WRAPUP_PIE_INTERSECTIONS_20261112.md): deployment, verification and rollback.
+
+- [录像筛选、起手条件及详情下载收尾](WRAPUP_RECORDINGS_OPENING_SAMPLE_20261113.md)：上线版本、真实首次/复用验证、回滚和教训；起手冷查询仍慢。

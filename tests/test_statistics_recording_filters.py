@@ -1,11 +1,16 @@
 import unittest
 import test_card_statistics as C
 import test_top100 as T
+from recording_filter_fixture import set_up
 from bot.statistics_recording_filters import query, draw_rankings, carried_game_counts
 
 
 class RecordingFilterTests(unittest.TestCase):
-    setUp=C.CardStatisticsTests.setUp
+    setUp=set_up
+    def test_missing_game_number_remains_excluded(self):
+        self.store._db.execute("UPDATE stat_evidence SET payload_json=json_remove(payload_json,'$.capture')")
+        self.assertEqual(query(self.store._db,self.replays,C.NOW,{})['total'],0)
+
     def test_both_sides_cards_intersect_without_expanding_top100_population(self):
         db=self.store._db
         args={'card':['1'],'opponent_card':['3'],'opponent_mode':['not_drawn']}
@@ -67,13 +72,13 @@ class RecordingFilterTests(unittest.TestCase):
         self.assertEqual(both['total'],10)
         self.assertTrue(all(r['current_rank']<=100 and r['opponent_current_rank']<=100 for r in both['samples']))
         # 与卡片条件叠加时仍按交集过滤（默认条件为“整局实际抽到”）。
-        self.assertEqual(query(db,self.replays,C.NOW,{'internal':['1'],'card':['1']})['total'],3)
+        self.assertEqual(query(db,self.replays,C.NOW,{'internal':['1'],'card':['1'],'mode':['drawn']})['total'],3)
         # 掉榜后立即不再算“双方前100”。
         self.store.replace_top100(T.roster(['甲']),C.NOW)
         self.assertEqual(query(db,self.replays,C.NOW,{'internal':['1']})['total'],0)
 
     def test_expired_excluded_and_invalid_card(self):
         self.store.set_fact_exclusion(self.rows[0]['digest'],'甲',reason='test')
-        self.assertEqual(query(self.store._db,self.replays,C.NOW,{'card':['1']})['total'],2)
+        self.assertEqual(query(self.store._db,self.replays,C.NOW,{'card':['1'],'mode':['drawn']})['total'],2)
         self.assertEqual(query(self.store._db,self.replays,C.NOW+14*86400,{})['total'],0)
         self.assertRaises(ValueError,query,self.store._db,self.replays,C.NOW,{'card':['bad']})

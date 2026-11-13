@@ -2,17 +2,27 @@ from .top100 import eligible_views
 from .share import safe_replay_file
 
 
-def details(db,replay_root,now,player,digest):
+def details(db,replay_root,now,player,digest,file_only=False):
     if not isinstance(player,str) or not player or len(player)>128 or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest):return None
-    basis=eligible_views(db,replay_root,now,player=player)
+    basis=eligible_views(db,replay_root,now,player=player,annotate_series=not file_only)
     row=next((r for r in basis['views'] if r['player']==player and r['digest']==digest),None)
     if row is None:return None
     files=db.execute('SELECT r.rel_path FROM replays r JOIN stat_files f ON f.replay_id=r.id WHERE f.digest=? ORDER BY r.id',(digest,)).fetchall()
     file=next((path for r in files if (path:=safe_replay_file(replay_root,r['rel_path'])) is not None),None)
     if file is None:return None
-    from .statistics_build_detail import query
-    build=query(db,replay_root,now,player,digest)
-    recording=next((r for r in (build or {}).get('matches',[])if r['digest']==digest),{})
+    # The modal displays raw cards, not inferred Side or build history. Naming
+    # uses the same decorator as build.matches, without constructing that report.
+    from .statistics_recording_names import decorate
+    others=list(db.execute('SELECT v.player,b.deck_type FROM stat_views v JOIN stat_builds b '
+        'ON b.fingerprint=v.build WHERE v.digest=? AND v.player<>?',(digest,player)))
+    other=dict(others[0]) if len(others)==1 else dict(player=None,deck_type=None)
+    ranks={m['player']:m['rank'] for m in basis['roster']['members']}
+    recording=dict(row,current_rank=row['rank'],opponent=other['player'],
+                   opponent_deck_type=other['deck_type'],opponent_current_rank=ranks.get(other['player']))
+    decorate(db,[recording])
+    if file_only:
+        return dict(recording_title=recording.get('recording_title'),
+                    download_filename=recording.get('download_filename')),file
     return dict(person=dict(player=player,rank=row['rank'],deck_type=row['deck_type'],series=row['series']),
         recording_title=recording.get('recording_title'),download_filename=recording.get('download_filename'),
         cards=[dict(r) for r in db.execute('SELECT partition,code,copies FROM stat_build_cards WHERE build=? ORDER BY partition,code',(row['build'],))],

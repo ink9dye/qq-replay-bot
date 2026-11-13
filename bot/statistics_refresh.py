@@ -24,6 +24,7 @@ class QueryRefresh:
 
     def _path(self,key):
         name=hashlib.sha256(json.dumps(key,ensure_ascii=False).encode()).hexdigest()
+        if key[0] in ('card-options','deck-options'):name='labels-'+name
         return self.directory/(name+'.json')
 
     def _read(self,key):
@@ -31,7 +32,8 @@ class QueryRefresh:
             path=self._path(key)
             if path.stat().st_size>MAX_BYTES:return None
             item=json.loads(path.read_text(encoding='utf8'))
-            if not 0<=time.time()-item['saved']<=MAX_AGE:return None
+            age_limit=7*86400 if key[0] in ('card-options','deck-options') else MAX_AGE
+            if not 0<=time.time()-item['saved']<=age_limit:return None
             result=item['result'];result[2]=result[2].encode('utf8')
             if result[0]!=200 or not isinstance(result[3],dict) or not isinstance(json.loads(result[2]),dict):return None
             return dict(saved=item['saved'],stamp=None,result=tuple(result),size=len(result[2]))
@@ -51,6 +53,8 @@ class QueryRefresh:
         return status,kind,json.dumps(payload,ensure_ascii=False).encode('utf8'),extra
 
     def get(self,key,compute,version,ttl,wait=1.0,background=False):
+        candidate=key[0] in ('deck-candidates','card-table','group-list')
+        maximum=7*86400 if key[0] in ('card-options','deck-options') else (ttl if candidate else MAX_AGE)
         try:stamp=version()
         except OSError:stamp=None
         now=time.time()
@@ -60,7 +64,7 @@ class QueryRefresh:
                 item=self._read(key)
                 if item:self._remember(key,item)
             age=now-item['saved'] if item else MAX_AGE+1
-            if item and 0<=age<=ttl and stamp is not None and item['stamp']==stamp:
+            if item and 0<=age<=ttl and (candidate or (stamp is not None and item['stamp']==stamp)):
                 self.items.move_to_end(key)
                 return self._present(item,'fresh')
             event=self.pending.get(key)
@@ -69,15 +73,16 @@ class QueryRefresh:
             # A result outside its exact version is always explicitly stale.
             duration=self.durations.get(key,0)
             minimum=max(300 if key[0]=='roster' else 30,min(300,duration*2))
+            if candidate:minimum=ttl
             if background:minimum=max(minimum,ttl,duration*3)
             retry_blocked=error and now-error[0]<COOLDOWN
             spare=not background or (not self.pending and self.jobs.empty())
             if event is None and (item is None or age>=minimum) and not retry_blocked and spare:
                 event=threading.Event()
                 try:
-                    self.jobs.put_nowait((key,compute,version,event));self.pending[key]=event
+                    self.jobs.put_nowait((key,compute,version,event,time.monotonic()));self.pending[key]=event
                 except queue.Full:event=None
-            if item and 0<=age<=MAX_AGE:
+            if item and 0<=age<=maximum:
                 self.items.move_to_end(key)
                 return self._present(item,'refreshing' if event else 'stale')
             if retry_blocked:return error[1]
@@ -87,7 +92,7 @@ class QueryRefresh:
             except OSError:stamp=None
             with self.lock:
                 item=self.items.get(key)
-                if item and 0<=time.time()-item['saved']<=MAX_AGE:
+                if item and 0<=time.time()-item['saved']<=maximum:
                     state='fresh' if key not in self.pending and stamp is not None and item['stamp']==stamp else 'stale'
                     return self._present(item,state,refreshing=key in self.pending)
                 error=self.errors.get(key)
@@ -107,12 +112,16 @@ class QueryRefresh:
             total=0
             for i,p in enumerate(paths):
                 total+=p.stat().st_size
-                if i>=MAX_KEYS or total>MAX_BYTES or time.time()-p.stat().st_mtime>MAX_AGE:p.unlink(missing_ok=True)
+                age_limit=7*86400 if p.name.startswith('labels-') else MAX_AGE
+                if i>=MAX_KEYS or total>MAX_BYTES or time.time()-p.stat().st_mtime>age_limit:p.unlink(missing_ok=True)
         except OSError:pass
 
     def _worker(self):
         while True:
-            key,compute,version,event=self.jobs.get();started=time.monotonic();status=500
+            key,compute,version,event,enqueued=self.jobs.get();started=time.monotonic();status=500
+            from .web_perf_metrics import request_metrics
+            context=request_metrics('refresh-worker');metrics=context.__enter__()
+            metrics['queue_wait_ms']=round((started-enqueued)*1000,3)
             try:
                 stamp=version();result=compute();status=result[0]
                 if status==200 and len(result[2])<=MAX_BYTES//2 and isinstance(json.loads(result[2]),dict):
@@ -140,6 +149,7 @@ class QueryRefresh:
                     self.log.parent.mkdir(parents=True,exist_ok=True)
                     if self.log.exists() and self.log.stat().st_size>1024*1024:self.log.replace(self.log.with_suffix('.previous'))
                     with self.log.open('a',encoding='utf8') as f:f.write(json.dumps(dict(
-                        at=time.time(),kind=key[0],status=status,elapsed_ms=round((time.monotonic()-started)*1000)))+'\n')
+                        at=time.time(),kind=key[0],status=status,elapsed_ms=round((time.monotonic()-started)*1000),**metrics))+'\n')
                 except OSError:pass
                 self.jobs.task_done()
+                context.__exit__(None,None,None)

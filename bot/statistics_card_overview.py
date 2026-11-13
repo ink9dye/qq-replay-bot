@@ -6,6 +6,40 @@ from .statistics_card_names import index
 from .card_search import card_name
 
 
+def choices(db,replay_root,now):
+    """Exact default overview row projection, without facts or win-rate tables."""
+    from .top100 import eligible_views
+    from .statistics_population import latest_views
+    basis=eligible_views(db,replay_root,now,annotate_series=False)
+    latest=latest_views(basis)
+    builds={row['build'] for row in basis['views']}
+    mapping,_,_=reference(db)
+    cards={}
+    # Stream the covering index once; avoid thousands of random table lookups.
+    # The schema guarantees copies>0, and this projection only needs presence.
+    for row in db.execute('SELECT build,partition,code FROM stat_build_cards'):
+        if row['build'] not in builds:continue
+        code=mapping.get(row['code'],(row['code'],None))[0]
+        cards[(row['build'],row['partition'],code)]=1
+    codes={key[2] for key in cards};names=index(Path(db.execute('PRAGMA database_list').fetchone()[2]).parent)
+    by_build={}
+    for (build,part,code),copies in cards.items():
+        by_build.setdefault(build,{}).setdefault(code,{})[part]=copies
+    totals={};extras={}
+    for row in latest.values():
+        for code,parts in by_build.get(row['build'],{}).items():
+            info=names.get(str(code),{});kind=info.get('card_type')
+            base='extra' if type(kind) is int and kind & (0x40|0x2000|0x800000|0x4000000) else 'main'
+            if parts.get(base,0)+parts.get('side',0)>0:totals[code]=totals.get(code,0)+1
+            if parts.get('extra',0)>0:extras[code]=extras.get(code,0)+1
+    result=[]
+    for code in sorted(codes,key=lambda c:(-totals.get(c,0),-extras.get(c,0),c)):
+        info=names.get(str(code));kind=(info or {}).get('card_type')
+        result.append(dict(code=code,name=card_name(info) if info else '卡名暂缺',
+            base_partition='extra' if type(kind) is int and kind & (0x40|0x2000|0x800000|0x4000000) else 'main'))
+    return dict(rows=result)
+
+
 def query(db,replay_root,now,basis='observed',deck_types=()):
     if basis not in ('observed','initial'):raise ValueError('invalid_basis')
     seed=player_query(db,replay_root,1,now,deck_types)

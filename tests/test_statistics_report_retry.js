@@ -8,6 +8,7 @@ function setup(responses, onFetch) {
   let calls = 0;
   const delays = [];
   const context = {
+    window: {addEventListener() {}},
     DOMException, Date, AbortController,
     setTimeout(fn, ms) { delays.push(ms); return setTimeout(fn, 0); }, clearTimeout,
     fetch: async (...args) => { calls += 1; if (onFetch) onFetch(calls, ...args); return responses.shift(); }
