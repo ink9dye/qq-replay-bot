@@ -20,7 +20,9 @@ SAMPLE_LIMIT = 2000
 MAX_ROTATIONS = 8
 PHASES = ('recordings_total_ms','recordings_eligible_ms','identity_read_ms',
           'recordings_opponent_ms','recordings_naming_ms','recordings_facts_ms',
-          'recordings_opening_ms','recordings_filter_ms','recordings_sort_ms')
+          'recordings_opening_ms','recordings_filter_ms','recordings_sort_ms',
+          'eligible_sql_ms','eligible_source_ms','eligible_source_index_ms')
+COUNTS=('source_cache_hits','source_cache_misses','source_index_cache_hits','source_index_cache_misses')
 
 
 def log_family(paths):
@@ -230,7 +232,7 @@ def build_report(logs, observations=(), since=0, until=None):
     if not owners:lines.append('没有带持锁者字段的超时样本；旧日志未知，不表示没有阻塞。')
     workers={}
     worker_files=log_family({Path(p).parent/'statistics-query-timings.jsonl' for p in logs})
-    phases={name:[] for name in PHASES}
+    phases={name:[] for name in (*PHASES,*COUNTS)}
     recording_rounds=0
     for file in sorted(worker_files):
         if not file.is_file():continue
@@ -264,8 +266,14 @@ def build_report(logs, observations=(), since=0, until=None):
     lines += ['', '### 录像计算分阶段（完成任务）', '',
         f'录像完成轮次：{recording_rounds}；下表只统计明确埋点，缺字段为未知。',
         '| 阶段 | 已测次数 | 累计毫秒 | 最大毫秒 |', '|---|---:|---:|---:|']
-    for name,summary in phases.items():
+    for name in PHASES:
+        summary=phases[name]
         lines.append(f'| {name} | {summary[0]} | {summary[1]:.3f} | {summary[2]:.3f} |' if summary else f'| {name} | 0 | 未知 | 未知 |')
+    lines += ['', '| 源文件缓存计数 | 已测轮次 | 累计次数 | 单轮最大次数 |', '|---|---:|---:|---:|']
+    for name in COUNTS:
+        summary=phases[name]
+        lines.append(f'| {name} | {summary[0]} | {summary[1]:.0f} | {summary[2]:.0f} |' if summary else f'| {name} | 0 | 未知 | 未知 |')
+    lines.append('eligible_sql含资格SQL获取及行物化；eligible_source含路径索引与存活判断，source_index为其嵌套子项。source_cache按唯一digest判断计数，不是stat系统调用次数；源文件检查未执行时字段缺失。以上均属eligible内部，不能与eligible重复相加。')
     lines.append('total为整体；eligible含资格SQL、源文件检查与身份处理；identity_read是eligible/命名内部的身份读取与解析，属于嵌套子项，不能重复相加。facts/opening含SQL获取、遍历和证据合并，不能解释为纯SQL或纯CPU时间。请求缓存复用不会重新产生计算阶段。')
     lines += ['', '### 输入覆盖与截断', '',
         '每族最多8份编号轮转，.1与.1.gz同槽优先未压缩；物理文件别名去重，不按相同日志内容去重（避免删掉合法重复请求）。',

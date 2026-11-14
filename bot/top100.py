@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from . import statistics_quality
+from .web_perf_metrics import measure,add_metric
 import threading
 
 _ALIVE_CACHE = {}
@@ -121,75 +122,84 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
     from .card_series import reference,annotate,SEMANTICS
     series_catalog=series_catalog or reference(db)
     series_reference=dict(status=series_catalog['status'],revision=series_catalog['revision'],semantics=SEMANTICS)
-    state=snapshot(db,now)
-    from .statistics_rank_scope import current,filter_rows
-    population_scope=current()
-    wide_population=population_scope is not None and population_scope['own']!='100'
-    revision=db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
-    population=('FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
-                'JOIN stat_current_top100 m ON m.player=v.player WHERE g.expires_at>? ')
-    diagnostics=dict(
-        population='current_roster_before_optional_internal_filter',
-        current_unexpired_views=db.execute('SELECT COUNT(*) '+population,(float(now),)).fetchone()[0],
-        excluded_current_views=db.execute('SELECT COUNT(*) '+population+
-            "AND EXISTS(SELECT 1 FROM stat_exclusions e WHERE e.digest=v.digest AND (e.player='' OR e.player=v.player) AND e.scope=?)",
-            (float(now),scope)).fetchone()[0],
-        expired_views=db.execute('SELECT COUNT(*) FROM stat_views v JOIN stat_games g ON g.digest=v.digest WHERE g.expires_at<=?',(float(now),)).fetchone()[0],
-        unexpired_outside_roster_views=db.execute('SELECT COUNT(*) FROM stat_views v JOIN stat_games g ON g.digest=v.digest WHERE g.expires_at>? '
-            'AND NOT EXISTS(SELECT 1 FROM stat_current_top100 m WHERE m.player=v.player)',(float(now),)).fetchone()[0])
-    if not state['available'] and player is None and not wide_population:return dict(roster=state,classification_revision=revision,views=[],diagnostics=diagnostics,series_reference=series_reference)
-    sql=('SELECT v.*,g.recorded_at,g.received_at,g.expires_at,m.rank,b.deck_type,b.classification_status,b.classification_source,b.series_status,b.main_complete,b.extra_complete,b.side_complete FROM stat_views v '
-         'JOIN stat_games g ON g.digest=v.digest JOIN stat_current_top100 m ON m.player=v.player '
-         'JOIN stat_builds b ON b.fingerprint=v.build '
-         'WHERE g.expires_at>? AND NOT EXISTS(SELECT 1 FROM stat_exclusions e WHERE e.digest=v.digest '
-         'AND (e.player=\'\' OR e.player=v.player) AND e.scope=?) ')
-    if internal_only:
-        sql+=('AND EXISTS(SELECT 1 FROM stat_views opponent JOIN stat_current_top100 other '
-              'ON other.player=opponent.player WHERE opponent.digest=v.digest AND opponent.player!=v.player) ')
-    params=(float(now),scope)
-    if player is not None:
-        sql=sql.replace('JOIN stat_current_top100 m ON m.player=v.player','LEFT JOIN stat_current_top100 m ON m.player=v.player')
-        sql+='AND v.player=? '
-        params+=(player,)
-    if wide_population:sql=sql.replace('JOIN stat_current_top100 m ON m.player=v.player','LEFT JOIN stat_current_top100 m ON m.player=v.player')
-    rows=[dict(r) for r in db.execute(sql+'ORDER BY g.recorded_at,v.digest,v.player_index',params)]
+    with measure('eligible_sql_ms'):
+        state=snapshot(db,now)
+        from .statistics_rank_scope import current,filter_rows
+        population_scope=current()
+        wide_population=population_scope is not None and population_scope['own']!='100'
+        revision=db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
+        population=('FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
+                    'JOIN stat_current_top100 m ON m.player=v.player WHERE g.expires_at>? ')
+        diagnostics=dict(
+            population='current_roster_before_optional_internal_filter',
+            current_unexpired_views=db.execute('SELECT COUNT(*) '+population,(float(now),)).fetchone()[0],
+            excluded_current_views=db.execute('SELECT COUNT(*) '+population+
+                "AND EXISTS(SELECT 1 FROM stat_exclusions e WHERE e.digest=v.digest AND (e.player='' OR e.player=v.player) AND e.scope=?)",
+                (float(now),scope)).fetchone()[0],
+            expired_views=db.execute('SELECT COUNT(*) FROM stat_views v JOIN stat_games g ON g.digest=v.digest WHERE g.expires_at<=?',(float(now),)).fetchone()[0],
+            unexpired_outside_roster_views=db.execute('SELECT COUNT(*) FROM stat_views v JOIN stat_games g ON g.digest=v.digest WHERE g.expires_at>? '
+                'AND NOT EXISTS(SELECT 1 FROM stat_current_top100 m WHERE m.player=v.player)',(float(now),)).fetchone()[0])
+        if not state['available'] and player is None and not wide_population:return dict(roster=state,classification_revision=revision,views=[],diagnostics=diagnostics,series_reference=series_reference)
+        sql=('SELECT v.*,g.recorded_at,g.received_at,g.expires_at,m.rank,b.deck_type,b.classification_status,b.classification_source,b.series_status,b.main_complete,b.extra_complete,b.side_complete FROM stat_views v '
+             'JOIN stat_games g ON g.digest=v.digest JOIN stat_current_top100 m ON m.player=v.player '
+             'JOIN stat_builds b ON b.fingerprint=v.build '
+             'WHERE g.expires_at>? AND NOT EXISTS(SELECT 1 FROM stat_exclusions e WHERE e.digest=v.digest '
+             'AND (e.player=\'\' OR e.player=v.player) AND e.scope=?) ')
+        if internal_only:
+            sql+=('AND EXISTS(SELECT 1 FROM stat_views opponent JOIN stat_current_top100 other '
+                  'ON other.player=opponent.player WHERE opponent.digest=v.digest AND opponent.player!=v.player) ')
+        params=(float(now),scope)
+        if player is not None:
+            sql=sql.replace('JOIN stat_current_top100 m ON m.player=v.player','LEFT JOIN stat_current_top100 m ON m.player=v.player')
+            sql+='AND v.player=? '
+            params+=(player,)
+        if wide_population:sql=sql.replace('JOIN stat_current_top100 m ON m.player=v.player','LEFT JOIN stat_current_top100 m ON m.player=v.player')
+        rows=[dict(r) for r in db.execute(sql+'ORDER BY g.recorded_at,v.digest,v.player_index',params)]
     if statistics_quality.enabled():
         excluded=statistics_quality.excluded_digests(db)
         before_quality=len(rows)
         if excluded:rows=[row for row in rows if row['digest'] not in excluded]
         diagnostics['quality_filter']=dict(enabled=True,excluded_digests=len(excluded),
             excluded_views=before_quality-len(rows))
-    if check_files:
-        now_mono=time.monotonic()
-        with _ALIVE_LOCK:
-            cached_paths=_ALIVE_FILES['paths'] if now_mono-_ALIVE_FILES['at']<=_ALIVE_TTL else None
-            cached_alive=dict(_ALIVE_CACHE)
-        if cached_paths is None:
-            cached_paths={}
-            for file_row in db.execute('SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
-                cached_paths.setdefault(file_row['digest'],[]).append(file_row['rel_path'])
+    with measure('eligible_source_ms'):
+        if check_files:
+            source_hits=0;source_misses=0
+            now_mono=time.monotonic()
             with _ALIVE_LOCK:
-                _ALIVE_FILES.update(at=now_mono,paths=cached_paths)
-        file_paths=cached_paths
-        alive={}
-        root_resolved=replay_root.resolve();dir_cache={}
-        fresh={}
-        for row in rows:
-            digest=row['digest']
-            if digest in alive:continue
-            hit=cached_alive.get(digest)
-            if hit is not None and 0.0<=now_mono-hit[0]<=_ALIVE_TTL:
-                alive[digest]=hit[1];continue
-            ok=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
-                   for rel_path in file_paths.get(digest,()))
-            alive[digest]=ok;fresh[digest]=(now_mono,ok)
-        if fresh:
-            with _ALIVE_LOCK:
-                _ALIVE_CACHE.update(fresh)
-                if len(_ALIVE_CACHE)>40000:
-                    _ALIVE_CACHE.clear();_ALIVE_CACHE.update(fresh)
-    else:
-        alive={row['digest']: True for row in rows}
+                cached_paths=_ALIVE_FILES['paths'] if now_mono-_ALIVE_FILES['at']<=_ALIVE_TTL else None
+                cached_alive=dict(_ALIVE_CACHE)
+            add_metric('source_index_cache_hits',int(cached_paths is not None))
+            add_metric('source_index_cache_misses',int(cached_paths is None))
+            with measure('eligible_source_index_ms'):
+                if cached_paths is None:
+                    cached_paths={}
+                    for file_row in db.execute('SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
+                        cached_paths.setdefault(file_row['digest'],[]).append(file_row['rel_path'])
+                    with _ALIVE_LOCK:
+                        _ALIVE_FILES.update(at=now_mono,paths=cached_paths)
+            file_paths=cached_paths
+            alive={}
+            root_resolved=replay_root.resolve();dir_cache={}
+            fresh={}
+            for row in rows:
+                digest=row['digest']
+                if digest in alive:continue
+                hit=cached_alive.get(digest)
+                if hit is not None and 0.0<=now_mono-hit[0]<=_ALIVE_TTL:
+                    source_hits+=1;alive[digest]=hit[1];continue
+                source_misses+=1
+                ok=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
+                       for rel_path in file_paths.get(digest,()))
+                alive[digest]=ok;fresh[digest]=(now_mono,ok)
+            if fresh:
+                with _ALIVE_LOCK:
+                    _ALIVE_CACHE.update(fresh)
+                    if len(_ALIVE_CACHE)>40000:
+                        _ALIVE_CACHE.clear();_ALIVE_CACHE.update(fresh)
+            add_metric('source_cache_hits',source_hits)
+            add_metric('source_cache_misses',source_misses)
+        else:
+            alive={row['digest']: True for row in rows}
     if annotate_series:
         annotate(db,rows,series_catalog)
     from .statistics_match_identity import inherit_first_game_types

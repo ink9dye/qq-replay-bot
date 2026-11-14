@@ -40,6 +40,12 @@ def timed(name):
     return decorate
 
 
+def add_metric(name,value):
+    """Add fixed-name numeric counters without storing query data."""
+    values=_current.get()
+    if values is not None:values[name]=values.get(name,0)+value
+
+
 def task_label(value):
     value = str(value).rsplit('/', 1)[-1]
     return value if value in {'roster','recordings','matrix','card-report','card-table',
