@@ -127,3 +127,5 @@
 - [Side连接与查卡阻塞修复收尾](WRAPUP_SIDE_CARD_RESOURCES_20261114.md)：2026-11-14已部署、测试及回滚。
 
 - [录像分阶段观测与轮转读取](topics/WEB_PERF_PHASES_20261114.md)：已上线；补读logrotate、阶段记录、覆盖边界和真实证据。
+
+- [单卡胜率饼图人数Top5收尾](wrapup/WRAPUP_CARD_WINRATE_POPULAR_20261114.md)：2026-11-14已部署；验证、影响与回滚。

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""QQ「单卡胜率」：双方当前前100、主卡实际使用后的总体胜率与对手卡组 Top 5。
+"""QQ「单卡胜率」：总体、先后攻、胜率 Top5 与饼图人数 Top5 对阵胜率。
 
 复用 top100.eligible_views 的资格与 card_statistics 的事实/对阵算法；本模块
 只做取卡名、只读连接、30 秒双方前100人口快照与结果小缓存，不新增统计口径。
@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import Counter
 import threading
 import time
 from contextlib import closing
@@ -125,13 +126,42 @@ def _compute(database, replay_root, now, code, limit=MATCHUP_LIMIT):
         opponents = _opponent_rows(db, {row['digest'] for row in selected})
         result = matchups(db, selected, facts, 'main', limit,
                           MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES, opponents=opponents)
+        popular = _popular_matchups(db, replay_root, now, selected, facts, opponents)
         # 按每个小局的玩家视角分桶；复用同一份事实和对手，不重查人口或录像。
         order = {}
         for label, value in (('first', 1), ('second', 0), ('unknown', None)):
             subset = [row for row in selected if row.get('first_player') == value]
             order[label] = matchups(db, subset, facts, 'main', limit=0,
                                     opponents=opponents)['base']
-    return dict(card=info['canonical_card'], matchups=result, order=order)
+    return dict(card=info['canonical_card'], matchups=result, order=order,
+                popular_matchups=popular)
+
+
+def _popular_decks(db, replay_root, now):
+    """与前百饼图同一份人口：每人最新有效首局，按具体卡组人数排序。"""
+    from .statistics_dashboard import population
+    _, _, people = population(db, Path(replay_root), float(now), resolve_rank=False)
+    counts = Counter(person['deck_type'] or '未识别' for person in people
+                     if person['observed'])
+    total = sum(counts.values())
+    # 未识别仍进饼图占比分母，但不是可以查询胜率的具体卡组。
+    return [dict(deck_type=name, players=count, share=100 * count / total)
+            for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+            if name != '未识别'][:MATCHUP_LIMIT]
+
+
+def _popular_matchups(db, replay_root, now, selected, facts, opponents):
+    from .card_statistics import matchups
+    rows = []
+    for deck in _popular_decks(db, replay_root, now):
+        # 复用已有事实与逐局对手，不按当前代表构筑替换历史对手卡组。
+        subset = [row for row in selected
+                  if any(other['player'] != row['player']
+                         and other.get('deck_type') == deck['deck_type']
+                         for other in opponents.get(row['digest'], ()))]
+        base = matchups(db, subset, facts, 'main', limit=0, opponents=opponents)['base']
+        rows.append(dict(deck, **base, low_sample=0 < base['games'] < MATCHUP_MIN_GAMES))
+    return dict(rows=rows, limit=MATCHUP_LIMIT, selection='top100_pie_exact_deck_players')
 
 
 def collect(database, replay_root, now, card_name=None, *, code=None, limit=MATCHUP_LIMIT):
@@ -187,6 +217,21 @@ def message(payload):
     unknown = (order.get('unknown') or {}).get('games', 0)
     if unknown:
         lines.append('先后攻未知 %d局：仅计入总体。' % unknown)
+    popular = payload.get('popular_matchups')
+    if popular is not None:
+        popular_rows = popular.get('rows') or []
+        lines.append('前百饼图占比最高的%d个具体卡组（使用后）：' % len(popular_rows))
+        for index, row in enumerate(popular_rows, 1):
+            prefix = '%d. %s（饼图占比%.1f%%，%d人）' % (
+                index, row['deck_type'], row['share'], row['players'])
+            if row['games']:
+                mark = '（样本少）' if row.get('low_sample') else ''
+                lines.append('%s %.1f%%（%d胜/%d负/%d平，%d局）%s' % (
+                    prefix, row['rate'], row['wins'], row['losses'], row['draws'], row['games'], mark))
+            else:
+                lines.append('%s：暂无有效样本' % prefix)
+        if not popular_rows:
+            lines.append('暂无已识别的具体卡组。')
     rows = matchups.get('rows') or []
     if rows:
         lines.append('对前百卡组最高的%d个（使用后）：' % len(rows))
@@ -199,6 +244,8 @@ def message(payload):
         lines.append('对前百卡组：暂无达到%d局的对手卡组。' % MATCHUP_FALLBACK_GAMES)
     lines.append('口径：双方当前前100；主卡实际使用且胜负明确；平局计入分母；'
                  '先后攻按该小局；分组不足10局标样本少；'
-                 '每行至少%d局，不足时用%d局以上补足并标注。' % (
+                 '胜率最高榜每行至少%d局，不足时用%d局以上补足并标注。' % (
                      MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES))
+    if popular is not None:
+        lines.append('饼图榜按人数取前5，不合并大类或“其他”；样本不足仍保留，无样本不算0%。')
     return '\n'.join(lines)

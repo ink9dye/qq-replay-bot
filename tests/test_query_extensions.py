@@ -280,6 +280,7 @@ class ExactCardAndTop20Tests(unittest.TestCase):
                     facts[(digest, 'a')] = dict(used=1)
                     opponents[digest] = [dict(player='b', deck_type='D%02d' % group)]
             with patch('bot.card_winrate._basis', return_value=selected), \
+                 patch('bot.card_winrate._popular_decks', return_value=[]), \
                  patch('bot.card_identity.identity', return_value=dict(codes=[1], canonical_card=1)), \
                  patch('bot.card_identity.facts', return_value=facts), \
                  patch('bot.card_statistics._opponent_rows', return_value=opponents):
