@@ -6,6 +6,7 @@ import re
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlencode
@@ -173,6 +174,7 @@ class CardSearch:
         self.sessions = OrderedDict()
         self.cache = OrderedDict()
         self.lock = threading.RLock()
+        self._operation_locks = {}
         self.release_fetch = release_fetch or (self._fetch_release if fetch is None else lambda _: '')
         self.release_cache = OrderedDict()
         self.wall_clock = wall_clock or time.time
@@ -224,44 +226,71 @@ class CardSearch:
             raise ValueError('release page too large')
         return body.decode('utf8')
 
-    def _reply_detail(self, card):
-        # 随机一卡等入口不经过 handle()，这里自己加锁保护 release_cache。
+    @contextmanager
+    def _operation_lock(self, kind, key):
+        # Count holders and waiters; remove idle entries without splitting a lock.
+        identity = (kind, key)
         with self.lock:
-            card_id = int(card['id'])
-            cached = self.release_cache.get(card_id)
+            entry = self._operation_locks.setdefault(identity, [threading.RLock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:
+                yield
+        finally:
+            with self.lock:
+                entry[1] -= 1
+                if not entry[1]:
+                    del self._operation_locks[identity]
+
+    def _reply_detail(self, card):
+        # Random-card commands also call this directly. Merge same-card refreshes.
+        card_id = int(card['id'])
+        with self._operation_lock('release', card_id):
+            with self.lock:
+                cached = self.release_cache.get(card_id)
+                known = self.release_known.get(card_id)
             note = ''
-            known = self.release_known.get(card_id)
             if cached and self.clock() < cached[0]:
                 lines, note = cached[1], cached[2]
             elif known and not cached and 0 <= self.wall_clock()-known['checked_at'] < 86400:
                 lines = known['lines']
                 remaining = 86400-(self.wall_clock()-known['checked_at'])
-                self.release_cache[card_id] = (self.clock()+remaining,lines,note)
+                with self.lock:
+                    self.release_cache[card_id] = (self.clock()+remaining, lines, note)
             else:
                 try:
                     page = self.release_fetch(card_id)
                     from . import card_image_cache
                     card_image_cache.remember_page(self.data_dir, card_id, page)
                     lines = release_lines(page)
-                    if not lines:raise ValueError('release data not parsed')
-                    self.release_known[card_id] = dict(lines=lines,checked_at=self.wall_clock())
-                    self.release_known.move_to_end(card_id)
-                    while len(self.release_known)>128:self.release_known.popitem(last=False)
-                    self._save_release_known()
+                    if not lines:
+                        raise ValueError('release data not parsed')
+                    with self.lock:
+                        self.release_known[card_id] = dict(lines=lines, checked_at=self.wall_clock())
+                        self.release_known.move_to_end(card_id)
+                        while len(self.release_known) > 128:
+                            self.release_known.popitem(last=False)
+                        self._save_release_known()
                     ttl = 86400
                 except (OSError, ValueError, TypeError):
                     lines = known['lines'] if known else []
                     note = '卡包及发售日期：使用已缓存记录（本次刷新失败）' if lines else '卡包及发售日期：本次读取失败，请稍后重试'
                     ttl = 30
-                self.release_cache[card_id] = (self.clock()+ttl, lines, note)
-            self.release_cache.move_to_end(card_id)
-            while len(self.release_cache)>128:self.release_cache.popitem(last=False)
-            reply = self._detail(card)
-            extra = '\n'.join(lines)
-            if note:extra += ('\n' if extra else '')+note
-            result = CardReply(str(reply)+'\n\n'+extra, reply.image_url)
-            result.selected_card = card
-            return result
+                with self.lock:
+                    self.release_cache[card_id] = (self.clock()+ttl, lines, note)
+            with self.lock:
+                if card_id in self.release_cache:
+                    self.release_cache.move_to_end(card_id)
+                while len(self.release_cache) > 128:
+                    self.release_cache.popitem(last=False)
+        # Image retrieval can wait on the network too; keep session/cache locks free.
+        reply = self._detail(card)
+        extra = '\n'.join(lines)
+        if note:
+            extra += ('\n' if extra else '')+note
+        result = CardReply(str(reply)+'\n\n'+extra, reply.image_url)
+        result.selected_card = card
+        return result
 
     @staticmethod
     def _fetch(path):
@@ -277,19 +306,22 @@ class CardSearch:
         return result
 
     def _request(self, path):
-        cached = self.cache.get(path)
-        if cached and self.clock() - cached[0] < 3600:
-            return cached[1]
-        try:
-            result = self.fetch(path)
-        except (OSError, ValueError, TimeoutError):
-            time.sleep(1)
-            result = self.fetch(path)
-        self.cache[path] = (self.clock(), result)
-        self.cache.move_to_end(path)
-        while len(self.cache) > 128:
-            self.cache.popitem(last=False)
-        return result
+        with self._operation_lock('request', path):
+            with self.lock:
+                cached = self.cache.get(path)
+            if cached and self.clock() - cached[0] < 3600:
+                return cached[1]
+            try:
+                result = self.fetch(path)
+            except (OSError, ValueError, TimeoutError):
+                time.sleep(1)
+                result = self.fetch(path)
+            with self.lock:
+                self.cache[path] = (self.clock(), result)
+                self.cache.move_to_end(path)
+                while len(self.cache) > 128:
+                    self.cache.popitem(last=False)
+            return result
 
     def _local_search(self, query, user):
         """百鸽不可用时，用本地 YGOPro 中文卡库兜底。"""
@@ -317,7 +349,8 @@ class CardSearch:
         lines += [f"{i + 1}. {card_name(card)}（{int(card['id']):08d}）"
                   for i, card in enumerate(cards[:10])]
         lines.append("请直接发送数字选择；候选只保存在当前会话。")
-        self.sessions[str(user)] = {"query": value, "rows": cards, "offset": 0, "next": 0, "time": self.clock()}
+        with self.lock:
+            self.sessions[str(user)] = {"query": value, "rows": cards, "offset": 0, "next": 0, "time": self.clock()}
         return "\n".join(lines)
 
     def api_has_exact_name(self, query):
@@ -398,13 +431,14 @@ class CardSearch:
             return moment - session["time"] < max_age
 
     def handle(self, user, action, value="", purpose=None):
-        # handle_text 在线程中执行；保护候选和缓存，避免同一用户并发串页。
-        with self.lock:
-            user = str(user)
-            if action == "search":
-                self.sessions.pop(user, None)
-            else:
-                purpose = (self.sessions.get(user) or {}).get("purpose")
+        # Serialize this user only; other users can inspect candidates during fetch.
+        user = str(user)
+        with self._operation_lock("user", user):
+            with self.lock:
+                if action == "search":
+                    self.sessions.pop(user, None)
+                else:
+                    purpose = (self.sessions.get(user) or {}).get("purpose")
             try:
                 reply = self._handle(user, action, value)
             except OSError:
@@ -414,19 +448,21 @@ class CardSearch:
                     return "查卡接口暂时连不上，请稍后重试。"
             except (ValueError, KeyError, TypeError):
                 return "查卡暂时失败：数据不是合法 JSON 或格式异常，请稍后重试。"
-            if user in self.sessions:
-                self.sessions[user]["purpose"] = purpose
+            with self.lock:
+                if user in self.sessions:
+                    self.sessions[user]["purpose"] = purpose
             if getattr(reply, "selected_card", None):
                 reply.purpose = purpose
             return reply
 
     def _handle(self, user, action, value):
         now = self.clock()
-        for key in list(self.sessions):
-            if now - self.sessions[key]["time"] >= 300:
-                del self.sessions[key]
-        if action == "select":
+        with self.lock:
+            for key in list(self.sessions):
+                if now - self.sessions[key]["time"] >= 300:
+                    del self.sessions[key]
             session = self.sessions.get(user)
+        if action == "select":
             if not session:
                 return "查卡候选已过期或不存在，请先发送“查卡 关键词”。"
             index = int(value) - 1
@@ -434,7 +470,6 @@ class CardSearch:
                 return "序号不在当前候选范围内，请使用列表中的序号。"
             return self._reply_detail(session["rows"][index])
         if action == "next":
-            session = self.sessions.get(user)
             if not session:
                 return "查卡候选已过期或不存在，请先发送“查卡 关键词”。"
             if session["offset"] < len(session["rows"]):
@@ -461,17 +496,20 @@ class CardSearch:
                 normalize(r.get(k, "")) for k in ("id", "cid", "cn_name", "sc_name", "md_name", "nwbbs_n", "cnocg_n", "jp_name", "en_name")
             }]
             if len(matches) == 1:
-                self.sessions.pop(user, None)
+                with self.lock:
+                    self.sessions.pop(user, None)
                 return self._reply_detail(matches[0])
             if len(rows) == 1:
-                self.sessions.pop(user, None)
+                with self.lock:
+                    self.sessions.pop(user, None)
                 return self._reply_detail(rows[0])
         session = {"query": query, "rows": rows[:100], "offset": 0,
                    "next": int(result.get("next") or 0), "time": now}
-        self.sessions[user] = session
-        self.sessions.move_to_end(user)
-        while len(self.sessions) > 1000:
-            self.sessions.popitem(last=False)
+        with self.lock:
+            self.sessions[user] = session
+            self.sessions.move_to_end(user)
+            while len(self.sessions) > 1000:
+                self.sessions.popitem(last=False)
         return self._list(session)
 
     @staticmethod

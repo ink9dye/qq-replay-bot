@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 import time
 from pathlib import Path
@@ -35,9 +36,13 @@ def connect(data_dir):
     path = db_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(path), timeout=15)
-    db.execute('PRAGMA journal_mode=WAL')
-    db.execute('PRAGMA busy_timeout=5000')
-    db.execute(SCHEMA)
+    try:
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('PRAGMA busy_timeout=5000')
+        db.execute(SCHEMA)
+    except BaseException:
+        db.close()
+        raise
     return db
 
 
@@ -58,7 +63,7 @@ class _View:
 
     def get(self, build):
         try:
-            with connect(self._dir) as db:
+            with closing(connect(self._dir)) as db, db:
                 row = db.execute('SELECT payload FROM entries WHERE build=?',
                                  (str(build),)).fetchone()
             return json.loads(row[0]) if row else None
@@ -70,7 +75,7 @@ class _View:
 
     def __len__(self):
         try:
-            with connect(self._dir) as db:
+            with closing(connect(self._dir)) as db, db:
                 return db.execute('SELECT COUNT(*) FROM entries').fetchone()[0]
         except (sqlite3.Error, OSError):
             return 0
@@ -93,7 +98,7 @@ def commit(data_dir, added, base=None, base_stamp=None, attempts=3):
     try:
         rows = [(str(key), json.dumps(value, ensure_ascii=False), now)
                 for key, value in added.items()]
-        with connect(data_dir) as db:
+        with closing(connect(data_dir)) as db, db:
             before = db.execute('SELECT COUNT(*) FROM entries').fetchone()[0]
             db.executemany('INSERT OR IGNORE INTO entries(build,payload,updated) VALUES(?,?,?)', rows)
             after = db.execute('SELECT COUNT(*) FROM entries').fetchone()[0]
