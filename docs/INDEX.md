@@ -125,3 +125,5 @@
 - [录像筛选、起手条件及详情下载收尾](WRAPUP_RECORDINGS_OPENING_SAMPLE_20261113.md)：上线版本、真实首次/复用验证、回滚和教训；起手冷查询仍慢。
 
 - [Side连接与查卡阻塞修复收尾](WRAPUP_SIDE_CARD_RESOURCES_20261114.md)：2026-11-14已部署、测试及回滚。
+
+- [录像分阶段观测与轮转读取](topics/WEB_PERF_PHASES_20261114.md)：已上线；补读logrotate、阶段记录、覆盖边界和真实证据。

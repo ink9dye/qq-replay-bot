@@ -12,29 +12,72 @@ from pathlib import Path
 import random
 import re
 import time
+import gzip
+import zlib
 
 MAX_BYTES = 32 * 1024 * 1024
 SAMPLE_LIMIT = 2000
+MAX_ROTATIONS = 8
+PHASES = ('recordings_total_ms','recordings_eligible_ms','identity_read_ms',
+          'recordings_opponent_ms','recordings_naming_ms','recordings_facts_ms',
+          'recordings_opening_ms','recordings_filter_ms','recordings_sort_ms')
 
 
-def rows(path):
+def log_family(paths):
+    """Expand real logrotate names; avoid counting path aliases twice."""
+    result=[];seen=set()
+    for value in paths:
+        path=Path(value)
+        match=re.fullmatch(r'(.+\.jsonl)(?:\.[1-9][0-9]*(?:\.gz)?)?',path.name)
+        if match:
+            base=path.with_name(match[1]);candidates=[]
+            for number in range(MAX_ROTATIONS,0,-1):
+                plain=base.with_name(base.name+'.'+str(number))
+                candidates.append(plain if plain.is_file() else Path(str(plain)+'.gz'))
+            candidates.extend((base.with_suffix('.previous'),base))
+        else:candidates=[path]
+        for candidate in candidates:
+            try:
+                stat=candidate.stat();key=(stat.st_dev,stat.st_ino) if stat.st_ino else str(candidate.resolve())
+            except OSError:continue
+            if key not in seen:seen.add(key);result.append(candidate)
+    return result
+
+
+def rows(path, coverage=None):
     """Bound each input to its last 32 MiB; ignore partial and malformed lines."""
+    path=Path(path)
+    info=dict(first=None,last=None,valid=0,truncated=False,status='ok',gzip=path.suffix=='.gz')
+    if coverage is not None:coverage[path]=info
     try:
-        with Path(path).open('rb') as stream:
-            size = stream.seek(0, 2)
-            stream.seek(max(0, size - MAX_BYTES))
-            if size > MAX_BYTES:
-                stream.readline()
-            for raw in stream:
+        opener=gzip.open if info['gzip'] else open
+        with opener(path,'rb') as stream:
+            if not info['gzip']:
+                size=stream.seek(0,2);stream.seek(max(0,size-MAX_BYTES))
+                info['truncated']=size>MAX_BYTES
+                if size>MAX_BYTES:stream.readline()
+            remaining=MAX_BYTES
+            while remaining>0:
+                raw=stream.readline(remaining+1)
+                if not raw:break
+                remaining-=len(raw)
+                if remaining<0:info['truncated']=True;break
                 if not raw.endswith(b'\n'):
                     continue
                 try:
                     value = json.loads(raw)
                     if isinstance(value, dict):
+                        info['valid']+=1
+                        stamp=timestamp(value)
+                        if stamp is not None and math.isfinite(stamp):
+                            info['first']=stamp if info['first'] is None else min(info['first'],stamp)
+                            info['last']=stamp if info['last'] is None else max(info['last'],stamp)
                         yield value
                 except (ValueError, UnicodeError):
                     continue
-    except OSError:
+            if info['gzip'] and remaining==0:info['truncated']=bool(stream.read(1))
+    except (OSError,EOFError,zlib.error):
+        info['status']='read_error'
         return
 
 
@@ -89,6 +132,8 @@ def suggestion(path, lock_share, timeouts, pre):
 
 
 def build_report(logs, observations=(), since=0, until=None):
+    logs=log_family(logs)
+    coverage={}
     until = time.time() if until is None else until
     buckets = {}
     malformed_time = 0
@@ -96,14 +141,14 @@ def build_report(logs, observations=(), since=0, until=None):
     resources = deque(maxlen=1000)
     owners = {}
     for file in observations:
-        for row in rows(file):
+        for row in rows(file,coverage):
             stamp = timestamp(row)
             if stamp is not None and since <= stamp <= until:
                 resources.append((stamp, row))
     # Bounded joins, never load the full observation history into memory.
     resources = sorted(resources, key=lambda x: x[0])[-1000:]
     for file in logs:
-        for row in rows(file):
+        for row in rows(file,coverage):
             path = route(row)
             if path is None:
                 continue
@@ -164,7 +209,7 @@ def build_report(logs, observations=(), since=0, until=None):
                         b['pressure'] += 1
     fmt = lambda t: datetime.fromtimestamp(t, timezone.utc).astimezone().isoformat(timespec='seconds')
     lines = ['## 网页耗时诊断', '', f'生成：{fmt(until)}；筛选起点：{fmt(since)}。',
-        '输入：' + '、'.join(Path(p).name for p in logs) + '。每文件最多读取末尾32MiB；不代表完整历史。',
+        '输入：' + '、'.join(Path(p).name for p in logs) + '。读取上限、压缩方向和实际覆盖见末表；不代表完整历史。',
         '按已测累计服务端等待排序；来源分组独立，不把回环程序当用户。失败为HTTP 5xx请求，未去重为用户操作。',
         '服务端计时不含浏览器渲染、代理排队；请求耗时相加不等于可消除时间或CPU成本。',
         'p50/p95最多用2000条蓄水池样本估算；少于20条不展示p95。无耗时的旧日志只计次数。', '',
@@ -184,15 +229,23 @@ def build_report(logs, observations=(), since=0, until=None):
         lines.append(f'| {path} | {task}/{origin} | {count} | {age:.1f} |')
     if not owners:lines.append('没有带持锁者字段的超时样本；旧日志未知，不表示没有阻塞。')
     workers={}
-    worker_files={Path(p).parent/name for p in logs for name in
-                  ('statistics-query-timings.jsonl','statistics-query-timings.previous')}
+    worker_files=log_family({Path(p).parent/'statistics-query-timings.jsonl' for p in logs})
+    phases={name:[] for name in PHASES}
+    recording_rounds=0
     for file in sorted(worker_files):
         if not file.is_file():continue
-        for row in rows(file):
+        for row in rows(file,coverage):
             stamp=timestamp(row)
             if stamp is None or not since<=stamp<=until:continue
             kind=row.get('kind')
             if kind not in {'roster','recordings','matrix','card-report','cards-extra','deck-detail','deck-candidates','card-table','group-list','deck-options','card-options'}:continue
+            if kind=='recordings':
+                recording_rounds+=1
+                for name,summary in phases.items():
+                    value=row.get(name)
+                    if finite(value):
+                        if not summary:summary.extend((0,0.0,0.0))
+                        summary[0]+=1;summary[1]+=value;summary[2]=max(summary[2],value)
             w=workers.setdefault(kind,dict(n=0,queue=[],wait=[],hold=[],elapsed=[]));w['n']+=1
             for field,key in (('queue_wait_ms','queue'),('lock_wait_ms','wait'),
                               ('lock_hold_ms','hold'),('elapsed_ms','elapsed')):
@@ -208,6 +261,19 @@ def build_report(logs, observations=(), since=0, until=None):
                         for key in ('queue','wait','hold','elapsed') for v in (w[key],))
         lines.append(f"| {kind} | {w['n']} | {detail} |")
     if not workers:lines.append('未读到同目录后台计时；仍在运行的任务不会出现在完成轮次中。')
+    lines += ['', '### 录像计算分阶段（完成任务）', '',
+        f'录像完成轮次：{recording_rounds}；下表只统计明确埋点，缺字段为未知。',
+        '| 阶段 | 已测次数 | 累计毫秒 | 最大毫秒 |', '|---|---:|---:|---:|']
+    for name,summary in phases.items():
+        lines.append(f'| {name} | {summary[0]} | {summary[1]:.3f} | {summary[2]:.3f} |' if summary else f'| {name} | 0 | 未知 | 未知 |')
+    lines.append('total为整体；eligible含资格SQL、源文件检查与身份处理；identity_read是eligible/命名内部的身份读取与解析，属于嵌套子项，不能重复相加。facts/opening含SQL获取、遍历和证据合并，不能解释为纯SQL或纯CPU时间。请求缓存复用不会重新产生计算阶段。')
+    lines += ['', '### 输入覆盖与截断', '',
+        '每族最多8份编号轮转，.1与.1.gz同槽优先未压缩；物理文件别名去重，不按相同日志内容去重（避免删掉合法重复请求）。',
+        '普通文件读取末尾32MiB；gzip最多读取前32MiB解压内容，超限标截断；以下时间是实际读到的有效记录范围，并非完整历史。',
+        '| 文件 | 有效记录 | 首条至末条 | 截断/状态 |', '|---|---:|---|---|']
+    for path,info in sorted(coverage.items()):
+        span=f"{fmt(info['first'])} 至 {fmt(info['last'])}" if info['first'] is not None else '无有效时间'
+        lines.append(f"| {path.name} | {info['valid']} | {span} | {info['truncated']}/{info['status']} |")
     lines.append('持锁者是超时当刻快照，不证明整段等待都由同一任务造成；排队按单调时钟测量。锁持有/执行包含SQL、Python与IO，尚未逐阶段拆分。')
     lines += ['', '等锁字段仅覆盖已埋点路径；缺字段不等于没有等锁。预计算响应来自明确响应头，其余缓存状态未知。',
         '资源关联使用最近150秒内的观测点；IO≥20%或可用内存<350MB仅作筛选线索，不能证明因果。',

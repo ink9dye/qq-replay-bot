@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from time import perf_counter
 import threading
+from functools import wraps
 
 _current = ContextVar('web_perf_metrics', default=None)
 
@@ -26,6 +27,17 @@ def measure(name):
         values = _current.get()
         if values is not None:
             values[name] = values.get(name, 0) + round((perf_counter() - started) * 1000, 3)
+
+
+def timed(name):
+    """Fixed-name phase timing; results and exceptions pass through unchanged."""
+    def decorate(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            if _current.get() is None:return function(*args, **kwargs)
+            with measure(name):return function(*args, **kwargs)
+        return wrapped
+    return decorate
 
 
 def task_label(value):

@@ -1,8 +1,10 @@
 """Reliable match evidence; post-side observations inherit only their own first game."""
 import json
 import sqlite3
+from .web_perf_metrics import timed
 
 
+@timed('identity_read_ms')
 def _read_capture_metadata(db, digests):
     """只读这些 digest 的证据行；避免为了几条证据扫描整张 stat_evidence。
 

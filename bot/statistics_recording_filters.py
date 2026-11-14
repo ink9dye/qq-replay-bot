@@ -3,6 +3,7 @@ from .top100 import eligible_views
 from .card_identity import reference
 from .card_statistics import win_rate, deck_matches
 from datetime import datetime
+from .web_perf_metrics import measure,timed
 
 
 def _chunks(values, size=400):
@@ -17,25 +18,27 @@ def snapshot(db,root,now,include_opponents=False,annotate_series=True,with_facts
     with_facts=False 时跳过全部卡牌事实（stat_card_facts）与卡表聚合：只有带卡片
     条件的查询需要它们，录像筛选默认页不需要。口径不变，只是少读两张表。
     """
-    basis=eligible_views(db,root,now,annotate_series=False)
+    with measure('recordings_eligible_ms'):
+        basis=eligible_views(db,root,now,annotate_series=False)
     rows=basis['views']
     if row_filter is not None:
         rows=[row for row in rows if row_filter(row)]
     ids={(r['digest'],r['player']):r for r in rows}
-    if include_opponents:
-        digests={r['digest'] for r in rows}
-        # Opponent context of an eligible game never expands the candidate pool.
-        for chunk in _chunks(digests):
-            marks=','.join('?' for _ in chunk)
-            sql=("SELECT v.* FROM stat_views v JOIN stat_games g ON g.digest=v.digest "
-                 f"WHERE g.expires_at>? AND v.digest IN ({marks}) "
-                 "AND NOT EXISTS(SELECT 1 FROM stat_exclusions e WHERE e.digest=v.digest "
-                 "AND (e.player='' OR e.player=v.player) AND e.scope='default')")
-            for r in db.execute(sql,(now,*chunk)):
-                # Keep candidate row identity: series annotation must update the
-                # same dictionaries later filtered by _query, including metadata.
-                ids.setdefault((r['digest'],r['player']),dict(r))
-        basis['_opponent_views']=ids
+    with measure('recordings_opponent_ms'):
+        if include_opponents:
+            digests={r['digest'] for r in rows}
+            # Opponent context of an eligible game never expands the candidate pool.
+            for chunk in _chunks(digests):
+                marks=','.join('?' for _ in chunk)
+                sql=("SELECT v.* FROM stat_views v JOIN stat_games g ON g.digest=v.digest "
+                     f"WHERE g.expires_at>? AND v.digest IN ({marks}) "
+                     "AND NOT EXISTS(SELECT 1 FROM stat_exclusions e WHERE e.digest=v.digest "
+                     "AND (e.player='' OR e.player=v.player) AND e.scope='default')")
+                for r in db.execute(sql,(now,*chunk)):
+                    # Keep candidate row identity: series annotation must update the
+                    # same dictionaries later filtered by _query, including metadata.
+                    ids.setdefault((r['digest'],r['player']),dict(r))
+            basis['_opponent_views']=ids
     if annotate_series:
         from .card_series import reference as series_reference,annotate as annotate_series
         annotate_series(db,list(ids.values()),series_reference(db))
@@ -85,6 +88,7 @@ def snapshot(db,root,now,include_opponents=False,annotate_series=True,with_facts
 
 
 
+@timed('recordings_opening_ms')
 def _opening_facts(db,subjects,codes):
     from .card_identity import facts
     mapping,_,_=reference(db)
@@ -104,6 +108,7 @@ def _opening_facts(db,subjects,codes):
     return positive,known
 
 
+@timed('recordings_facts_ms')
 def _selected_facts(db,ids,canonical,codes):
     carried={};all_carried={};draws={};used={}
     digests={r['digest'] for r in ids.values()}
@@ -252,6 +257,7 @@ def query(db,root,now,args,limit=2000):
     return result
 
 
+@timed('recordings_total_ms')
 def _query(db,root,now,args,limit=2000,ranges=None):
     """limit=None 表示返回全部命中（给打包下载用）；默认仍只回 2000 条给页面。"""
     # Match metadata is resolved by eligible_views before this filter, preserving
@@ -277,7 +283,8 @@ def _query(db,root,now,args,limit=2000,ranges=None):
         annotate_series=bool(args.get('series')or args.get('opponent_series')),with_facts=False,row_filter=row_filter)
     from .statistics_recording_names import decorate
     # 复用同一次快照的身份信息与存活判定，避免逐行重复读证据表和重复 stat。
-    decorate(db,rows,root,now,identity=basis.get('identity'),alive=basis.get('source_alive'))
+    with measure('recordings_naming_ms'):
+        decorate(db,rows,root,now,identity=basis.get('identity'),alive=basis.get('source_alive'))
     if args.get('phase_none',['0'])[0]=='1':
         rows=[]
     # 前200/全部时，自己可能不在当前前100名单里：用范围筛选给出的名次补显示字段。
@@ -376,50 +383,52 @@ def _query(db,root,now,args,limit=2000,ranges=None):
     reasons={'opponent_evidence_missing':0,'self_evidence_missing':0,
              'draw_process_incomplete':0,'initial_evidence_missing':0,'card_fact_missing':0,'condition_not_met':0}
     result=[]
-    for row in rows:
-        if any(args.get(key+'_none')==['1']for key in none_keys):continue
-        if start is not None and row['recorded_at']<start:continue
-        if end is not None and row['recorded_at']>=end:continue
-        if series and not (set(row.get('series')or ())& set(series)):continue
-        if opponent_series:
-            other=basis['_opponent_views'].get((row['digest'],row['opponent']))
-            if other is None or not (set(other.get('series')or ())& set(opponent_series)):continue
-        if not deck_matches(row['deck_type']or '__unknown__',deck_values,contains):continue
-        if not deck_matches(row['opponent_deck_type']or '__unknown__',opponent_values,contains):continue
-        if values('first')and str(row['first_player'])not in values('first'):continue
-        if values('outcome')and row['outcome']not in values('outcome'):continue
-        # P16：卡片条件失败时区分"证据不足"与"确实不满足"（每行只记第一个原因）。
-        failure=None
-        for prefix,codes,mode,match in conditions:
-            if not codes:continue
-            opponent_side=prefix.startswith('opponent')
-            subject=basis['_opponent_views'].get((row['digest'],row['opponent'])) if opponent_side else row
-            if subject is None:
-                failure='opponent_evidence_missing' if opponent_side else 'self_evidence_missing';break
-            key=(subject['digest'],subject['player'])
-            observed=(used if mode=='used'else draws).get(key,set())
-            if mode=='opening':
-                observed=opening.get(key,set()) & carried.get(subject['build'],set())
-                unknown={code for code in codes if code in carried.get(subject['build'],set())
-                         and (*key,code) not in opening_known}
-                uncertain=(not (codes & observed) and bool(unknown)) if match=='any' else (
-                    not codes<=observed and codes<=observed|unknown)
-                if uncertain:failure='initial_evidence_missing';break
-            elif mode=='not_drawn':
-                if not subject['draw_complete']:
-                    failure='draw_process_incomplete';break
-                observed=carried.get(subject['build'],set())-observed
-            elif codes:
-                deck_cards=carried.get(subject['build'],set()) if mode=='drawn' else all_carried.get(subject['build'],set())
-                missing=[code for code in codes if code in deck_cards and (subject['digest'],subject['player'],code)not in facts_present]
-                if missing and (match=='all' or len(missing)==len(codes)):
-                    failure='card_fact_missing';break
-            if not (codes<=observed if match=='all'else bool(codes&observed)):
-                failure='condition_not_met';break
-        if failure:
-            reasons[failure]+=1;continue
-        result.append({k:row.get(k)for k in ('digest','player','deck_type','opponent','opponent_deck_type','recorded_at','expires_at','first_player','outcome','recording_title','download_filename','observed_date','observed_day','observed_match_no','observed_game_no','observed_match_id','current_rank','opponent_current_rank')})
-    result.sort(key=lambda r:r['recorded_at'],reverse=True)
+    with measure('recordings_filter_ms'):
+        for row in rows:
+            if any(args.get(key+'_none')==['1']for key in none_keys):continue
+            if start is not None and row['recorded_at']<start:continue
+            if end is not None and row['recorded_at']>=end:continue
+            if series and not (set(row.get('series')or ())& set(series)):continue
+            if opponent_series:
+                other=basis['_opponent_views'].get((row['digest'],row['opponent']))
+                if other is None or not (set(other.get('series')or ())& set(opponent_series)):continue
+            if not deck_matches(row['deck_type']or '__unknown__',deck_values,contains):continue
+            if not deck_matches(row['opponent_deck_type']or '__unknown__',opponent_values,contains):continue
+            if values('first')and str(row['first_player'])not in values('first'):continue
+            if values('outcome')and row['outcome']not in values('outcome'):continue
+            # P16：卡片条件失败时区分"证据不足"与"确实不满足"（每行只记第一个原因）。
+            failure=None
+            for prefix,codes,mode,match in conditions:
+                if not codes:continue
+                opponent_side=prefix.startswith('opponent')
+                subject=basis['_opponent_views'].get((row['digest'],row['opponent'])) if opponent_side else row
+                if subject is None:
+                    failure='opponent_evidence_missing' if opponent_side else 'self_evidence_missing';break
+                key=(subject['digest'],subject['player'])
+                observed=(used if mode=='used'else draws).get(key,set())
+                if mode=='opening':
+                    observed=opening.get(key,set()) & carried.get(subject['build'],set())
+                    unknown={code for code in codes if code in carried.get(subject['build'],set())
+                             and (*key,code) not in opening_known}
+                    uncertain=(not (codes & observed) and bool(unknown)) if match=='any' else (
+                        not codes<=observed and codes<=observed|unknown)
+                    if uncertain:failure='initial_evidence_missing';break
+                elif mode=='not_drawn':
+                    if not subject['draw_complete']:
+                        failure='draw_process_incomplete';break
+                    observed=carried.get(subject['build'],set())-observed
+                elif codes:
+                    deck_cards=carried.get(subject['build'],set()) if mode=='drawn' else all_carried.get(subject['build'],set())
+                    missing=[code for code in codes if code in deck_cards and (subject['digest'],subject['player'],code)not in facts_present]
+                    if missing and (match=='all' or len(missing)==len(codes)):
+                        failure='card_fact_missing';break
+                if not (codes<=observed if match=='all'else bool(codes&observed)):
+                    failure='condition_not_met';break
+            if failure:
+                reasons[failure]+=1;continue
+            result.append({k:row.get(k)for k in ('digest','player','deck_type','opponent','opponent_deck_type','recorded_at','expires_at','first_player','outcome','recording_title','download_filename','observed_date','observed_day','observed_match_no','observed_game_no','observed_match_id','current_rank','opponent_current_rank')})
+    with measure('recordings_sort_ms'):
+        result.sort(key=lambda r:r['recorded_at'],reverse=True)
     unique_recordings=len({r['digest'] for r in result})
     samples=result if limit is None else result[:limit]
     return dict(recording_filters_version=3,card_filters_version=3,
