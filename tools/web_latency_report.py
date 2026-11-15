@@ -133,6 +133,78 @@ def suggestion(path, lock_share, timeouts, pre):
     return '先拆分SQL/计算阶段；现有计时不足以确定算法瓶颈'
 
 
+def diagnosis_add(summary, row, stamp):
+    """Bounded, same-task pairs only; nested phases are never added together."""
+    kind=row['kind']
+    d=summary.setdefault(kind,dict(n=0,last=stamp,pairs={}))
+    d['n']+=1;d['last']=max(d['last'],stamp)
+    total=row.get('recordings_total_ms') if kind=='recordings' else row.get('elapsed_ms')
+    for field in (*PHASES[1:], 'queue_wait_ms', 'lock_wait_ms'):
+        value=row.get(field)
+        if not finite(value) or not finite(total) or total<=0:continue
+        # Queue time is outside execution: report its own seconds, never a share.
+        p=d['pairs'].setdefault(field,[0,0.,0.,0.,stamp])
+        p[0]+=1;p[1]+=value;p[2]+=total;p[3]=max(p[3],value);p[4]=max(p[4],stamp)
+
+
+def automatic_diagnosis(summary, buckets, resources, coverage, until, fmt):
+    lines=['', '### 自动诊断与优先行动', '',
+        '规则分析，不是已证实根因或自动修复。排序依据为同任务配对样本的累计已测耗时；不是预计可节省时间。不同参数、缓存状态和版本未分组，不作优化前后比较。',
+        '阶段占比只使用同时包含该阶段与总时长的成功任务；嵌套阶段分别解释，不相加。少于3条标为少量样本，旧字段缺失不作零。']
+    candidates=[]
+    actions={
+        'recordings_eligible_ms':('资格处理','bot/top100.py:eligible_views；检查资格范围是否重复获取，优先验证一次任务内复用；保持排名、权限、源文件有效性一致'),
+        'recordings_naming_ms':('卡组命名','bot/statistics_recording_filters.py；检查命名是否重复、是否仅处理必要候选；不改命名算法'),
+        'recordings_facts_ms':('事实读取与合并','bot/statistics_recording_filters.py:_selected_facts；核查候选范围与卡号读取范围，比较同参数结果'),
+        'recordings_opening_ms':('起手证据','bot/statistics_recording_filters.py:_opening_facts；核查读取范围与证据合并，未知不能当零'),
+        'identity_read_ms':('身份读取（嵌套）','bot/statistics_match_identity.py:_read_capture_metadata；核查相同digest的重复读取/解析；复用前验证数据更新边界'),
+        'eligible_sql_ms':('资格SQL获取/物化（嵌套）','bot/top100.py:eligible_views；检查实际SQL计划、读取行数及重复调用，不能直接认定缺索引'),
+        'eligible_source_ms':('源文件有效性检查（嵌套）','bot/top100.py:eligible_views；核对存活缓存失效与路径读取；不延长失效时间绕过有效性检查'),
+    }
+    for kind,d in sorted(summary.items()):
+        certainty='少量样本' if d['n']<3 else '已测多条；代表性未确认'
+        for field,(label,action) in actions.items():
+            p=d['pairs'].get(field)
+            if p and p[1]>=1000 and p[1]/p[2]>=.2:
+                confidence='少量样本' if p[0]<3 else certainty
+                evidence=f'{kind}：{label}，配对{p[0]}/{d["n"]}条，累计{p[1]/1000:.2f}秒，占配对执行{p[1]/p[2]:.1%}；最近{fmt(p[4])}；{confidence}'
+                candidates.append((p[1],evidence,action))
+        for field,label,action in (
+            ('queue_wait_ms','后台排队','bot/statistics_refresh.py；按相邻任务时间核对队头重任务及重复刷新；不直接增加线程或预计算频率'),
+            ('lock_wait_ms','后台等锁','核对持锁任务快照与锁持有范围，先减少重计算；不直接放宽并发')):
+            p=d['pairs'].get(field)
+            if p and p[3]>=3000:
+                confidence='少量样本' if p[0]<3 else certainty
+                candidates.append((p[1],f'{kind}：{label}，配对{p[0]}条，累计{p[1]/1000:.2f}秒、最大{p[3]/1000:.2f}秒（独立于执行）；{confidence}；最近{fmt(p[4])}',action))
+    lines+=['', '| 优先级 | 已测证据 | 下一步验证（不是已确认修法） |','|---|---|---|']
+    for i,(_,evidence,action) in enumerate(sorted(candidates,key=lambda x:-x[0])[:10],1):
+        lines.append(f'| {i} | {evidence} | {action} |')
+    if not candidates:lines.append('未达到诊断阈值（阶段累计≥1秒且配对占比≥20%，排队/等锁单次≥3秒）；不代表没有瓶颈。')
+    lines+=['', '**覆盖、限制与验证要求**']
+    recording=summary.get('recordings')
+    if not recording:lines.append('- 本窗口没有成功录像计算分阶段样本；请求缓存命中不能替代首次计算证据。')
+    else:
+        if until-recording['last']>6*3600:lines.append('- 录像样本已超过6小时未更新；不能将旧查询表现当作当前表现。')
+        pair=recording['pairs'].get('recordings_eligible_ms')
+        if not pair or pair[0]<recording['n']:lines.append('- 部分录像任务缺资格阶段计时；阶段覆盖不完整。')
+        filt=recording['pairs'].get('recordings_filter_ms')
+        if filt and filt[1]/filt[2]<.01:lines.append('- 已测最终Python条件筛选占配对执行不足1%；优先处理数据准备，不能外推到未测条件。')
+    if any(info['truncated'] or info['status']!='ok' for info in coverage.values()):
+        lines.append('- 输入存在截断或读取错误；当前排名只代表实际读取范围。')
+    io=[r['psi_io_full'] for _,r in resources if finite(r.get('psi_io_full'))]
+    mem=[r['mem_available'] for _,r in resources if finite(r.get('mem_available'))]
+    if (io and max(io)>=20) or (mem and min(mem)<350):
+        io_text=f'{max(io):.1f}%' if io else '未知'
+        mem_text=f'{min(mem):.0f}MB' if mem else '未知'
+        lines.append(f'- 已读资源点IO full峰值{io_text}、可用内存最低{mem_text}；存在资源压力线索，未证明慢任务因果；优化后复核内存、IO和QQ延迟。')
+    else:lines.append('- 已读资源点未达到压力规则或字段不足；不能据此认定资源充足。')
+    sample=sum(b['n'] for (path,_),b in buckets.items() if path=='/statistics/api/sample')
+    lines.append(f'- 录像详情sample访问{sample}次；缺专属阶段和浏览器端到端证据，下载传输也未独立归因；不能用deck-detail构筑任务代替。')
+    lines.append('- 验证每项候选修法：相同参数、首次/复用分开、资源条件可比；核对结果、排序、分页、权限及原统计口径。未记录参数/版本/缓存状态时，不自动宣称提速。')
+    lines.append('- HTTP 5xx含准备轮询与回环程序，不能换算用户最终失败率；WAL增长不能由本报告直接归因。')
+    return lines
+
+
 def build_report(logs, observations=(), since=0, until=None):
     logs=log_family(logs)
     coverage={}
@@ -231,6 +303,7 @@ def build_report(logs, observations=(), since=0, until=None):
         lines.append(f'| {path} | {task}/{origin} | {count} | {age:.1f} |')
     if not owners:lines.append('没有带持锁者字段的超时样本；旧日志未知，不表示没有阻塞。')
     workers={}
+    diagnosis={}
     worker_files=log_family({Path(p).parent/'statistics-query-timings.jsonl' for p in logs})
     phases={name:[] for name in (*PHASES,*COUNTS)}
     recording_rounds=0
@@ -241,6 +314,7 @@ def build_report(logs, observations=(), since=0, until=None):
             if stamp is None or not since<=stamp<=until:continue
             kind=row.get('kind')
             if kind not in {'roster','recordings','matrix','card-report','cards-extra','deck-detail','deck-candidates','card-table','group-list','deck-options','card-options'}:continue
+            if row.get('status')==200:diagnosis_add(diagnosis,row,stamp)
             if kind=='recordings':
                 recording_rounds+=1
                 for name,summary in phases.items():
@@ -275,6 +349,7 @@ def build_report(logs, observations=(), since=0, until=None):
         lines.append(f'| {name} | {summary[0]} | {summary[1]:.0f} | {summary[2]:.0f} |' if summary else f'| {name} | 0 | 未知 | 未知 |')
     lines.append('eligible_sql含资格SQL获取及行物化；eligible_source含路径索引与存活判断，source_index为其嵌套子项。source_cache按唯一digest判断计数，不是stat系统调用次数；源文件检查未执行时字段缺失。以上均属eligible内部，不能与eligible重复相加。')
     lines.append('total为整体；eligible含资格SQL、源文件检查与身份处理；identity_read是eligible/命名内部的身份读取与解析，属于嵌套子项，不能重复相加。facts/opening含SQL获取、遍历和证据合并，不能解释为纯SQL或纯CPU时间。请求缓存复用不会重新产生计算阶段。')
+    lines += automatic_diagnosis(diagnosis,buckets,resources,coverage,until,fmt)
     lines += ['', '### 输入覆盖与截断', '',
         '每族最多8份编号轮转，.1与.1.gz同槽优先未压缩；物理文件别名去重，不按相同日志内容去重（避免删掉合法重复请求）。',
         '普通文件读取末尾32MiB；gzip最多读取前32MiB解压内容，超限标截断；以下时间是实际读到的有效记录范围，并非完整历史。',
