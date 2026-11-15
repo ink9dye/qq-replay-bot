@@ -32,6 +32,36 @@ from pathlib import Path
 VERSION_PREFIX = 'series-fields-v3'
 CONFIG_NAME = 'series-naming.json'
 
+# 卡号等价表：命名、统计、筛选按等价类统一，卡图/发行信息仍用原卡号。
+# build_registry 没有 db 参数，用一个只回答 PRAGMA database_list 的替身定位数据目录，
+# 读取、校验、mtime+size 缓存全部复用 card_identity.reference（等价判断只有一处实现）。
+# 需要指向别的数据目录的测试/工具，设置 series_naming.IDENTITY_DB 即可。
+IDENTITY_DB = None
+
+
+class _IdentityDB:
+    def __init__(self, path):
+        self._path = str(path)
+
+    def execute(self, statement, parameters=()):
+        if statement.strip().lower().startswith('pragma database_list'):
+            return [(0, 'main', self._path)]
+        raise ValueError('unsupported_query')
+
+
+def _identity_db():
+    return _IdentityDB(IDENTITY_DB or (Path(__file__).resolve().parents[1] / 'data' / 'bot.sqlite3'))
+
+
+def _identity_codes(code):
+    from .card_identity import codes as identity_codes
+    return identity_codes(_identity_db(), int(code))
+
+
+def _identity_expand(member_codes):
+    from .card_identity import expand as identity_expand
+    return identity_expand(_identity_db(), member_codes)
+
 # 机制类/泛用分类标签：不作为卡组名字段（可配置覆盖）。
 DEFAULT_IGNORE_FIELDS = [
     '融合', '同调', '超量', '灵摆', '连接', '仪式', '反转', '灵魂', '二重', '同盟',
@@ -258,6 +288,11 @@ def load_config(data_dir):
 
 
 def version_for(config):
+    """版本串带上等价表版本：等价表更新也会触发全站重算。"""
+    from .card_identity import reference_version as identity_version
+    identity = identity_version(_identity_db())
+    if identity:
+        return '%s+%s:%s' % (VERSION_PREFIX, identity[:12], config['config_hash'][:16])
     return '%s:%s' % (VERSION_PREFIX, config['config_hash'][:16])
 
 
@@ -377,14 +412,27 @@ def build_registry(catalog, config, names=None):
             members[name].update(entry['add'])
         if entry['remove']:
             members[name].difference_update(entry['remove'])
+    # 同名卡的不同印刷号/先行号视为同一张卡：成员按等价类闭包展开（事实层不改写）。
+    for name in list(members):
+        members[name] = _identity_expand(members[name])
     # includes 是“可添加项”：不计入核心；只有核心卡在场时才补充张数。
     core_members = {name: set(codes) for name, codes in members.items()}
+    # 必要性判定按等价类：同一类的不同印刷号只要求“有一个在场”。
+    core_classes = {}
+    for name, codes in core_members.items():
+        classes = []
+        for code in sorted(codes):
+            identity = frozenset(_identity_codes(code))
+            if identity not in classes:
+                classes.append(identity)
+        core_classes[name] = classes
     optional_groups = {}
     for name, entry in groups.items():
         if not entry['enabled'] or not entry.get('optional'):
             continue
-        members[name].update(entry['optional'])
-        optional_groups[name] = set(entry['optional'])
+        optional = _identity_expand(entry['optional'])
+        members[name].update(optional)
+        optional_groups[name] = optional
     missing = set()
     resolved = {}
 
@@ -450,6 +498,8 @@ def build_registry(catalog, config, names=None):
     small_names = {name: entry.get('small_name') for name, entry in groups.items() if entry.get('small_name')}
     return dict(groups=groups, members={name: sorted(codes) for name, codes in members.items()},
                 core_members={name: sorted(codes) for name, codes in core_members.items()},
+                core_classes={name: [sorted(cls) for cls in classes]
+                              for name, classes in core_classes.items()},
                 core_card_groups={code: frozenset(names) for code, names in core_card_groups.items()},
                 optional_card_groups={code: frozenset(names) for code, names in optional_card_groups.items()},
                 small_names=small_names,
@@ -524,9 +574,10 @@ def count_fields(cards, catalog, config, names=None, registry=None, extra_cards=
         elif float(counts[field]).is_integer():
             counts[field] = int(counts[field])
     qualified = set()
-    for field, codes in (registry.get('core_members') or {}).items():
-        # 必要卡全齐即算字段：一件套、两件套、三件套都适用，不再限定 3 张。
-        if codes and all(code in present for code in codes):
+    for field, classes in (registry.get('core_classes') or {}).items():
+        # 必要卡按等价类判定：每个类只要有一个印刷号在场即算“这张卡在场”。
+        # 只展开 members 不改这里，会变成“每个印刷号都必须在场”，必含永远不成立。
+        if classes and all(not set(cls).isdisjoint(present) for cls in classes):
             qualified.add(field)
     return dict(fields=counts, optional=optional_counts, qualified=qualified, total=total,
                 untagged=untagged, unknown_cards=unknown_cards)

@@ -43,6 +43,48 @@ def reference(db):
     except (OSError,ValueError,KeyError,TypeError):return {},None,'invalid_reference_exact_only'
 
 
+def codes(db,code):
+    """该卡等价类的全部卡号；无匹配时返回 [code]。"""
+    index,_version,_status=reference(db)
+    return list(index.get(int(code),(int(code),[int(code)]))[1])
+
+
+def canonical(db,code):
+    """该卡等价类的 canonical 卡号；无匹配时返回原卡号。"""
+    index,_version,_status=reference(db)
+    return index.get(int(code),(int(code),[int(code)]))[0]
+
+
+def expand(db,codes):
+    """对一批卡号做等价类闭包，返回 set（参数名与模块函数 codes 同名，按约定不改）。"""
+    index,_version,_status=reference(db)
+    result=set()
+    for code in codes:
+        result.update(index.get(int(code),(int(code),[int(code)]))[1])
+    return result
+
+
+_versions={}
+
+
+def reference_version(db):
+    """等价表自带的 reference_version（内容摘要），供命名/统计版本串使用。"""
+    database=next((r[2] for r in db.execute('PRAGMA database_list') if r[1]=='main'),None)
+    if not database:return None
+    path=Path(database).parent/'card-equivalence.json'
+    try:
+        stamp=(path.stat().st_mtime_ns,path.stat().st_size)
+        key=str(path.resolve())
+        cached=_versions.get(key)
+        if cached and cached[0]==stamp:return cached[1]
+        value=json.loads(path.read_text(encoding='utf-8-sig'))
+        version=value.get('reference_version')
+        if not isinstance(version,str) or not version:return None
+        _versions[key]=(stamp,version)
+        return version
+    except (OSError,ValueError,TypeError,KeyError):return None
+
+
 def identity(db,code):
     index,version,status=reference(db)
     canonical,codes=index.get(code,(code,[code]))
