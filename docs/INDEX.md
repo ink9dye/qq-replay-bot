@@ -129,3 +129,5 @@
 - [录像分阶段观测与轮转读取](topics/WEB_PERF_PHASES_20261114.md)：已上线；补读logrotate、阶段记录、覆盖边界和真实证据。
 
 - [单卡胜率饼图人数Top5收尾](wrapup/WRAPUP_CARD_WINRATE_POPULAR_20261114.md)：2026-11-14已部署；验证、影响与回滚。
+
+- [QQ前百饼图代表卡纯蓝修复收尾](WRAPUP_PIE_REP_IMAGE_20261115.md)：2026-11-15 已部署并推送；代表卡优先有图编号、嵌套卡图兜底、缓存键含图源。
