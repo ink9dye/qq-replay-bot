@@ -48,8 +48,25 @@ _WHITESPACE = re.compile(r"\s+")
 # 组合命名（卡组自动命名）增量重算：每次循环最多重算多少个构筑，
 # 以及没有新录像时重建待办清单的最小间隔（秒）。改组合名/改阈值后
 # 全站版本串变化，待重算数量会远超“初始化”阈值，必须按批推进而不是整体跳过。
-SERIES_NAME_BATCH = 800
+# 全量重算只捡机器空闲的空档做：改名本身走定向重算（series_naming.rename_builds），
+# 这里追的是历史构筑，不该和实时录制/页面查询抢 CPU。
+SERIES_NAME_BATCH = 200
 SERIES_BACKLOG_INTERVAL = 300
+# 机器一直忙时的“小步”兜底：每半小时只推 50 副，保证最终能追平又不抢 CPU。
+SERIES_TRICKLE_BATCH = 50
+SERIES_TRICKLE_INTERVAL = 1800
+SERIES_IDLE_LOAD = float(os.environ.get("YGOPRO_SERIES_IDLE_LOAD") or 0)
+
+
+def series_idle_enough(limit=None):
+    """机器是否空闲到可以跑一批命名重算；取不到负载时按空闲处理。"""
+    limit = SERIES_IDLE_LOAD if limit is None else float(limit)
+    if limit <= 0:
+        limit = max(1.0, (os.cpu_count() or 2) * 0.6)
+    try:
+        return os.getloadavg()[0] < limit
+    except (OSError, AttributeError):
+        return True
 
 
 
@@ -271,6 +288,8 @@ class BotService:
         self._series_backlog = []
         self._series_backlog_signature = None
         self._series_backlog_at = 0.0
+        self._series_idle_skipped = False
+        self._series_trickle_at = 0.0
         # 事实/录像索引只由观战进程写（设计：只有 collector 写事实库）。
         # 拆分后的 QQ 进程只读同一份库，启动时不再扫描录像、不再补写事实表，
         # 这样重启 QQ 窗口不会和正在录的观战抢写锁；M3 再把 QQ 的写请求交给 collector。
@@ -1465,19 +1484,36 @@ class BotService:
                     # 每分钟重试、永远跳过，名字一直停在旧版（2026-11-15 地机改名事故）。
                     self._series_rules_signature=series_marker
                     self._series_backlog=[]
-                if (not self._series_backlog
+                idle = series_idle_enough()
+                if not idle:
+                    # 机器正忙：连清单都不建（建一次全站清单要几十秒），等空闲再说。
+                    if not self._series_idle_skipped:
+                        self.write_log('组合命名待重算；机器正忙，等空闲再继续')
+                        self._series_idle_skipped = True
+                else:
+                    self._series_idle_skipped = False
+                if (idle and not self._series_backlog
                         and (updated or series_marker!=self._series_backlog_signature)
                         and now-self._series_backlog_at>=SERIES_BACKLOG_INTERVAL):
                     self._series_backlog=self.store.pending_series_builds(config,now,self.replay_root)
                     self._series_backlog_signature=series_marker
                     self._series_backlog_at=now
                     if self._series_backlog:
-                        self.write_log(f'组合命名待重算 {len(self._series_backlog)} 个构筑，按批处理')
-                if self._series_backlog:
+                        self.write_log(f'组合命名待重算 {len(self._series_backlog)} 个构筑，空闲时按批处理')
+                if idle and self._series_backlog:
                     batch=self._series_backlog[:SERIES_NAME_BATCH]
                     del self._series_backlog[:len(batch)]
                     result=self.store.name_series_builds(config,now,batch,self.replay_root)
                     self.write_log('组合命名更新 %d 个；剩余 %d 个'
+                                   % (int((result or {}).get('changed') or 0), len(self._series_backlog)))
+                elif (self._series_backlog
+                      and now-self._series_trickle_at>=SERIES_TRICKLE_INTERVAL):
+                    # 一直繁忙也不能永远不动：每半小时挤 50 副，保证迟早追平。
+                    batch=self._series_backlog[:SERIES_TRICKLE_BATCH]
+                    del self._series_backlog[:len(batch)]
+                    self._series_trickle_at=now
+                    result=self.store.name_series_builds(config,now,batch,self.replay_root)
+                    self.write_log('组合命名忙时小步更新 %d 个；剩余 %d 个'
                                    % (int((result or {}).get('changed') or 0), len(self._series_backlog)))
             except (OSError,ValueError,TypeError,KeyError,sqlite3.Error):
                 self.write_log('组合命名规则暂不可用，保留现有名字')

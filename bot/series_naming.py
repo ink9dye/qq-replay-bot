@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import sqlite3
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -1014,6 +1015,55 @@ def apply_names_chunk(db, now, config, catalog=None, names=None, builds=None, li
     written = apply_plan(db, result['rows'], config, commit=commit)
     return dict(pending=total - len(batch), total=total, changed=written['changed'],
                 version=version, planned=result['summary'])
+
+
+def rename_targets(db, old_name, new_name=None, config=None, catalog=None):
+    """组合改名要重算的构筑：名字里出现「该组字段」的那批。
+
+    只认字段本身，不认“只是某个更长字段的一部分”：例如把「地机」改成
+    「地机ftk」时，名字里已经有「地机ftk」的构筑不再重复处理。
+    """
+    if not old_name:
+        return []
+    catalog = catalog_from_db(db, catalog)
+    longer = []
+    if config is not None:
+        labels = set(build_registry(catalog, config).get('groups') or {})
+        longer = [label for label in labels if label != old_name and old_name in label]
+    rows = db.execute('SELECT fingerprint, deck_type FROM stat_builds WHERE deck_type LIKE ?',
+                      ('%' + old_name + '%',))
+    targets = []
+    for fingerprint, text in rows:
+        text = text or ''
+        if new_name and new_name in text:
+            continue
+        if any(label in text for label in longer):
+            continue
+        targets.append(fingerprint)
+    return targets
+
+
+def rename_builds(db, old_name, new_name, config=None, catalog=None, batch=100,
+                  progress=None, commit=True, now=None):
+    """组合改名后只重算「名字含该字段」的构筑，不解析录像。
+
+    改名的影响面就是这批构筑（线上实测 818 副、183 秒），不需要按全站 latest
+    口径重算；全站重算留给后台在空闲时慢慢做。
+    """
+    config = config or load_config(Path('.'))
+    now = time.time() if now is None else float(now)
+    targets = rename_targets(db, old_name, new_name, config, catalog)
+    total = len(targets)
+    changed = 0
+    step = max(1, int(batch))
+    for start in range(0, total, step):
+        piece = targets[start:start + step]
+        result = apply_names_chunk(db, now, config, catalog=catalog, builds=piece,
+                                   limit=len(piece), replay_root=None, commit=commit)
+        changed += int(result.get('changed') or 0)
+        if progress is not None:
+            progress(dict(total=total, done=min(total, start + step), changed=changed))
+    return dict(total=total, changed=changed, old=old_name, new=new_name)
 
 
 def scope_builds(db, now, scope='top100', replay_root=None):

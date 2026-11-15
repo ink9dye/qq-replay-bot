@@ -282,6 +282,62 @@ def _same_name_codes(data_dir, codes):
     return codes
 
 
+def _db_path(db):
+    try:
+        row = db.execute('PRAGMA database_list').fetchone()
+        return Path(row[2])
+    except (sqlite3.Error, TypeError, IndexError):
+        return None
+
+
+def _rename_log(data_dir, text):
+    path = Path(data_dir) / 'logs' / 'naming-rename.log'
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a', encoding='utf-8') as handle:
+            handle.write('[%s] %s\n' % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), text))
+    except OSError:
+        pass
+
+
+def _rename_worker(db_path, data_dir, old_name, new_name):
+    """后台把「名字含旧字段」的构筑改成新名：不解析录像，几十秒级。"""
+    connection = None
+    try:
+        connection = sqlite3.connect(str(db_path), timeout=60)
+        connection.row_factory = sqlite3.Row
+        connection.execute('PRAGMA busy_timeout=60000')
+        config = series_naming.load_config(data_dir)
+        result = series_naming.rename_builds(
+            connection, old_name, new_name, config,
+            progress=lambda state: _rename_log(data_dir, '改名重算 %d/%d 副'
+                                               % (state['done'], state['total'])))
+        _rename_log(data_dir, '改名完成 %s → %s：重算 %d 副、实际改名 %d 副'
+                    % (old_name, new_name, result['total'], result['changed']))
+    except Exception as exc:  # 后台线程不能影响保存动作
+        _rename_log(data_dir, '改名重算失败 %s → %s：%s' % (old_name, new_name, exc))
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _queue_rename(db, data_dir, old_name, new_name):
+    """改名保存后立刻排队：先给出影响面，再由后台线程逐个重算。"""
+    path = _db_path(db)
+    try:
+        config = series_naming.load_config(data_dir)
+        targets = series_naming.rename_targets(db, old_name, new_name, config)
+    except (OSError, ValueError, sqlite3.Error):
+        targets, config = [], None
+    if not targets or path is None:
+        return dict(total=len(targets), queued=False)
+    worker = threading.Thread(target=_rename_worker,
+                              args=(path, Path(data_dir), old_name, new_name),
+                              name='naming-rename', daemon=True)
+    worker.start()
+    return dict(total=len(targets), queued=True)
+
+
 def update_group(db, data_dir, now, payload):
     """组合编辑的保存入口；支持 save/create/rename/add_cards/remove_cards/thresholds。"""
     if not isinstance(payload, dict):
@@ -379,8 +435,9 @@ def update_group(db, data_dir, now, payload):
         config = series_naming.normalize_config(raw)
         _validate(config, catalog, names)
         backup = save_raw(data_dir, raw)
+        rename = _queue_rename(db, data_dir, before, new_name)
         return dict(changed=True, name=new_name, backup=str(backup) if backup else None,
-                    config=config_summary(config))
+                    config=config_summary(config), rename=rename)
     kind, index = _find_group(raw, before)
     if op in ('create', 'save'):
         if name != before:

@@ -3,7 +3,8 @@ import time
 import unittest
 
 import test_watch_replay_evidence as evidence_tests
-from bot.series_naming import apply_names_chunk, load_config, pending_series_builds
+from bot.series_naming import (apply_names_chunk, load_config, pending_series_builds,
+                               rename_builds, rename_targets)
 
 
 class NamingChunkRefreshTests(unittest.TestCase):
@@ -76,6 +77,41 @@ class NamingChunkRefreshTests(unittest.TestCase):
         config = load_config(self.root)
         result = apply_names_chunk(self.store._db, time.time(), config, limit=500)
         self.assertEqual((result['pending'], result['total'], result['changed']), (0, 0, 0))
+
+    def test_rename_only_touches_builds_carrying_that_field(self):
+        """改名只重算名字里含该字段的构筑，别的构筑一条都不碰。"""
+        self.configure()
+        self.set_group('旧名')
+        self.upload_replay()
+        self.assertEqual(self.labels(), ['旧名', '旧名'])
+        before_other = self.store._db.execute(
+            "SELECT count(*) FROM stat_builds WHERE deck_type IS NOT '旧名'").fetchone()[0]
+
+        self.set_group('新名')
+        config = load_config(self.root)
+        targets = rename_targets(self.store._db, '旧名', '新名', config)
+        self.assertEqual(len(targets), 2)
+
+        result = rename_builds(self.store._db, '旧名', '新名', config, batch=1)
+        self.assertEqual((result['total'], result['changed']), (2, 2))
+        self.assertEqual(self.labels(), ['新名', '新名'])
+        # 只改了这 2 副：其它构筑的分类版本没被顺手刷新。
+        self.assertEqual(self.store._db.execute(
+            "SELECT count(*) FROM stat_builds WHERE deck_type IS NOT '新名'").fetchone()[0],
+            before_other)
+
+    def test_rename_skips_builds_already_using_the_new_name(self):
+        """把「地机」改成「地机ftk」时，已经是「地机ftk」的构筑不重复处理。"""
+        self.configure()
+        self.set_group('地机')
+        self.upload_replay()
+        self.set_group('地机ftk')
+        config = load_config(self.root)
+        rename_builds(self.store._db, '地机', '地机ftk', config)
+        self.assertEqual(self.labels(), ['地机ftk', '地机ftk'])
+
+        # 再跑一次：全都带新名，目标集合为空。
+        self.assertEqual(rename_targets(self.store._db, '地机', '地机ftk', config), [])
 
 
 if __name__ == '__main__':
