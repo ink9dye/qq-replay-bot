@@ -55,6 +55,8 @@ SERIES_BACKLOG_INTERVAL = 300
 # 机器一直忙时的“小步”兜底：每半小时只推 50 副，保证最终能追平又不抢 CPU。
 SERIES_TRICKLE_BATCH = 50
 SERIES_TRICKLE_INTERVAL = 1800
+# 组合命名维护自身的节奏（秒）：不依赖 sync_replay_facts 何时返回。
+SERIES_MAINTAIN_INTERVAL = 120
 SERIES_IDLE_LOAD = float(os.environ.get("YGOPRO_SERIES_IDLE_LOAD") or 0)
 
 
@@ -1469,6 +1471,16 @@ class BotService:
             except (OSError, ValueError, TypeError, KeyError):
                 self.write_log(f'录像{identifier}的原子记录暂未同步，保留未知待核对')
         self._fact_signatures = {key:value for key,value in self._fact_signatures.items() if key in existing}
+        self.maintain_series_names(updated)
+        return updated
+
+    def maintain_series_names(self, updated=0) -> None:
+        """组合命名维护：规则变更后排队，机器空闲时按批重算。
+
+        独立成一个循环调用（naming_loop），不再只挂在 sync_replay_facts 末尾：
+        那里一旦重扫几百个录像就要十几分钟才返回，改名/重算会跟着一起“消失”。
+        """
+        now=float(self.clock())
         series_reference=self.data_dir/'card-series-reference.json'
         series_config=self.data_dir/'series-naming.json'
         series_marker=tuple((p.stat().st_mtime_ns,p.stat().st_size) if p.exists() else None
@@ -1485,21 +1497,24 @@ class BotService:
                     self._series_rules_signature=series_marker
                     self._series_backlog=[]
                 idle = series_idle_enough()
-                if not idle:
-                    # 机器正忙：连清单都不建（建一次全站清单要几十秒），等空闲再说。
-                    if not self._series_idle_skipped:
-                        self.write_log('组合命名待重算；机器正忙，等空闲再继续')
-                        self._series_idle_skipped = True
-                else:
+                if not idle and not self._series_idle_skipped:
+                    self.write_log('组合命名待重算；机器正忙，等空闲再继续（忙时只小步追）')
+                    self._series_idle_skipped = True
+                if idle:
                     self._series_idle_skipped = False
-                if (idle and not self._series_backlog
+                # 建清单：空闲时用精确口径（含录像证据）；忙时改用便宜的 SQL 口径，
+                # 且半小时才建一次——不然“等空闲”会变成永远不动，历史构筑一直追不上。
+                if (not self._series_backlog
                         and (updated or series_marker!=self._series_backlog_signature)
-                        and now-self._series_backlog_at>=SERIES_BACKLOG_INTERVAL):
-                    self._series_backlog=self.store.pending_series_builds(config,now,self.replay_root)
+                        and now-self._series_backlog_at
+                            >= (SERIES_BACKLOG_INTERVAL if idle else SERIES_TRICKLE_INTERVAL)):
+                    self._series_backlog=self.store.pending_series_builds(
+                        config,now,self.replay_root if idle else None)
                     self._series_backlog_signature=series_marker
                     self._series_backlog_at=now
                     if self._series_backlog:
-                        self.write_log(f'组合命名待重算 {len(self._series_backlog)} 个构筑，空闲时按批处理')
+                        self.write_log(f'组合命名待重算 {len(self._series_backlog)} 个构筑，'
+                                       + ('空闲时按批处理' if idle else '忙时小步推进'))
                 if idle and self._series_backlog:
                     batch=self._series_backlog[:SERIES_NAME_BATCH]
                     del self._series_backlog[:len(batch)]
@@ -1512,12 +1527,20 @@ class BotService:
                     batch=self._series_backlog[:SERIES_TRICKLE_BATCH]
                     del self._series_backlog[:len(batch)]
                     self._series_trickle_at=now
-                    result=self.store.name_series_builds(config,now,batch,self.replay_root)
+                    result=self.store.name_series_builds(config,now,batch,None)
                     self.write_log('组合命名忙时小步更新 %d 个；剩余 %d 个'
                                    % (int((result or {}).get('changed') or 0), len(self._series_backlog)))
             except (OSError,ValueError,TypeError,KeyError,sqlite3.Error):
                 self.write_log('组合命名规则暂不可用，保留现有名字')
-        return updated
+
+    async def naming_loop(self) -> None:
+        """每 2 分钟看一次组合命名：改名排队、空闲时按批追历史构筑。"""
+        while True:
+            try:
+                await asyncio.to_thread(self.maintain_series_names)
+            except Exception as exc:  # noqa: BLE001
+                self.write_log(f'组合命名维护失败：{exc}')
+            await asyncio.sleep(SERIES_MAINTAIN_INTERVAL)
 
     async def cleanup_loop(self) -> None:
         while True:
@@ -2555,6 +2578,7 @@ class BotService:
             tasks.append(asyncio.create_task(self.notify_loop()))
         if "watch" in active:
             tasks.append(asyncio.create_task(self.cleanup_loop()))
+            tasks.append(asyncio.create_task(self.naming_loop()))
         if "qq" in active:
             tasks.append(asyncio.create_task(self.guess_reveal_loop()))
             tasks.append(asyncio.create_task(self.napcat_watchdog()))
