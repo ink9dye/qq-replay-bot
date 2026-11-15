@@ -61,8 +61,30 @@ def _stamps(data_dir):
         return None
 
 
+def _has_image(data_dir, code):
+    """代表卡是否已有本地图；没有图时出图只会铺扇区底色。"""
+    try:
+        name = str(int(code)) + '.jpg'
+    except (TypeError, ValueError):
+        return False
+    data_dir = Path(data_dir)
+    for root in (data_dir / 'card-images',
+                 data_dir.parent / 'ygopro' / 'pics',
+                 data_dir / 'cache' / 'card-art'):
+        try:
+            if (root / name).is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def first_cards(data_dir):
-    """每个命名组的第一张卡（组内卡号最小）作为代表图。"""
+    """每个命名组的代表图：优先组内卡号最小、且本地有图的那张。
+
+    等价类展开后成员里会出现没有印刷图的 canonical 号；直接取最小编号
+    会让整片退化成扇区底色（2026-11-07/2026-11-15 的纯蓝饼图即此）。
+    """
     from . import series_naming
     data_dir = Path(data_dir)
     stamp = _stamps(data_dir)
@@ -83,7 +105,14 @@ def first_cards(data_dir):
         if not codes:
             continue
         chosen = (registry['groups'].get(name) or {}).get('representative')
-        result[name] = chosen if chosen in codes else min(codes)
+        if chosen not in codes:
+            chosen = min(codes)
+        if not _has_image(data_dir, chosen):
+            for code in sorted(codes):
+                if _has_image(data_dir, code):
+                    chosen = code
+                    break
+        result[name] = chosen
     _FIRST_CACHE[key] = (stamp, result)
     return result
 

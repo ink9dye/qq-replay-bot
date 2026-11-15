@@ -36,8 +36,25 @@ def _record_from_roster(data) -> dict:
                 current=int(data.get('current_players') or 0))
 
 
+def _art_signature(single) -> str:
+    """把「用到哪些卡图、本地有没有」纳入缓存键；图补上后会生成新图。"""
+    from .top100_pie import _art_available
+
+    rows = []
+    for item in single.get('slices') or []:
+        rows.append((item.get('image'), _art_available(item.get('image'))))
+        for band in item.get('bands') or []:
+            rows.append((band.get('image'), _art_available(band.get('image'))))
+    other = single.get('other') or {}
+    rows.append((other.get('image'), _art_available(other.get('image'))))
+    raw = json.dumps(sorted((str(code), bool(ok)) for code, ok in rows),
+                     separators=(',', ':'))
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:8]
+
+
 def _key(record: dict) -> str:
-    raw = json.dumps(dict(v=RENDER_VERSION, single=record.get('single') or {}),
+    single = record.get('single') or {}
+    raw = json.dumps(dict(v=RENDER_VERSION, single=single, art=_art_signature(single)),
                      ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]
 

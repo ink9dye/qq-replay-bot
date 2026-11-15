@@ -123,6 +123,27 @@ def _card_file(code):
     return path
 
 
+def _art_available(code):
+    """本地是否已有该卡图（不触发下载）；缓存键与出图兜底共用。"""
+    if not code:
+        return False
+    try:
+        name = str(int(code)) + '.jpg'
+    except (TypeError, ValueError):
+        return False
+    root = Path(__file__).resolve().parents[1]
+    for folder in (root / 'ygopro' / 'pics',
+                   Path('/opt/ygobot/ygopro/pics'),
+                   root / 'data' / 'card-images',
+                   root / 'data' / 'cache' / 'card-art'):
+        try:
+            if (folder / name).is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _card_work(code):
     path = _card_file(code)
     if path is None:
@@ -398,6 +419,16 @@ def _render_single_payload(payload):
         clip_id = f"c{clip_index}"; clip_index += 1
         defs.append(f'<clipPath id="{clip_id}"><path d="{path}"/></clipPath>')
         art_svg = art_markup(item.get('image'), bbox, clip_id)
+        if not art_svg:
+            # 代表卡没有本地图时，用该片人数最多的嵌套卡图兜底，避免整片纯色。
+            members = [band for band in item.get('bands') or []
+                       if band.get('kind') == 'member' and band.get('image')]
+            if members:
+                fallback = max(members, key=lambda band: float(band.get('players') or 0)).get('image')
+                if fallback and fallback != item.get('image'):
+                    art_svg = art_markup(fallback, bbox, clip_id)
+                    if art_svg:
+                        item['image'] = fallback
         if art_svg:
             shapes.append(art_svg)
         else:
