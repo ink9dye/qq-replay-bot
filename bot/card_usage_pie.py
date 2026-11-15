@@ -114,6 +114,17 @@ def _latest_sessions(views):
     return latest
 
 
+def _selected_sessions(views, latest):
+    """Use exactly the match containing the shared population's selected first game."""
+    grouped = {}
+    for row in views:
+        player = str(row['player']).strip()
+        selected = latest.get(player)
+        if selected and _session_key(row) == _session_key(selected):
+            grouped.setdefault(player, []).append(row)
+    return grouped
+
+
 def _main_copies(db, builds, codes):
     """这些构筑里该卡在主卡分区的张数；换备换入的牌在第 2/3 局也算 main。"""
     builds = sorted({b for b in builds if b})
@@ -166,7 +177,7 @@ def collect(database, data_dir, now, card_name=None, *, code=None):
         # （game_no=1）的主卡组。旧实现按 recorded_at 取最近一局，常常落到
         # BO3 第 2/3 局的换备构筑，把 Side 换进来的卡算成主卡。
         basis, latest, people = population(db, replay_root, now)
-        sessions = _latest_sessions(basis['views'])
+        sessions = _selected_sessions(basis['views'], latest)
         builds = {row.get('build') for rows in sessions.values() for row in rows}
         builds |= {(latest.get(person['player']) or {}).get('build') for person in people}
         copies = _main_copies(db, builds, codes)
@@ -176,12 +187,11 @@ def collect(database, data_dir, now, card_name=None, *, code=None):
             row = latest.get(player) or {}
             build = row.get('build')
             games = sessions.get(player) or []
-            first = [r for r in games if r.get('observed_game_no') == 1
-                     and r.get('observed_identity_confirmed') is True]
             later = [r for r in games if (r.get('observed_game_no') or 0) > 1]
-            # 主卡只认确证第 1 局；没有首局就不把“最新观测”当主卡（那可能是换备后的卡表）。
-            main_known = len(first) == 1
-            main = copies.get(first[0].get('build'), 0) if main_known else copies.get(build, 0)
+            # population already selected the latest usable confirmed first game.
+            # Reuse it, including its duplicate-record resolution, for the denominator.
+            main_known = bool(row)
+            main = copies.get(build, 0)
             side = side_out = 0
             side_known = False
             # 备牌没有直接记录（录像不含备牌表），只能看第 2/3 局相对第 1 局的净换入。
@@ -284,10 +294,10 @@ def render(database, data_dir, now, card_name):
         _pie(axes[2], [('无换备证据', payload['current'], unknown_color)],
              '总投入（暂无证据）', prop)
     fig.suptitle(f"前100使用量 · {payload['name']}（{payload['code']:08d}） · "
-                 f"有构筑 {payload['covered']}/{payload['current']} 人",
+                 f"有效 {payload['current']}/{payload['total_players']} 人（排除 {payload['excluded']} 人）",
                  fontproperties=prop, fontsize=20, y=0.99)
     fig.text(0.5, 0.015,
-             '主卡=确证第 1 局；备牌=最近一场第 2/3 局相对第 1 局的净换入（录像无备牌表：未换入≠没带）；'
+             '主卡=确证第 1 局；备牌=所选同场第 2/3 局相对第 1 局的净换入（录像无备牌表：未换入≠没带）；'
              f'主卡未知 {payload["main_unknown"]} 人、备牌未知 {unknown} 人；总投入=主卡+换入（下界）。',
              ha='center', fontproperties=prop, fontsize=10, color='#8A5A00')
     output = io.BytesIO()
