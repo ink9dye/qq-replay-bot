@@ -977,6 +977,45 @@ def apply_names(db, now, config, catalog=None, names=None, scope='latest',
     return dict(planned=result['summary'], written=written)
 
 
+def pending_series_builds(db, now, config, scope='latest', replay_root=None):
+    """当前版本下还没重算的构筑清单（与 apply_names 的选择口径一致）。"""
+    version = version_for(config)
+    respect = config['respect_manual']
+    if scope == 'everything':
+        return _filter_pending(db, all_builds(db), version, respect)
+    if scope == 'top100':
+        return pending_builds(db, now, version, 'top100', respect)
+    if scope == 'latest':
+        if replay_root is not None:
+            return pending_latest_main(db, replay_root, now, version, respect)
+        return _filter_pending(db, latest_builds(db, now), version, respect)
+    return pending_builds(db, now, version, 'active', respect)
+
+
+def apply_names_chunk(db, now, config, catalog=None, names=None, builds=None, limit=400,
+                      scope='latest', replay_root=None, commit=True):
+    """增量命名：只重算 limit 个构筑，供后台每轮循环调用，避免一次性阻塞。
+
+    改组合名/改阈值都会让全站版本串变化，待重算数量必然远超“初始化”阈值；
+    这里按批推进，既不整体跳过（旧行为：待重算过多就永远不动），也不长时间占 CPU。
+    返回 dict(pending=本批之后剩余, total=本批之前总量, changed, version, planned)。
+    """
+    catalog = catalog_from_db(db, catalog)
+    version = version_for(config)
+    if builds is None:
+        builds = pending_series_builds(db, now, config, scope=scope, replay_root=replay_root)
+    builds = list(builds)
+    total = len(builds)
+    batch = builds[:max(1, int(limit))]
+    if not batch:
+        return dict(pending=0, total=0, changed=0, version=version, planned={})
+    result = plan(db, now, config, catalog, names, builds=batch, scope=scope,
+                  replay_root=replay_root)
+    written = apply_plan(db, result['rows'], config, commit=commit)
+    return dict(pending=total - len(batch), total=total, changed=written['changed'],
+                version=version, planned=result['summary'])
+
+
 def scope_builds(db, now, scope='top100', replay_root=None):
     """要被自动命名的构筑：默认当前前100名单每人最新一局的有效构筑。"""
     from .statistics_deck_naming import _latest_views, _roster

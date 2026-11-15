@@ -45,6 +45,13 @@ from .watch_core import (
 _UPLOAD_FOLDER_UNSAFE = re.compile(r"[^0-9A-Za-z._\-()\u4e00-\u9fff ]+")
 _WHITESPACE = re.compile(r"\s+")
 
+# 组合命名（卡组自动命名）增量重算：每次循环最多重算多少个构筑，
+# 以及没有新录像时重建待办清单的最小间隔（秒）。改组合名/改阈值后
+# 全站版本串变化，待重算数量会远超“初始化”阈值，必须按批推进而不是整体跳过。
+SERIES_NAME_BATCH = 800
+SERIES_BACKLOG_INTERVAL = 300
+
+
 
 def upload_folder_part(text: str, fallback: str = "unknown") -> str:
     """上传接口（bot/watch_api.py 的 _safe_part）写录像目录时的同名口径。
@@ -261,6 +268,9 @@ class BotService:
         self._capture_status_written = 0.0
         self._classification_rules_signature = None
         self._series_rules_signature = None
+        self._series_backlog = []
+        self._series_backlog_signature = None
+        self._series_backlog_at = 0.0
         # 事实/录像索引只由观战进程写（设计：只有 collector 写事实库）。
         # 拆分后的 QQ 进程只读同一份库，启动时不再扫描录像、不再补写事实表，
         # 这样重启 QQ 窗口不会和正在录的观战抢写锁；M3 再把 QQ 的写请求交给 collector。
@@ -1444,19 +1454,31 @@ class BotService:
         series_config=self.data_dir/'series-naming.json'
         series_marker=tuple((p.stat().st_mtime_ns,p.stat().st_size) if p.exists() else None
                             for p in (series_reference,series_config))
-        if series_reference.is_file() and (updated or series_marker!=self._series_rules_signature):
+        if series_reference.is_file() and (updated or self._series_backlog
+                                          or series_marker!=self._series_rules_signature):
             try:
                 from .series_naming import load_config
                 config=load_config(self.data_dir)
-                pending=self.store.pending_series_count(config,now,self.replay_root)
-                if pending>5000:
-                    self.write_log(f'组合命名待初始化 {pending} 个构筑；数量过大，先手动运行 bot.series_naming 初始化')
-                else:
-                    result=self.store.refresh_series_names(config,now,self.replay_root)
+                if series_marker!=self._series_rules_signature:
+                    # 规则文件（组合名/阈值/增删卡）变了：先记下签名，再排队分批重算。
+                    # 旧版这里待重算超过 5000 就整体跳过且不记签名，于是每次改名都会
+                    # 每分钟重试、永远跳过，名字一直停在旧版（2026-11-15 地机改名事故）。
                     self._series_rules_signature=series_marker
-                    planned=(result or {}).get('planned') or {}
-                    if planned.get('create') or planned.get('clear'):
-                        self.write_log(f"组合命名更新 {planned.get('create',0)} 个、清理 {planned.get('clear',0)} 个")
+                    self._series_backlog=[]
+                if (not self._series_backlog
+                        and (updated or series_marker!=self._series_backlog_signature)
+                        and now-self._series_backlog_at>=SERIES_BACKLOG_INTERVAL):
+                    self._series_backlog=self.store.pending_series_builds(config,now,self.replay_root)
+                    self._series_backlog_signature=series_marker
+                    self._series_backlog_at=now
+                    if self._series_backlog:
+                        self.write_log(f'组合命名待重算 {len(self._series_backlog)} 个构筑，按批处理')
+                if self._series_backlog:
+                    batch=self._series_backlog[:SERIES_NAME_BATCH]
+                    del self._series_backlog[:len(batch)]
+                    result=self.store.name_series_builds(config,now,batch,self.replay_root)
+                    self.write_log('组合命名更新 %d 个；剩余 %d 个'
+                                   % (int((result or {}).get('changed') or 0), len(self._series_backlog)))
             except (OSError,ValueError,TypeError,KeyError,sqlite3.Error):
                 self.write_log('组合命名规则暂不可用，保留现有名字')
         return updated

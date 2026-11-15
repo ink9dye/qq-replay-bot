@@ -1,0 +1,82 @@
+import json
+import time
+import unittest
+
+import test_watch_replay_evidence as evidence_tests
+from bot.series_naming import apply_names_chunk, load_config, pending_series_builds
+
+
+class NamingChunkRefreshTests(unittest.TestCase):
+    """改名/改阈值后按批重算：不再因为待重算多就整体跳过。"""
+
+    setUp = evidence_tests.ReplayEvidenceTests.setUp
+    upload_replay = evidence_tests.ReplayEvidenceTests.upload_replay
+
+    def configure(self, tag='测试系列'):
+        (self.root/'card-series-reference.json').write_text(json.dumps(dict(
+            version=1, semantics='contains_official_series_in_observed_main_or_extra',
+            cards={str(c): dict(tags=[tag], complete=True) for c in [1, 2, 3, 8, 9]})), encoding='utf8')
+        self.set_group(tag)
+
+    def set_group(self, name):
+        """模拟网页「组合编辑」：把官方系列挂到一个自定义组名下（改名只动这个文件）。"""
+        (self.root/'series-naming.json').write_text(json.dumps(dict(
+            primary_threshold=1, secondary_threshold=1, min_main_copies=1,
+            groups=[dict(name=name, sources=['测试系列'])]), ensure_ascii=False), encoding='utf8')
+
+    def labels(self):
+        return [r[0] for r in self.store._db.execute(
+            'SELECT deck_type FROM stat_builds ORDER BY fingerprint')]
+
+    def forget_names(self):
+        with self.store._db:
+            self.store._db.execute("UPDATE stat_builds SET deck_type=NULL,classification_version=NULL,"
+                                   "classification_source='unclassified',classification_status='unknown'")
+
+    def revision(self):
+        return self.store._db.execute('SELECT revision FROM stat_classification_state').fetchone()[0]
+
+    def test_chunk_names_only_limit_builds_and_reports_remaining(self):
+        self.configure()
+        self.upload_replay()
+        self.forget_names()
+        config = load_config(self.root)
+        now = time.time()
+        self.assertEqual(len(pending_series_builds(self.store._db, now, config, replay_root=None)), 2)
+
+        first = apply_names_chunk(self.store._db, now, config, limit=1)
+        self.assertEqual((first['total'], first['pending'], first['changed']), (2, 1, 1))
+        self.assertEqual(sum(1 for name in self.labels() if name), 1)
+
+        second = apply_names_chunk(self.store._db, now, config, limit=1)
+        self.assertEqual((second['total'], second['pending'], second['changed']), (1, 0, 1))
+        self.assertEqual(self.labels(), ['测试系列', '测试系列'])
+        self.assertGreater(self.revision(), 0)
+
+    def test_rename_reaches_existing_builds_after_config_change(self):
+        self.configure()
+        self.set_group('旧名')
+        self.upload_replay()
+        self.assertEqual(self.labels(), ['旧名', '旧名'])
+
+        # 组合改名：规则文件变化 → 版本串变化 → 旧构筑重新排队，按批写法即可生效。
+        self.set_group('新名')
+        config = load_config(self.root)
+        now = time.time()
+        pending = pending_series_builds(self.store._db, now, config, replay_root=None)
+        self.assertEqual(len(pending), 2)
+
+        result = apply_names_chunk(self.store._db, now, config, limit=500)
+        self.assertEqual((result['pending'], result['changed']), (0, 2))
+        self.assertEqual(self.labels(), ['新名', '新名'])
+
+    def test_chunk_with_nothing_pending_is_noop(self):
+        self.configure()
+        self.upload_replay()
+        config = load_config(self.root)
+        result = apply_names_chunk(self.store._db, time.time(), config, limit=500)
+        self.assertEqual((result['pending'], result['total'], result['changed']), (0, 0, 0))
+
+
+if __name__ == '__main__':
+    unittest.main()

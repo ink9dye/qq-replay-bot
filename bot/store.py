@@ -243,6 +243,18 @@ class Store:
             return len(pending_latest_main(self._db,replay_root,now,
                                            version_for(config),config['respect_manual']))
 
+    def pending_series_builds(self, config, now, replay_root=None):
+        """待重算构筑清单；后台按批推进时先取一次，避免每轮重算人口口径。"""
+        from .series_naming import pending_series_builds
+        with self._lock:
+            return pending_series_builds(self._db,now,config,replay_root=replay_root)
+
+    def name_series_builds(self, config, now, builds, replay_root=None):
+        """只重算给定的一批构筑（增量命名）。"""
+        from .series_naming import apply_names_chunk
+        with self._lock,self._db:
+            return apply_names_chunk(self._db,now,config,builds=builds,replay_root=replay_root)
+
     def unknown_builds(self, now):
         # 维护队列，不是按人的卡组使用人数或胜率统计。
         with self._lock:
