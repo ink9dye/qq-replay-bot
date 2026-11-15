@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS stat_builds (
  extra_complete INTEGER NOT NULL, side_complete INTEGER NOT NULL DEFAULT 0,
  deck_type TEXT, classification_version TEXT
 );
+CREATE TABLE IF NOT EXISTS stat_naming_queue (
+ fingerprint TEXT PRIMARY KEY, reason TEXT NOT NULL DEFAULT '', queued_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS stat_build_cards (
  build TEXT NOT NULL REFERENCES stat_builds(fingerprint) ON DELETE CASCADE,
  partition TEXT NOT NULL CHECK(partition IN ('main','side','extra')),

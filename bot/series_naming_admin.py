@@ -301,19 +301,23 @@ def _rename_log(data_dir, text):
 
 
 def _rename_worker(db_path, data_dir, old_name, new_name):
-    """后台把「名字含旧字段」的构筑改成新名：不解析录像，几十秒级。"""
+    """后台改名：前端页面在展示的构筑立刻改；历史构筑进慢速队列慢慢追。"""
     connection = None
     try:
         connection = sqlite3.connect(str(db_path), timeout=60)
         connection.row_factory = sqlite3.Row
         connection.execute('PRAGMA busy_timeout=60000')
         config = series_naming.load_config(data_dir)
+        replays = Path(data_dir)/'replays'
         result = series_naming.rename_builds(
             connection, old_name, new_name, config,
+            replay_root=replays if replays.is_dir() else None,
             progress=lambda state: _rename_log(data_dir, '改名重算 %d/%d 副'
                                                % (state['done'], state['total'])))
-        _rename_log(data_dir, '改名完成 %s → %s：重算 %d 副、实际改名 %d 副'
-                    % (old_name, new_name, result['total'], result['changed']))
+        _rename_log(data_dir, '改名完成 %s → %s：共 %d 副，前端页面立刻改 %d 副（实际改名 %d 副），'
+                              '其余 %d 副进慢速队列由后台空闲时重算'
+                    % (old_name, new_name, result['total'], result['front'],
+                       result['changed'], result['queued']))
     except Exception as exc:  # 后台线程不能影响保存动作
         _rename_log(data_dir, '改名重算失败 %s → %s：%s' % (old_name, new_name, exc))
     finally:

@@ -3,8 +3,8 @@ import time
 import unittest
 
 import test_watch_replay_evidence as evidence_tests
-from bot.series_naming import (apply_names_chunk, load_config, pending_series_builds,
-                               rename_builds, rename_targets)
+from bot.series_naming import (apply_names_chunk, drop_queue, load_config, pending_series_builds,
+                               queued_builds, rename_builds, rename_targets)
 
 
 class NamingChunkRefreshTests(unittest.TestCase):
@@ -112,6 +112,47 @@ class NamingChunkRefreshTests(unittest.TestCase):
 
         # 再跑一次：全都带新名，目标集合为空。
         self.assertEqual(rename_targets(self.store._db, '地机', '地机ftk', config), [])
+
+    def test_rename_defers_builds_the_pages_are_not_showing(self):
+        """前端页面看不到的构筑不立刻改，写进慢速队列，由后台按批追。"""
+        self.configure()
+        self.set_group('旧名')
+        self.upload_replay()
+        self.assertEqual(self.labels(), ['旧名', '旧名'])
+        self.set_group('新名')
+        config = load_config(self.root)
+
+        # 假设这两副都不在页面上（名册/饼图/近三天对局都没它）：
+        result = rename_builds(self.store._db, '旧名', '新名', config, visible=set())
+        self.assertEqual((result['total'], result['front'], result['changed']), (2, 0, 0))
+        self.assertEqual(result['queued'], 2)
+        self.assertEqual(self.labels(), ['旧名', '旧名'])
+
+        # 慢速队列被后台读到后按批重算，名字才会变。
+        queued = queued_builds(self.store._db, limit=50)
+        self.assertEqual(len(queued), 2)
+        apply_names_chunk(self.store._db, time.time(), config, builds=queued, limit=50)
+        self.assertEqual(sorted(self.labels()), ['新名', '新名'])
+        drop_queue(self.store._db, queued)
+        self.assertEqual(queued_builds(self.store._db, limit=50), [])
+
+    def test_rename_immediately_fixes_builds_visible_on_pages(self):
+        """页面正在展示的那几副必须立刻改；同一次改名里其余构筑进队列。"""
+        self.configure()
+        self.set_group('旧名')
+        self.upload_replay()
+        self.set_group('新名')
+        config = load_config(self.root)
+        fingerprints = [row[0] for row in self.store._db.execute(
+            'SELECT fingerprint FROM stat_builds ORDER BY fingerprint')]
+
+        result = rename_builds(self.store._db, '旧名', '新名', config,
+                               visible={fingerprints[0]})
+        self.assertEqual((result['front'], result['changed'], result['queued']), (1, 1, 1))
+        names = dict(self.store._db.execute('SELECT fingerprint,deck_type FROM stat_builds'))
+        self.assertEqual(names[fingerprints[0]], '新名')
+        self.assertEqual(names[fingerprints[1]], '旧名')
+        self.assertEqual(queued_builds(self.store._db, limit=10), [fingerprints[1]])
 
 
 if __name__ == '__main__':

@@ -255,6 +255,20 @@ class Store:
         with self._lock,self._db:
             return apply_names_chunk(self._db,now,config,builds=builds,replay_root=replay_root)
 
+    def queued_naming_builds(self, limit=200):
+        """改名/历史重算的慢速队列：最早排进来的那批构筑。"""
+        from .series_naming import queued_builds
+        with self._lock:
+            return queued_builds(self._db,limit)
+
+    def drop_naming_queue(self, builds):
+        """从慢速队列移除已处理的构筑。"""
+        from .series_naming import drop_queue
+        if not builds:
+            return 0
+        with self._lock,self._db:
+            return drop_queue(self._db,builds)
+
     def unknown_builds(self, now):
         # 维护队列，不是按人的卡组使用人数或胜率统计。
         with self._lock:

@@ -32,6 +32,9 @@ from pathlib import Path
 
 VERSION_PREFIX = 'series-fields-v3'
 CONFIG_NAME = 'series-naming.json'
+# 改名时“立刻改”的时间窗口（天）：最近几天有对局的构筑算前端正在展示的，
+# 更早的历史构筑进慢速队列，由后台空闲时按批追（见 rename_builds/visible_builds）。
+RENAME_FRONT_DAYS = 3
 
 # 卡号等价表：命名、统计、筛选按等价类统一，卡图/发行信息仍用原卡号。
 # build_registry 没有 db 参数，用一个只回答 PRAGMA database_list 的替身定位数据目录，
@@ -1043,27 +1046,90 @@ def rename_targets(db, old_name, new_name=None, config=None, catalog=None):
     return targets
 
 
-def rename_builds(db, old_name, new_name, config=None, catalog=None, batch=100,
-                  progress=None, commit=True, now=None):
-    """组合改名后只重算「名字含该字段」的构筑，不解析录像。
+def visible_builds(db, now, replay_root=None, days=RENAME_FRONT_DAYS):
+    """前端页面此刻会展示的那批构筑（名册/饼图口径 + 每人最新一场 + 最近几天有对局）。
 
-    改名的影响面就是这批构筑（线上实测 818 副、183 秒），不需要按全站 latest
-    口径重算；全站重算留给后台在空闲时慢慢做。
+    线上实测：把「地机」改成「地机ftk」要动 820 副，但其中只有 31 副是页面正在展示的
+    构筑，其余 789 副只出现在历史对局/老链接里。所以改名先改这一批，页面立刻正确，
+    剩下的写进慢速队列慢慢追。
+    """
+    visible = set(latest_builds(db, float(now)))
+    try:
+        visible.update(scope_builds(db, float(now), 'top100', replay_root))
+    except (sqlite3.Error, ValueError, TypeError, KeyError, ImportError):
+        pass
+    if days and float(days) > 0:
+        cutoff = float(now) - float(days) * 86400
+        visible.update(row[0] for row in db.execute(
+            'SELECT DISTINCT v.build FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
+            'WHERE g.recorded_at>? AND g.expires_at>?', (cutoff, float(now))))
+    return visible
+
+
+def queue_builds(db, builds, reason='', now=None, commit=True):
+    """把“不急”的构筑写进持久队列 stat_naming_queue，由后台空闲时按批消费。"""
+    builds = [b for b in dict.fromkeys(builds or []) if b]
+    if not builds:
+        return 0
+    stamp = time.time() if now is None else float(now)
+    db.executemany('INSERT OR REPLACE INTO stat_naming_queue(fingerprint,reason,queued_at) '
+                   'VALUES(?,?,?)', [(b, reason or '', stamp) for b in builds])
+    if commit:
+        db.commit()
+    return len(builds)
+
+
+def queued_builds(db, limit=200):
+    """慢速队列里最早排进来的构筑（已被删除的构筑不会返回）。"""
+    return [row[0] for row in db.execute(
+        'SELECT q.fingerprint FROM stat_naming_queue q '
+        'JOIN stat_builds b ON b.fingerprint=q.fingerprint '
+        'ORDER BY q.queued_at,q.fingerprint LIMIT ?', (max(1, int(limit)),))]
+
+
+def drop_queue(db, builds, commit=True):
+    """从慢速队列移除已处理（或已消失）的构筑。"""
+    builds = [b for b in dict.fromkeys(builds or []) if b]
+    if not builds:
+        return 0
+    db.executemany('DELETE FROM stat_naming_queue WHERE fingerprint=?', [(b,) for b in builds])
+    if commit:
+        db.commit()
+    return len(builds)
+
+
+def rename_builds(db, old_name, new_name, config=None, catalog=None, batch=100,
+                  progress=None, commit=True, now=None, replay_root=None,
+                  front_only=True, visible=None, days=RENAME_FRONT_DAYS):
+    """组合改名：前端页面能看到的构筑立刻改，其余写进慢速队列慢慢追。
+
+    改名的影响面是「名字含该字段」的构筑，但它们绝大多数不是页面正在展示的
+    （线上 820 副里只有 31 副在名册/饼图/近三天对局里）。先改这一小批让页面
+    立刻正确，剩下的几百副历史构筑进 stat_naming_queue，由 naming_loop 在
+    机器空闲时按批处理——不为了历史数据把 CPU 顶起来。
     """
     config = config or load_config(Path('.'))
     now = time.time() if now is None else float(now)
     targets = rename_targets(db, old_name, new_name, config, catalog)
-    total = len(targets)
+    if front_only:
+        front_set = visible_builds(db, now, replay_root, days) if visible is None else set(visible)
+        front = [b for b in targets if b in front_set]
+        rest = [b for b in targets if b not in front_set]
+    else:
+        front, rest = list(targets), []
+    queued = queue_builds(db, rest, 'rename:%s->%s' % (old_name, new_name), now, commit)
+    total = len(front)
     changed = 0
     step = max(1, int(batch))
     for start in range(0, total, step):
-        piece = targets[start:start + step]
+        piece = front[start:start + step]
         result = apply_names_chunk(db, now, config, catalog=catalog, builds=piece,
                                    limit=len(piece), replay_root=None, commit=commit)
         changed += int(result.get('changed') or 0)
         if progress is not None:
             progress(dict(total=total, done=min(total, start + step), changed=changed))
-    return dict(total=total, changed=changed, old=old_name, new=new_name)
+    return dict(total=len(targets), changed=changed, front=total, queued=queued,
+                old=old_name, new=new_name)
 
 
 def scope_builds(db, now, scope='top100', replay_root=None):

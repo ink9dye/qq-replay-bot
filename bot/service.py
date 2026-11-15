@@ -1502,6 +1502,12 @@ class BotService:
                     self._series_idle_skipped = True
                 if idle:
                     self._series_idle_skipped = False
+                # 改名留下的“不急”队列优先：这批判的是含旧字段的历史构筑，
+                # 网页改名时只立刻改了前端口径那几十副（见 rename_builds）。
+                queued=self.store.queued_naming_builds(SERIES_NAME_BATCH)
+                if queued:
+                    seen=set(queued)
+                    self._series_backlog=queued+[b for b in self._series_backlog if b not in seen]
                 # 建清单：空闲时用精确口径（含录像证据）；忙时改用便宜的 SQL 口径，
                 # 且半小时才建一次——不然“等空闲”会变成永远不动，历史构筑一直追不上。
                 if (not self._series_backlog
@@ -1519,6 +1525,7 @@ class BotService:
                     batch=self._series_backlog[:SERIES_NAME_BATCH]
                     del self._series_backlog[:len(batch)]
                     result=self.store.name_series_builds(config,now,batch,self.replay_root)
+                    self.store.drop_naming_queue(batch)
                     self.write_log('组合命名更新 %d 个；剩余 %d 个'
                                    % (int((result or {}).get('changed') or 0), len(self._series_backlog)))
                 elif (self._series_backlog
@@ -1528,6 +1535,7 @@ class BotService:
                     del self._series_backlog[:len(batch)]
                     self._series_trickle_at=now
                     result=self.store.name_series_builds(config,now,batch,None)
+                    self.store.drop_naming_queue(batch)
                     self.write_log('组合命名忙时小步更新 %d 个；剩余 %d 个'
                                    % (int((result or {}).get('changed') or 0), len(self._series_backlog)))
             except (OSError,ValueError,TypeError,KeyError,sqlite3.Error):
