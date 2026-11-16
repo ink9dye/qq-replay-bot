@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly match identity backfill
+
+[Timer]
+OnCalendar=*-*-* 04:50:00
+Persistent=true
+Unit=ygobot-match-identity-backfill.service
+
+[Install]
+WantedBy=timers.target
