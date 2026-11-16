@@ -171,10 +171,20 @@ def _reconcile_capture_sessions(db, result, proofs):
 
 
 def capture_metadata(db, digests):
+    """优先读入库时算好的身份索引；只有未建索引的 digest 才回退证据表。"""
     wanted = {digest for digest in digests if digest}
     if not wanted:
         return {}
-    return _read_capture_metadata(db, wanted)
+    from .statistics_match_index import lookup
+    from .web_perf_metrics import add_metric
+    found, indexed = lookup(db, wanted)
+    missing = wanted - indexed
+    add_metric('identity_index_hits', len(wanted & indexed))
+    if not missing:
+        return found
+    add_metric('identity_index_misses', len(missing))
+    found.update(_read_capture_metadata(db, missing))
+    return found
 
 
 def identity_metadata(db, digests, captures=None):
