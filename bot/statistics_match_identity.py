@@ -14,6 +14,7 @@ def _read_capture_metadata(db, digests):
     """
     captures = {}
     explicit = set()
+    proofs = {}
     values = list(dict.fromkeys(digests))
     for start in range(0, len(values), 400):
         chunk = values[start:start + 400]
@@ -40,6 +41,7 @@ def _read_capture_metadata(db, digests):
                 continue
             if not isinstance(info, dict):
                 continue
+            proofs.setdefault(digest, []).append(info)
             parsed.append((digest, info.get('game_no'), info.get('session_id'),
                            info.get('captured_from_start'), 'game_no' in info or 'session_id' in info))
         for digest, game_no, session_id, captured_from_start, is_explicit in parsed:
@@ -74,6 +76,97 @@ def _read_capture_metadata(db, digests):
                         (row['session_id'], row['game_no'], False))
                 legacy.setdefault(row['digest'], set()).add(item)
         result.update({d: next(iter(found)) for d, found in legacy.items() if len(found) == 1})
+    return _reconcile_capture_sessions(db, result, proofs)
+
+
+def _reconcile_capture_sessions(db, result, proofs):
+    """Unify duplicate observers only by identical replay bytes or explicit links.
+
+    A recorder's random session ID is not a globally unique match identity.
+    Conflicting game numbers, incomplete capture and different opponents remain
+    unresolved; timestamps and filenames never establish an association.
+    """
+    if not any(len({i.get('session_id') for i in items
+                    if isinstance(i.get('session_id'), str)}) > 1
+               or any(i.get('previous_game') is not None for i in items)
+               for items in proofs.values()):
+        return result
+    requested = set(proofs)
+    # Pull only explicitly named predecessors, with the protocol's 20-game bound.
+    for _ in range(20):
+        missing = {p.get('digest') for items in proofs.values() for info in items
+                   if isinstance((p := info.get('previous_game')), dict)
+                   and isinstance(p.get('digest'), str) and len(p['digest']) == 64
+                   and p['digest'] not in proofs}
+        if not missing:
+            break
+        values = sorted(missing)
+        for start in range(0, len(values), 400):
+            chunk = values[start:start + 400]
+            for digest in chunk:
+                proofs[digest] = []
+            marks = ','.join('?' for _ in chunk)
+            try:
+                rows = db.execute("SELECT digest,json_extract(payload_json,'$.capture') capture "
+                                  'FROM stat_evidence WHERE digest IN (%s)' % marks, chunk)
+                for row in rows:
+                    info = json.loads(row['capture']) if row['capture'] else None
+                    if isinstance(info, dict):
+                        proofs[row['digest']].append(info)
+            except (sqlite3.DatabaseError, ValueError, TypeError):
+                # No additional proof means no cross-session reconciliation.
+                return result
+    pairs = {}
+    values = sorted(proofs)
+    for start in range(0, len(values), 400):
+        chunk = values[start:start + 400]
+        marks = ','.join('?' for _ in chunk)
+        for row in db.execute('SELECT digest,player FROM stat_views WHERE digest IN (%s)' % marks, chunk):
+            pairs.setdefault(row['digest'], set()).add(row['player'])
+    resolved = {}
+
+    def resolve(digest, active):
+        if digest in resolved:
+            return resolved[digest]
+        if digest in active or len(active) >= 20:
+            return None
+        items = proofs.get(digest, [])
+        if not items or len(pairs.get(digest, ())) != 2:
+            return None
+        numbers = {info.get('game_no') for info in items
+                   if type(info.get('game_no')) is int}
+        if (len(numbers) != 1
+                or any(type(info.get('game_no')) is not int
+                       or not 1 <= info['game_no'] <= 20
+                       or info.get('captured_from_start') is not True
+                       or not isinstance(info.get('session_id'), str)
+                       or not info['session_id'] for info in items)):
+            return None
+        number = next(iter(numbers))
+        session = min(info['session_id'] for info in items)
+        previous = [info.get('previous_game') for info in items
+                    if info.get('previous_game') is not None]
+        if previous:
+            if (number == 1 or any(not isinstance(p, dict)
+                    or type(p.get('game_no')) is not int or p['game_no'] != number - 1
+                    or not isinstance(p.get('digest'), str) for p in previous)):
+                return None
+            parents = {p['digest'] for p in previous}
+            if len(parents) != 1:
+                return None
+            parent = next(iter(parents))
+            anchor = resolve(parent, active | {digest})
+            if (not anchor or anchor[1] != number - 1
+                    or pairs.get(parent) != pairs[digest]):
+                return None
+            session = anchor[0]
+        resolved[digest] = (session, number, True)
+        return resolved[digest]
+
+    for digest in requested:
+        proof = resolve(digest, set())
+        if proof:
+            result[digest] = proof
     return result
 
 
