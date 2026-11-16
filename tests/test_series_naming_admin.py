@@ -119,6 +119,34 @@ class AdminTests(unittest.TestCase):
         codes = sorted(card['code'] for card in detail['cards'])
         self.assertEqual(codes, [200, 201])
 
+    def test_combo_snapshot_matches_direct_computation(self):
+        """后台快照必须与“每次重算”的列表/详情完全一致（组合口径冻结）。"""
+        self.save(dict(op='create', name='烙印', sources=['烙印']))
+        self.save(dict(op='add_cards', name='烙印', cards=[200]))
+        # 再加两名前 100 玩家，让排序/明细有多条记录。
+        self.db.execute("INSERT INTO stat_current_top100 VALUES(2,'乙',1400)")
+        self.db.execute("INSERT INTO stat_current_top100 VALUES(3,'丙',1300)")
+        for player, build, digest, codes in (
+                ('乙', 'b2', 'd2', [(100, 2), (101, 1)]),
+                ('丙', 'b3', 'd3', [(100, 1), (102, 3)])):
+            self.db.execute("INSERT INTO stat_views VALUES(?,?,?)", (player, build, digest))
+            self.db.execute("INSERT INTO stat_games VALUES(?,?,?)", (digest, 200.0, 9999999999.0))
+            self.db.execute("INSERT INTO stat_builds VALUES(?,NULL,'unclassified','unknown',NULL,NULL,1)",
+                            (build,))
+            for code, copies in codes:
+                self.db.execute("INSERT INTO stat_build_cards VALUES(?,'main',?,?)",
+                                (build, code, copies))
+        stats = admin.combo_stats(self.db, self.data, 1000.0)
+        for query in ('', '烙'):
+            self.assertEqual(admin.list_groups(self.db, self.data, 1000.0, query, 50, 0),
+                             admin.list_groups(None, self.data, 1000.0, query, 50, 0, stats=stats))
+        for name in ('烙印',):
+            self.assertEqual(admin.group_detail(self.db, self.data, 1000.0, name),
+                             admin.group_detail(None, self.data, 1000.0, name, stats=stats))
+        detail = admin.group_detail(None, self.data, 1000.0, '烙印', stats=stats)
+        self.assertEqual(detail['builds_total'], 3)
+        self.assertEqual([item['player'] for item in detail['builds']], ['甲', '乙', '丙'])
+
     def test_rename_and_same_name_create(self):
         self.save(dict(op='create', name='烙印', sources=['烙印']))
         self.save(dict(op='save', before='烙印', name='烙印2', sources=['烙印']))

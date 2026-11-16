@@ -69,8 +69,28 @@ def config_summary(config):
                 version=series_naming.version_for(config))
 
 
+_CATALOG_LOCK = threading.Lock()
+_CATALOG_CACHE = {}
+
+
 def _catalog(data_dir):
-    return series_naming.reference_catalog(Path(data_dir) / 'card-series-reference.json')
+    """按文件指纹复用系列参考：每次请求重解析 685KB JSON 在线上是纯浪费。"""
+    path = Path(data_dir) / 'card-series-reference.json'
+    try:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return series_naming.reference_catalog(path)
+    with _CATALOG_LOCK:
+        hit = _CATALOG_CACHE.get(str(path))
+        if hit is not None and hit[0] == stamp:
+            return hit[1]
+    catalog = series_naming.reference_catalog(path)
+    with _CATALOG_LOCK:
+        _CATALOG_CACHE[str(path)] = (stamp, catalog)
+        if len(_CATALOG_CACHE) > 8:
+            _CATALOG_CACHE.pop(next(iter(_CATALOG_CACHE)))
+    return catalog
 
 
 def _names(data_dir):
@@ -79,6 +99,43 @@ def _names(data_dir):
         return index(data_dir)
     except Exception:
         return {}
+
+
+_REGISTRY_LOCK = threading.Lock()
+_REGISTRY_CACHE = {}
+
+
+def _file_stamp(path):
+    try:
+        stat = Path(path).stat()
+        return (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return None
+
+
+def _registry(data_dir, config=None, catalog=None, names=None):
+    """按配置/参考/卡名文件指纹复用命名组注册表。
+
+    构建一次是 609 组 × 全卡表关键词的遍历（线上秒级），而组合编辑每读一次列表、
+    每点开一个组都要用同一个注册表；不缓存就等于每步都重算一遍。
+    """
+    data_dir = Path(data_dir)
+    config = config if config is not None else series_naming.load_config(data_dir)
+    catalog = catalog if catalog is not None else _catalog(data_dir)
+    names = names if names is not None else _names(data_dir)
+    key = (str(data_dir), config.get('config_hash'), (catalog or {}).get('revision'),
+           _file_stamp(data_dir / CONFIG_NAME), _file_stamp(data_dir / 'cache' / 'cards.json'),
+           _file_stamp(data_dir / 'card-equivalence.json'))
+    with _REGISTRY_LOCK:
+        hit = _REGISTRY_CACHE.get(key)
+        if hit is not None:
+            return dict(hit)
+    registry = series_naming.build_registry(catalog, config, names)
+    with _REGISTRY_LOCK:
+        _REGISTRY_CACHE[key] = registry
+        if len(_REGISTRY_CACHE) > 8:
+            _REGISTRY_CACHE.pop(next(iter(_REGISTRY_CACHE)))
+    return dict(registry)
 
 
 def _card_name(names, code):
@@ -104,7 +161,7 @@ def usage_counts(db, data_dir, now, config=None, catalog=None, names=None, roste
     config = config or series_naming.load_config(data_dir)
     catalog = catalog if catalog is not None else _catalog(data_dir)
     names = names if names is not None else _names(data_dir)
-    registry = series_naming.build_registry(catalog, config, names)
+    registry = _registry(data_dir, config, catalog, names)
     views = _latest_views(db, now, roster_only=roster_only)
     builds = [build for _player, build in views if build]
     cards = series_naming._main_cards(db, builds)
@@ -139,13 +196,48 @@ def _row(entry, registry, usage, names, limit=None):
                 used_builds=int(usage.get(name, 0)))
 
 
-def list_groups(db, data_dir, now, query='', limit=50, offset=0):
+def combo_stats(db, data_dir, now):
+    """组合编辑的共享派生统计：每组命中多少个“最新构筑”，以及具体是哪几副。
+
+    与 usage_counts + group_detail 各自重算的结果完全一致（同样按 _latest_views 的顺序、
+    同样只把有份数的构筑记进明细、usage 仍按 usage_counts 的“字段出现即 +1”），
+    区别只是“每构筑命中字段”只算一次，给所有组共用，供后台快照缓存。
+    """
     config = series_naming.load_config(data_dir)
     catalog = _catalog(data_dir)
     names = _names(data_dir)
-    registry = series_naming.build_registry(catalog, config, names)
+    registry = _registry(data_dir, config, catalog, names)
+    views = _latest_views(db, now)
+    builds = [build for _player, build in views if build]
+    cards = series_naming._main_cards(db, builds)
+    deck_types = {item['fingerprint']: item['deck_type'] for item in db.execute(
+        'SELECT fingerprint,deck_type FROM stat_builds')}
+    usage, used_by = {}, {}
+    for player, build in views:
+        if not build:
+            continue
+        fields = series_naming.count_fields(cards.get(build, []), catalog, config, names,
+                                            registry)['fields']
+        for field in fields:
+            usage[field] = usage.get(field, 0) + 1
+        for field, copies in fields.items():
+            if not copies:
+                continue
+            used_by.setdefault(field, []).append(
+                dict(player=player, build=build, copies=copies,
+                     deck_type=deck_types.get(build)))
+    return dict(version=series_naming.version_for(config), generated_at=float(now),
+                views=len(views), builds=len(builds), usage=usage, used_by=used_by)
+
+
+def list_groups(db, data_dir, now, query='', limit=50, offset=0, stats=None):
+    config = series_naming.load_config(data_dir)
+    catalog = _catalog(data_dir)
+    names = _names(data_dir)
+    registry = _registry(data_dir, config, catalog, names)
     registry['exception_names'] = set(config['exception_order'])
-    usage = usage_counts(db, data_dir, now, config, catalog, names)
+    usage = (stats['usage'] if stats is not None
+             else usage_counts(db, data_dir, now, config, catalog, names))
     rows = []
     needle = (query or '').strip().lower()
     for name in registry['groups']:
@@ -165,7 +257,7 @@ def list_groups(db, data_dir, now, query='', limit=50, offset=0):
                 rows=rows[offset:offset + limit], catalog_status=catalog.get('status'))
 
 
-def group_detail(db, data_dir, now, name):
+def group_detail(db, data_dir, now, name, stats=None):
     name = (name or '').strip()
     if not name or len(name) > 60:
         raise ValueError('组名无效。')
@@ -174,11 +266,22 @@ def group_detail(db, data_dir, now, name):
         raise LookupError('group_missing')
     catalog = _catalog(data_dir)
     names = _names(data_dir)
-    registry = series_naming.build_registry(catalog, config, names)
+    registry = _registry(data_dir, config, catalog, names)
     registry['exception_names'] = set(config['exception_order'])
     entry = registry['groups'].get(name)
     if entry is None:
         raise LookupError('group_missing')
+    if stats is not None:
+        # 明细来自后台快照：不再为“查看一个组”重算全部构筑。
+        usage = stats.get('usage') or {}
+        row = _row(entry, registry, usage, names)
+        used = [dict(item) for item in (stats.get('used_by') or {}).get(name, ())]
+        used.sort(key=lambda item: -item['copies'])
+        row['builds'] = used
+        row['builds_total'] = len(used)
+        row['representative'] = entry.get('representative')
+        row['config'] = config_summary(config)
+        return row
     usage = usage_counts(db, data_dir, now, config, catalog, names)
     row = _row(entry, registry, usage, names)
     used = []
@@ -239,9 +342,12 @@ def _group_payload(payload):
     return fields
 
 
-def _validate(config, catalog, names):
+def _validate(config, catalog, names, data_dir=None):
     try:
-        registry = series_naming.build_registry(catalog, config, names)
+        # 用同一份（按指纹缓存的）注册表做校验：保存后紧接着的列表/详情直接复用，
+        # 不必为一个“能不能保存”的判断再重建一次 609 组的注册表。
+        registry = (_registry(data_dir, config, catalog, names) if data_dir is not None
+                    else series_naming.build_registry(catalog, config, names))
     except series_naming.ConfigError as exc:
         raise ValueError(str(exc))
     return registry
@@ -359,7 +465,7 @@ def update_group(db, data_dir, now, payload):
                     value = int(value.strip())
                 raw[key] = value
         config = series_naming.normalize_config(raw)
-        _validate(config, catalog, names)
+        _validate(config, catalog, names, data_dir)
         backup = save_raw(data_dir, raw)
         return dict(changed=True, backup=str(backup) if backup else None,
                     config=config_summary(config))
@@ -379,7 +485,7 @@ def update_group(db, data_dir, now, payload):
         ignored.append(name)
         raw['ignore_fields'] = sorted(set(ignored))
         config = series_naming.normalize_config(raw)
-        _validate(config, catalog, names)
+        _validate(config, catalog, names, data_dir)
         backup = save_raw(data_dir, raw)
         return dict(changed=True, name=name, deleted=True,
                     backup=str(backup) if backup else None, config=config_summary(config))
@@ -397,7 +503,7 @@ def update_group(db, data_dir, now, payload):
         if code is not None and (type(code) is not int or not 0 < code <= 4294967295):
             raise ValueError('代表卡卡号无效。')
         config = series_naming.load_config(data_dir)
-        registry = series_naming.build_registry(catalog, config, names)
+        registry = _registry(data_dir, config, catalog, names)
         members = set(registry['members'].get(name) or [])
         if code is not None and code not in members:
             raise ValueError('代表卡必须是该组的成员卡。')
@@ -415,7 +521,7 @@ def update_group(db, data_dir, now, payload):
         item['name'] = name
         raw[kind][index] = item
         config = series_naming.normalize_config(raw)
-        _validate(config, catalog, names)
+        _validate(config, catalog, names, data_dir)
         backup = save_raw(data_dir, raw)
         return dict(changed=True, name=name, representative=code,
                     backup=str(backup) if backup else None, config=config_summary(config))
@@ -437,7 +543,7 @@ def update_group(db, data_dir, now, payload):
             raw['exception_order'] = [new_name if value == before else value
                                       for value in raw['exception_order']]
         config = series_naming.normalize_config(raw)
-        _validate(config, catalog, names)
+        _validate(config, catalog, names, data_dir)
         backup = save_raw(data_dir, raw)
         rename = _queue_rename(db, data_dir, before, new_name)
         return dict(changed=True, name=new_name, backup=str(backup) if backup else None,
@@ -453,7 +559,7 @@ def update_group(db, data_dir, now, payload):
         else:
             # 由官方映射派生出来的组第一次修改：先把现有 sources 固化，避免丢成员。
             config = series_naming.load_config(data_dir)
-            registry = series_naming.build_registry(catalog, config, names)
+            registry = _registry(data_dir, config, catalog, names)
             entry = registry['groups'].get(before) or registry['groups'].get(name) or {}
             item = dict(name=name, sources=sorted(entry.get('sources') or []))
         if op == 'create' and kind is not None:
@@ -492,7 +598,7 @@ def update_group(db, data_dir, now, payload):
             raise ValueError('目标必须是 required 或 optional。')
         if kind is None:
             config = series_naming.load_config(data_dir)
-            registry = series_naming.build_registry(catalog, config, names)
+            registry = _registry(data_dir, config, catalog, names)
             entry = registry['groups'].get(before) or registry['groups'].get(name) or {}
             item = dict(name=name, sources=sorted(entry.get('sources') or []))
             raw.setdefault('groups', []).append(item)
@@ -518,7 +624,7 @@ def update_group(db, data_dir, now, payload):
         codes = _resolve_terms(data_dir, payload.get('cards'))
         if kind is None:
             config = series_naming.load_config(data_dir)
-            registry = series_naming.build_registry(catalog, config, names)
+            registry = _registry(data_dir, config, catalog, names)
             entry = registry['groups'].get(before) or registry['groups'].get(name) or {}
             item = dict(name=name, sources=sorted(entry.get('sources') or []))
             raw.setdefault('groups', []).append(item)
@@ -538,7 +644,7 @@ def update_group(db, data_dir, now, payload):
         if kind is None:
             # 由官方映射派生出来的组第一次改动时，先把现有 sources 固化，避免丢成员。
             config = series_naming.load_config(data_dir)
-            registry = series_naming.build_registry(catalog, config, names)
+            registry = _registry(data_dir, config, catalog, names)
             entry = registry['groups'].get(before) or registry['groups'].get(name) or {}
             item = dict(name=name, sources=sorted(entry.get('sources') or []))
             raw.setdefault('groups', []).append(item)
@@ -561,7 +667,7 @@ def update_group(db, data_dir, now, payload):
     else:
         raise ValueError('不支持的操作：%s' % op)
     config = series_naming.normalize_config(raw)
-    _validate(config, catalog, names)
+    _validate(config, catalog, names, data_dir)
     backup = save_raw(data_dir, raw)
     return dict(changed=True, name=name, backup=str(backup) if backup else None,
                 config=config_summary(config))

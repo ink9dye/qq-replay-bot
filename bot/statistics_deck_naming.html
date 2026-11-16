@@ -50,7 +50,10 @@ const $=id=>document.getElementById(id);let rows=[],current=null,busy=false,scop
 const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n};
 const time=t=>t?new Date(t*1000).toLocaleString('zh-CN',{hour12:false,month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
 const splitList=text=>[...new Set(String(text||'').replace(/，/g,',').split(',').map(s=>s.trim()).filter(Boolean))];
-async function api(path,options){const r=await fetch(path,Object.assign({cache:'no-store',credentials:'same-origin'},options||{}));const text=await r.text();if(!r.ok)throw Error(text||('HTTP '+r.status));return text?JSON.parse(text):null}
+const sleep=ms=>new Promise(done=>setTimeout(done,ms));
+/* query_busy 是“后台正在准备快照”，不是失败：按退避自动重试（与主统计页一致），
+   只有 combo_unavailable/其他错误才真正抛给调用方。 */
+async function api(path,options){const get=!options||!options.method||options.method==='GET';for(let attempt=0;;attempt++){const r=await fetch(path,Object.assign({cache:'no-store',credentials:'same-origin'},options||{}));const text=await r.text();if(get&&r.status===503&&attempt<20){let payload=null;try{payload=JSON.parse(text)}catch(_){}if(payload&&payload.code==='query_busy'){if(!$('panelCombo').hidden)setComboStatus('统计正在后台准备，稍候自动重试…');await sleep(Math.min(8000,1000*Math.pow(1.35,attempt)));continue}}if(!r.ok)throw Error(text||('HTTP '+r.status));return text?JSON.parse(text):null}}
 function post(path,payload){return api(path,{method:'POST',headers:{'Content-Type':'application/json','X-Deck-Naming':'1'},body:JSON.stringify(payload)})}
 function render(){const only=$('only').value;const body=$('rows');body.replaceChildren();let shown=0;
  for(const row of rows){if(only==='unknown'&&(!row.observed||row.deck_type))continue;if(only==='observed'&&!row.observed)continue;shown++;
@@ -82,7 +85,7 @@ $('tabNaming').onclick=()=>switchTab(false);$('tabCombo').onclick=()=>switchTab(
 function setComboStatus(text){$('comboStatus').textContent=text}
 async function loadGroups(reset,fresh){if(reset)groupOffset=0;const params=new URLSearchParams({limit:groupLimit,offset:groupOffset});if(fresh)params.set('_',String(Date.now()));if(groupQuery)params.set('q',groupQuery);setComboStatus('读取命名组…');try{const data=await api('/statistics/api/deck-naming/groups?'+params.toString());groups=data.rows;groupTotal=data.total;groupOffset=data.offset;
  const c=data.config;$('thPrimary').value=c.primary_threshold;$('thSecondary').value=c.secondary_threshold;$('thMax').value=c.max_fields;$('thRatio').value=c.cluster_specific_ratio;renderGroups(data);
- setComboStatus(`命名组 ${data.total} 个 · 已启用 ${data.enabled_total??groups.filter(g=>g.enabled).length} · 例外 ${data.exception_total??groups.filter(g=>g.exception).length}${data.catalog_status!=='ready'?' · 官方映射不可用':''}`)}catch(e){setComboStatus('读取失败：'+e.message)}}
+ setComboStatus(`命名组 ${data.total} 个 · 已启用 ${data.enabled_total??groups.filter(g=>g.enabled).length} · 例外 ${data.exception_total??groups.filter(g=>g.exception).length}${data.catalog_status!=='ready'?' · 官方映射不可用':''}${data.stats_generated_at?' · 使用数基于 '+time(data.stats_generated_at)+' 的统计(十分钟刷新)':''}`)}catch(e){setComboStatus('读取失败：'+e.message)}}
 function renderGroups(data){const body=$('groupRows');body.replaceChildren();$('groupEmpty').hidden=groups.length>0;
  for(const g of groups){const tr=el('tr');const name=el('td');name.append(el('span',g.name,'groupname'));if(g.exception)name.append(el('span','例外','badge warn'));if(g.ignored)name.append(el('span','忽略','badge off'));if(!g.enabled)name.append(el('span','停用','badge off'));tr.append(name);
  tr.append(el('td',String(g.cards_total)));tr.append(el('td',String(g.used_builds)));tr.append(el('td',(g.includes||[]).join('、')||'—'));

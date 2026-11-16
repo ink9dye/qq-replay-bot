@@ -23,6 +23,9 @@ CARD_METRICS_CACHE_SECONDS = 600.0
 # card-report 单次计算可达数分钟；同一时间桶内的同条件结果必须留着复用。
 CARD_REPORT_CACHE_SECONDS = 600.0
 PRECOMPUTED_ROSTER_SECONDS = 900.0
+# 组合编辑的派生统计（每组命中多少最新构筑）只用于编辑参考，十分钟粒度足够；
+# 快照由后台单 worker 重算，页面读快照，不再每次请求全量重算。
+COMBO_STATS_SECONDS = 600.0
 # 预计算默认视图的保鲜期。14 天窗口每天约 2200 局，8 小时增量约 2.4%，
 # 对百分比报表可忽略；换来默认页全天命中，不再落到几分钟的实时计算。
 PRECOMPUTED_CARD_REPORT_SECONDS = 28800.0
@@ -129,7 +132,10 @@ class StatisticsPortal:
         api_path=urlsplit(path).path
         # Cached queries own their gate: cache hits must never queue behind a cold query.
         candidate_groups=api_path=='/statistics/api/groups'
-        if api_path.startswith('/statistics/api/') and not candidate_groups and api_path not in CACHED_API_PATHS and api_path not in (
+        # 组合编辑（组列表/单组详情）改读后台快照，本身已是亚秒级：不再争全局计算锁，
+        # 否则会被 roster/card-report 的长计算堵到 8 秒超时（query_busy 的直接来源）。
+        combo_path=api_path.startswith('/statistics/api/deck-naming/groups')
+        if api_path.startswith('/statistics/api/') and not candidate_groups and not combo_path and api_path not in CACHED_API_PATHS and api_path not in (
                 '/statistics/api/devices','/statistics/api/card-search','/statistics/api/card-info',
                 '/statistics/api/small-world-cards','/statistics/api/card-options','/statistics/api/sample'):
             from .web_perf_metrics import acquire_query_lock
@@ -261,23 +267,29 @@ class StatisticsPortal:
                 limit=int(args.get('limit',['50'])[0]);offset=int(args.get('offset',['0'])[0])
             except ValueError:return self._reply(400,'分页参数无效。')
             if len(query)>60:return self._reply(400,'搜索词过长。')
-            # 配置一写（删除/加卡/阈值）就换了缓存键，避免删完立刻回读仍命中旧列表；
-            # 页面写入后的刷新会带 _ 时间戳，按完整查询串分键即可绕过旧结果。
+            snapshot,meta=self._combo_snapshot()
+            if snapshot is None:return meta
             try:
-                state=(self.database.parent/'series-naming.json').stat();config_stamp=(state.st_mtime_ns,state.st_size)
-            except OSError:config_stamp=None
-            return self._cached_query_reply(('groups',parsed.query,config_stamp), lambda db:list_groups(db,self.database.parent,float(self.clock()),query,limit,offset), ttl=60.0)
+                result=list_groups(None,self.database.parent,float(self.clock()),query,limit,offset,stats=snapshot)
+            except (sqlite3.Error,OSError):return self._reply(503,'组合数据暂时不可用，请稍后刷新。')
+            result['stats_generated_at']=snapshot.get('generated_at')
+            result['stats_state']=meta.get('state')
+            return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8',
+                               meta.get('headers'))
         if len(parts)==5 and parts[:4]==['statistics','api','deck-naming','groups']:
             from .series_naming_admin import group_detail
             from urllib.parse import unquote
+            snapshot,meta=self._combo_snapshot()
+            if snapshot is None:return meta
             try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
-                    db.row_factory=sqlite3.Row;db.execute('BEGIN')
-                    result=group_detail(db,self.database.parent,float(self.clock()),unquote(parts[4]))
-                return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
+                result=group_detail(None,self.database.parent,float(self.clock()),unquote(parts[4]),stats=snapshot)
             except LookupError:return self._reply(404,'找不到这个命名组。')
             except (sqlite3.Error,OSError):return self._reply(503,'组合数据暂时不可用，请稍后刷新。')
             except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
+            result['stats_state']=meta.get('state')
+            result['stats_generated_at']=snapshot.get('generated_at')
+            return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8',
+                               meta.get('headers'))
         if parts==['statistics','api','deck-naming']:
             from .statistics_deck_naming import detail,list_rows
             args=parse_qs(parsed.query);player=args.get('player',[''])[0]
@@ -983,6 +995,38 @@ class StatisticsPortal:
             while len(self._card_metrics_cache)>limit or (total>max_bytes and len(self._card_metrics_cache)>1):
                 oldest=min(self._card_metrics_cache,key=lambda k:self._card_metrics_cache[k][0])
                 total-=self._card_metrics_cache.pop(oldest)[2]
+
+    def _combo_snapshot(self):
+        """组合编辑的共享统计快照：算一次，组列表与单组详情都读它。
+
+        返回 (snapshot, meta)；snapshot 为 None 时 meta 就是可直接返回的响应。
+        有后台刷新时走单 worker 排队 + 磁盘 last-success，交互请求不再同步等计算；
+        进程没开后台刷新（测试/工具）时退回同步计算，结果与旧实现一致。
+        """
+        from .series_naming_admin import combo_stats
+        def compute():
+            try:
+                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
+                    db.row_factory=sqlite3.Row;db.execute('BEGIN')
+                    payload=combo_stats(db,self.database.parent,float(self.clock()))
+                return self._reply(200,json.dumps(payload,ensure_ascii=False),'application/json; charset=utf-8')
+            except (sqlite3.Error,OSError):
+                return self._reply(503,json.dumps(dict(error='组合统计暂时不可用，请稍后刷新。',
+                                                       code='combo_unavailable'),ensure_ascii=False),
+                                   'application/json; charset=utf-8')
+        if getattr(self,'_refresh',None) is None:
+            status,kind,body,extra=compute()
+            if status!=200:return None,(status,kind,body,extra)
+            return json.loads(body),dict(state='fresh',saved_at=float(self.clock()))
+        from .statistics_roster_version import snapshot_version
+        status,kind,body,extra=self._refresh.get(
+            ('combo-stats',),compute,lambda:snapshot_version(self.database),
+            COMBO_STATS_SECONDS,wait=0.0,background=True)
+        if status!=200:return None,(status,kind,body,extra)
+        data=json.loads(body)
+        refresh=data.pop('_query_refresh',None) or {}
+        return data,dict(state=refresh.get('state') or 'fresh',
+                         saved_at=refresh.get('saved_at') or 0.0,headers=extra)
 
     def _query_busy_reply(self):
         return self._reply(503,json.dumps(dict(error='统计正在计算，请稍后重试。',

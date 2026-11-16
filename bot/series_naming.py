@@ -53,8 +53,17 @@ class _IdentityDB:
         raise ValueError('unsupported_query')
 
 
+_IDENTITY_DEFAULT_DB = None
+
+
 def _identity_db():
-    return _IdentityDB(IDENTITY_DB or (Path(__file__).resolve().parents[1] / 'data' / 'bot.sqlite3'))
+    global _IDENTITY_DEFAULT_DB
+    if IDENTITY_DB:
+        return _IdentityDB(IDENTITY_DB)
+    # build_registry 按卡号调用上千次，这里不能再每次 resolve 一遍包目录。
+    if _IDENTITY_DEFAULT_DB is None:
+        _IDENTITY_DEFAULT_DB = Path(__file__).resolve().parents[1] / 'data' / 'bot.sqlite3'
+    return _IdentityDB(_IDENTITY_DEFAULT_DB)
 
 
 def _identity_codes(code):

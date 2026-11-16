@@ -4,6 +4,17 @@ import hashlib
 from pathlib import Path
 
 _cache={}
+_resolved={}
+
+
+def _cache_key(path):
+    """resolve 每次都要走一遍文件系统；同一路径的解析结果不会变，直接记住。"""
+    key=str(path)
+    hit=_resolved.get(key)
+    if hit is None:
+        hit=str(path.resolve());_resolved[key]=hit
+        if len(_resolved)>64:_resolved.pop(next(iter(_resolved)))
+    return hit
 
 
 def verify_alias(row,target):
@@ -25,7 +36,7 @@ def reference(db):
     if not path.is_file():return {},None,'exact'
     try:
         stamp=(path.stat().st_mtime_ns,path.stat().st_size)
-        key=str(path.resolve())
+        key=_cache_key(path)
         if key not in _cache or _cache[key][0]!=stamp:
             raw=path.read_bytes();value=json.loads(raw.decode('utf-8'))
             if value['version']!=1:raise ValueError('unsupported_identity_reference')
@@ -74,7 +85,7 @@ def reference_version(db):
     path=Path(database).parent/'card-equivalence.json'
     try:
         stamp=(path.stat().st_mtime_ns,path.stat().st_size)
-        key=str(path.resolve())
+        key=_cache_key(path)
         cached=_versions.get(key)
         if cached and cached[0]==stamp:return cached[1]
         value=json.loads(path.read_text(encoding='utf-8-sig'))
