@@ -238,10 +238,10 @@ def _merge_fact_rows(rows, partition):
         merged = {k: group[0][k] for k in ('digest', 'player', 'partition')}
         merged['partition'] = partition
         for field in merged_fields:
-            values = [r[field] for r in group]
+            values = [r.get(field) for r in group]
             merged[field] = 1 if 1 in values else 0 if all(v == 0 for v in values) else None
         for field in counted_fields:
-            values = [r[field] for r in group]
+            values = [r.get(field) for r in group]
             merged[field] = sum(values) if all(v is not None for v in values) else None
         if len(group) > 1 and merged['drawn'] == 1 and merged['used'] == 1 and merged['used_after_draw'] != 1:
             merged['used_after_draw'] = None
@@ -332,28 +332,52 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     needed_codes = None if not (codes or combos) else sorted({
         member for code in (*codes, *(c for combo in combos for c in combo))
         for member in identify(code)['codes']})
+    # opening 指标只关心“这张卡在不在起手”，且只有 >0 的行会被使用；组合需要 0 值
+    # 参与分母判定，不能过滤。命中部分索引 stat_card_facts_opening 时只需 4 列。
+    narrow_opening = metric == 'opening' and not combos
     # 只带本报告真正消费的列：原先多取 appeared/draw_count/use_count/appearance_count
     # 四列，93 万行要为此多转换一次、缓存也多占三成。
-    fact_fields = ('code','digest','player','partition','drawn','used','used_after_draw',
-                   'initial_count')
+    fact_fields = (('code','digest','player','partition','initial_count') if narrow_opening else
+                   ('code','digest','player','partition','drawn','used','used_after_draw',
+                    'initial_count'))
     def fact_dict(row):
         return row if isinstance(row, dict) else dict(zip(fact_fields, row))
     def read_raw_tables(selected_table="_report_selected", builds_table="_report_builds"):
         projection = (' AND code IN (' + ','.join('?' for _ in needed_codes) + ')') if needed_codes else ''
         args = needed_codes or ()
+        if narrow_opening:
+            fact_sql = ('SELECT f.code,f.digest,f.player,f.partition,1 AS initial_count '
+                        'FROM stat_card_facts f WHERE (f.digest,f.player) IN '
+                        '(SELECT digest,player FROM ' + selected_table + ') '
+                        'AND f.initial_count>0' + projection)
+        else:
+            fact_sql = ('SELECT ' + ','.join('f.' + field for field in fact_fields) +
+                        ' FROM stat_card_facts f WHERE (f.digest,f.player) IN '
+                        '(SELECT digest,player FROM ' + selected_table + ')' + projection)
         return dict(copies=[tuple(row) for row in db.execute(
             'SELECT build,partition,code,SUM(copies) copies FROM stat_build_cards '
             'WHERE build IN (SELECT build FROM ' + builds_table + ')' + projection +
             ' GROUP BY build,partition,code', args)],
-            facts=[tuple(row) for row in db.execute(
-            'SELECT ' + ','.join('f.' + field for field in fact_fields) +
-            ' FROM stat_card_facts f WHERE (f.digest,f.player) IN '
-            '(SELECT digest,player FROM ' + selected_table + ')' + projection, args)])
+            facts=[tuple(row) for row in db.execute(fact_sql, args)])
     from .statistics_report_intermediate import raw_tables
     # fact_fields 里 digest 的位置就是分桶拆分用的列：单次读到的行据此拆回各桶。
-    raw = raw_tables(db, read_raw_tables, projection=needed_codes,
+    raw = raw_tables(db, read_raw_tables, projection=(needed_codes, narrow_opening),
                      chunk_loader=read_raw_tables if needed_codes is None else None,
                      fact_digest_index=fact_fields.index('digest'))
+    # 窄读只取 initial_count>0 的行，但旧口径里同一 (digest,player) 只要有一行
+    # 是 NULL，合并结果就是“未知”并排除。这里把受影响的视角找回来（NULL 有
+    # 独立的部分索引，27 万行约 1.3 秒），逐卡从合并结果里移除。
+    view_keys = [(row['digest'], row['player']) for row in selected]
+    view_index = {key: position for position, key in enumerate(view_keys)}
+    unset_by_code_part = {}
+    if narrow_opening and view_index:
+        for code, part, digest, player in db.execute(
+                'SELECT z.code,z.partition,z.digest,z.player FROM stat_card_facts z '
+                'WHERE z.initial_count IS NULL AND (z.digest,z.player) IN '
+                '(SELECT digest,player FROM _report_selected)'):
+            position = view_index.get((digest, player))
+            if position is not None:
+                unset_by_code_part.setdefault((code, part), set()).add(position)
     copies_lookup = {}
     for build, part, code, count in raw.pop('copies'):
         copies_lookup.setdefault((code, part), {})[build] = count
@@ -386,6 +410,12 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
                     continue
                 card_rows.append(r)
         facts = _merge_fact_rows(card_rows, part)
+        if narrow_opening and unset_by_code_part:
+            suppress = set()
+            for canonical in ident['codes']:
+                suppress.update(unset_by_code_part.get((canonical, part), ()))
+            for position in suppress:
+                facts.pop(view_keys[position], None)
         copies_by_build = {}
         for canonical in ident['codes']:
             for build, copies in copies_lookup.get((canonical, part), {}).items():

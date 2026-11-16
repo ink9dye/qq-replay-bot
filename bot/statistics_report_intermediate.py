@@ -33,8 +33,8 @@ def _identity(db, projection=None, selected_table="_report_selected", builds_tab
     if len(versions) != len({row[0] for row in keys}):
         return None  # old or not yet versioned facts are never persisted
     builds = [r[0] for r in query('SELECT build FROM _report_builds ORDER BY build')]
-    # 版本号 3：事实行从 12 列缩到 8 列，旧缓存按列位 zip 会错位，必须整体作废。
-    raw = json.dumps([3,keys,versions,builds,projection],separators=(',',':')).encode()
+    # 版本号 4：事实行按指标裁剪列（opening 走 5 列部分索引），旧缓存列位不再兼容。
+    raw = json.dumps([4,keys,versions,builds,projection],separators=(',',':')).encode()
     return Path(database).parent/'query-cache/card-report.sqlite3', hashlib.sha256(raw).hexdigest()
 
 
