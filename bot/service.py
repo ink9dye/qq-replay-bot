@@ -1006,8 +1006,24 @@ class BotService:
         effective = hours if hours > 0 else 24 * 365 * 10
         try:
             link = self.share.create_stats_link(user_id, hours=effective)
-        except Exception:
-            return "统计链接暂时生成失败，请稍后再试。"
+        except Exception as exc:
+            self._log_stats_link_error(exc, 'shared_connection')
+            # A failed long-lived QQ connection must not make every later link
+            # request fail. Recover through the same Store/ShareApp operations
+            # on a short-lived connection; never replace the shared Store.
+            try:
+                with closing(Store(self.store.path, migrate=False)) as store:
+                    original = self.share
+                    recovery = ShareApp(store, original.replay_root, original.clock,
+                                        public_base_url=original.public_base_url,
+                                        bind_host=original.bind_host,
+                                        bind_port=original.bind_port,
+                                        link_hours=original.link_hours)
+                    recovery.public_url_provider = original.public_url_provider
+                    link = recovery.create_stats_link(user_id, hours=effective)
+            except Exception as recovery_error:
+                self._log_stats_link_error(recovery_error, 'fresh_connection')
+                return "统计链接暂时生成失败，请稍后再试。"
         note = "" if link["public"] else "\n还没有配置公网地址，这个链接只能在本机打开。"
         if hours <= 0:
             validity = "长期有效"
@@ -1016,6 +1032,18 @@ class BotService:
         else:
             validity = f"{hours:g} 小时内有效"
         return f"统计网页（{validity}）：{link['url']}" + note
+
+    def _log_stats_link_error(self, error, stage):
+        # Exception text can contain credentials/URLs. Record types and SQLite
+        # codes only, including ShareLinkUnavailable's chained original error.
+        chain = []
+        while error is not None and len(chain) < 4:
+            category = type(error).__name__
+            if isinstance(error, sqlite3.Error):
+                category += ':' + str(getattr(error, 'sqlite_errorcode', 'unknown'))
+            chain.append(category)
+            error = error.__cause__
+        self.write_log('统计链接生成异常 stage=' + stage + ' errors=' + '/'.join(chain))
 
     def visible_replays(self, user_id: str, player: str) -> Optional[list[dict]]:
         sub = self.store.get_subscription(user_id, player)
