@@ -171,8 +171,9 @@ def _selected_rows(db, replay_root, now, filters):
     if f.first_player is not None and type(f.first_player) is not bool:
         raise ValueError('invalid_order_filter')
     catalog = series_reference(db)
+    # 卡报不展示资格诊断：跳过两条全表 COUNT（空闲约 1.6 秒，I/O 紧张时放大数十倍）。
     basis = eligible_views(db, replay_root, now, f.internal_only, f.scope, catalog,
-                           annotate_series=bool(f.series))
+                           annotate_series=bool(f.series), with_diagnostics=False)
     # 只有筛选对手卡组/系列时才需要对手上下文；默认查询不再全表取/注解所有视角。
     opponents = {}
     if f.opponent_types or f.opponent_series:

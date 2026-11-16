@@ -123,7 +123,7 @@ def snapshot(db,now):
     return state
 
 
-def eligible_views(db,replay_root,now,internal_only=False,scope='default',series_catalog=None,player=None,check_files=True,annotate_series=True):
+def eligible_views(db,replay_root,now,internal_only=False,scope='default',series_catalog=None,player=None,check_files=True,annotate_series=True,with_diagnostics=True):
     """不聚合的动态有效视角：掉榜立即无效，重回恢复未到期事实。"""
     from .share import safe_replay_file
     from .card_series import reference,annotate,SEMANTICS
@@ -137,20 +137,23 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
         revision=db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
         population=('FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
                     'JOIN stat_current_top100 m ON m.player=v.player WHERE g.expires_at>? ')
-        # 四项诊断原来各扫一遍同样的连接（空闲约 1.3 秒，I/O 紧张时会被放大数十倍）。
-        # 合并成两次扫描：一次算榜内总数与排除数，一次算过期与榜外数。
-        in_roster=db.execute('SELECT COUNT(*),COALESCE(SUM(EXISTS(SELECT 1 FROM stat_exclusions e '
-            "WHERE e.digest=v.digest AND (e.player='' OR e.player=v.player) AND e.scope=?)),0) "
-            +population,(scope,float(now))).fetchone()
-        lifetime=db.execute('SELECT COALESCE(SUM(g.expires_at<=?),0),COALESCE(SUM(g.expires_at>? '
-            'AND NOT EXISTS(SELECT 1 FROM stat_current_top100 m WHERE m.player=v.player)),0) '
-            'FROM stat_views v JOIN stat_games g ON g.digest=v.digest',(float(now),float(now))).fetchone()
-        diagnostics=dict(
-            population='current_roster_before_optional_internal_filter',
-            current_unexpired_views=in_roster[0],
-            excluded_current_views=in_roster[1],
-            expired_views=lifetime[0],
-            unexpired_outside_roster_views=lifetime[1])
+        if with_diagnostics:
+            # 四项诊断原来各扫一遍同样的连接（空闲约 1.3 秒，I/O 紧张时会被放大数十倍）。
+            # 合并成两次扫描：一次算榜内总数与排除数，一次算过期与榜外数。
+            in_roster=db.execute('SELECT COUNT(*),COALESCE(SUM(EXISTS(SELECT 1 FROM stat_exclusions e '
+                "WHERE e.digest=v.digest AND (e.player='' OR e.player=v.player) AND e.scope=?)),0) "
+                +population,(scope,float(now))).fetchone()
+            lifetime=db.execute('SELECT COALESCE(SUM(g.expires_at<=?),0),COALESCE(SUM(g.expires_at>? '
+                'AND NOT EXISTS(SELECT 1 FROM stat_current_top100 m WHERE m.player=v.player)),0) '
+                'FROM stat_views v JOIN stat_games g ON g.digest=v.digest',(float(now),float(now))).fetchone()
+            diagnostics=dict(
+                population='current_roster_before_optional_internal_filter',
+                current_unexpired_views=in_roster[0],
+                excluded_current_views=in_roster[1],
+                expired_views=lifetime[0],
+                unexpired_outside_roster_views=lifetime[1])
+        else:
+            diagnostics = {}
         if not state['available'] and player is None and not wide_population:return dict(roster=state,classification_revision=revision,views=[],diagnostics=diagnostics,series_reference=series_reference)
         sql=('SELECT v.*,g.recorded_at,g.received_at,g.expires_at,m.rank,b.deck_type,b.classification_status,b.classification_source,b.series_status,b.main_complete,b.extra_complete,b.side_complete FROM stat_views v '
              'JOIN stat_games g ON g.digest=v.digest JOIN stat_current_top100 m ON m.player=v.player '
