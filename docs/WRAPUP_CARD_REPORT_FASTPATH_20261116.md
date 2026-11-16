@@ -8,6 +8,7 @@
 - 建了三个索引（共 246MB）并把 opening 指标改成「窄读 + NULL 抑制」；资格诊断 4 条合并为 2 条。
 - **内存无法升级（服务商限制 2GB）**，因此没有走加内存路线。
 - 新增两张 BLOB 摘要表（合计 **22.7MB**）：构筑卡表 0.85s、视角标记 1.87s，单卡冷查 **57.6s → 21.7s**（A/B），结果 SAME。
+- 15:59 重启 `ygo-collector`，入库钩子（身份索引 + 卡片摘要）在采集进程内生效；顺带补齐旧进程漏掉的 37 条身份与 16 个 digest 摘要。
 
 ## 观测数据（为什么这么改）
 
@@ -72,6 +73,23 @@
 
 `ygo-web` PID 2732531，三服务 active，8787/8788 均 200。
 
+## 入库钩子生效：重启 collector（15:59）
+
+摘要与身份两份钩子都写在 `statistics_facts.import_replay` 里，但采集进程 PID 2691371 是 10:34 起的，一直跑旧代码。15:59:20 在 `capture-status.active_observations=0`、`updated_at` 仅 6 秒新鲜时重启 `ygo-collector`：**2691371 → 2753518**，`ygo-web` 2741179、`ygo-qq` 2706023 不动，8787/8788 均 200，启动日志无 Traceback（本进程是 server-only，只发现/派发，在录会话由远程客户端继续）。
+
+**重启前后核对**
+
+| 项 | 结果 |
+|---|---|
+| 重启后入库 12 条小局 | `stat_views` 条数 == `stat_view_card_sets` 条数，所属构筑在 `stat_build_card_sets` 全部命中，**0 处不一致** |
+| 重启后收到录像 | 16:00:23 起 6 个 `.yrp`，对应 digest 摘要与身份行均已写入 |
+| 旧进程漏账（身份） | `backfill_match_identity.py` 扫出 37 条，0.6 秒补齐，抽查 10 条 **0 条**与现算不一致 |
+| 旧进程漏账（摘要） | 16 个 digest 缺视角摘要，`refresh_digest` 补 0.3 秒，**missing 0** |
+
+漏账成因：11:48 上线身份索引、14:35 上线摘要时都只重启了 `ygo-web`，采集进程仍是旧代码；这 4 小时内由采集入库的录像不会写表，查询靠「未索引回退」和「缺失键局部回退」兜底，所以只是慢、不影响口径。
+
+**遗留**：身份索引只有手工回填工具，没有定时器（摘要那套有 04:40 的 `ygobot-card-summary-backfill.timer`）。只要还有进程跑不含钩子的代码，缺口就会重新累积；建议下一轮给 `backfill_match_identity.py` 加一份每日定时（增量 37 条只需 0.6 秒，全量 3 万条 9.7 秒）。
+
 ## 回滚
 
 1. 备份目录：`/opt/ygobot/data/config-backups/card-report-fastpath-20261116/`（前端前一轮）与 `card-report-indexes-20261116/`（本轮两个 py）
@@ -79,6 +97,7 @@
 3. 如需彻底回退索引：`DROP INDEX stat_build_cards_cover; DROP INDEX stat_card_facts_opening; DROP INDEX stat_card_facts_unset;`（旧代码不依赖它们）
 4. `systemctl disable --now ygobot-card-report-precompute-force.timer`
 5. `systemctl restart ygo-web`
+6. 15:59 这次只重启了采集进程、没有改代码，**本身无需回滚**；若要撤掉入库钩子，按上面两步恢复 py 后 `systemctl restart ygo-web ygo-collector`（旧代码不读两张摘要表，可保留）。
 
 ## 未做
 
