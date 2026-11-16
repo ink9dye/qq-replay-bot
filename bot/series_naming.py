@@ -66,14 +66,11 @@ def _identity_db():
     return _IdentityDB(_IDENTITY_DEFAULT_DB)
 
 
-def _identity_codes(code):
-    from .card_identity import codes as identity_codes
-    return identity_codes(_identity_db(), int(code))
+def _identity_reference():
+    """等价表索引（卡号 → (canonical, 同类卡号)）；一次注册表构建只读一次文件。"""
+    from .card_identity import reference as identity_reference
+    return identity_reference(_identity_db())[0]
 
-
-def _identity_expand(member_codes):
-    from .card_identity import expand as identity_expand
-    return identity_expand(_identity_db(), member_codes)
 
 # 机制类/泛用分类标签：不作为卡组名字段（可配置覆盖）。
 DEFAULT_IGNORE_FIELDS = [
@@ -426,8 +423,13 @@ def build_registry(catalog, config, names=None):
         if entry['remove']:
             members[name].difference_update(entry['remove'])
     # 同名卡的不同印刷号/先行号视为同一张卡：成员按等价类闭包展开（事实层不改写）。
+    # 等价表在一次注册表构建里不会变：取一次，后面按类查表，别为每张卡重读文件。
+    identity_index = _identity_reference()
     for name in list(members):
-        members[name] = _identity_expand(members[name])
+        expanded = set()
+        for code in members[name]:
+            expanded.update(identity_index.get(int(code), (int(code), [int(code)]))[1])
+        members[name] = expanded
     # includes 是“可添加项”：不计入核心；只有核心卡在场时才补充张数。
     core_members = {name: set(codes) for name, codes in members.items()}
     # 必要性判定按等价类：同一类的不同印刷号只要求“有一个在场”。
@@ -435,7 +437,7 @@ def build_registry(catalog, config, names=None):
     for name, codes in core_members.items():
         classes = []
         for code in sorted(codes):
-            identity = frozenset(_identity_codes(code))
+            identity = frozenset(identity_index.get(int(code), (int(code), [int(code)]))[1])
             if identity not in classes:
                 classes.append(identity)
         core_classes[name] = classes
@@ -443,7 +445,9 @@ def build_registry(catalog, config, names=None):
     for name, entry in groups.items():
         if not entry['enabled'] or not entry.get('optional'):
             continue
-        optional = _identity_expand(entry['optional'])
+        optional = set()
+        for code in entry['optional']:
+            optional.update(identity_index.get(int(code), (int(code), [int(code)]))[1])
         members[name].update(optional)
         optional_groups[name] = optional
     missing = set()

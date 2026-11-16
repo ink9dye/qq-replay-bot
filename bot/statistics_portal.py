@@ -26,6 +26,9 @@ PRECOMPUTED_ROSTER_SECONDS = 900.0
 # 组合编辑的派生统计（每组命中多少最新构筑）只用于编辑参考，十分钟粒度足够；
 # 快照由后台单 worker 重算，页面读快照，不再每次请求全量重算。
 COMBO_STATS_SECONDS = 600.0
+# 卡组命名页的名单/最新构筑/未识别集合同样是十来秒的全量计算，同样改成十分钟一次的
+# 后台快照：列表与详情读快照，只有筛选和排序留在请求里。
+DECK_NAMING_STATS_SECONDS = 600.0
 # 预计算默认视图的保鲜期。14 天窗口每天约 2200 局，8 小时增量约 2.4%，
 # 对百分比报表可忽略；换来默认页全天命中，不再落到几分钟的实时计算。
 PRECOMPUTED_CARD_REPORT_SECONDS = 28800.0
@@ -294,11 +297,25 @@ class StatisticsPortal:
             from .statistics_deck_naming import detail,list_rows
             args=parse_qs(parsed.query);player=args.get('player',[''])[0]
             scope=args.get('scope',['100'])[0];query=args.get('q',[''])[0];deck_query=args.get('deck',[''])[0]
-            def run(db):
-                return detail(db,self.database.parent,float(self.clock()),player,self.replay_root) if player else list_rows(db,float(self.clock()),scope,query,self.replay_root,deck_query=deck_query)
-            try:return self._query_reply(run)
+            # 名单与最新构筑来自后台快照：请求里只做筛选、排序与单人的卡表读取，
+            # 不再抢全局计算锁，也不会因为别处正在算而返回 query_busy。
+            snapshot,meta=self._deck_naming_snapshot()
+            if snapshot is None:return meta
+            now=float(self.clock())
+            try:
+                if player:
+                    with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
+                        db.row_factory=sqlite3.Row;db.execute('BEGIN')
+                        result=detail(db,self.database.parent,now,player,self.replay_root,stats=snapshot)
+                else:
+                    result=list_rows(None,now,scope,query,self.replay_root,deck_query=deck_query,stats=snapshot)
             except LookupError:return self._reply(404,'没有找到这个玩家的有效构筑或名单记录。')
             except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
+            except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')
+            result['stats_state']=meta.get('state')
+            result['stats_generated_at']=snapshot.get('generated_at')
+            return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8',
+                               meta.get('headers'))
         if parts==['statistics','api','pt-history']:
             player=parse_qs(parsed.query).get('player',[''])[0]
             if not player.strip() or len(player)>100:return self._reply(400,'玩家名无效。')
@@ -1027,6 +1044,44 @@ class StatisticsPortal:
         refresh=data.pop('_query_refresh',None) or {}
         return data,dict(state=refresh.get('state') or 'fresh',
                          saved_at=refresh.get('saved_at') or 0.0,headers=extra)
+
+    def _deck_naming_snapshot(self):
+        """卡组命名页的共享快照（名单/最新构筑/未识别/榜外名次）。
+
+        返回 (snapshot, meta)；snapshot 为 None 时 meta 就是可直接返回的响应。
+        有后台刷新时走单 worker 排队 + 磁盘 last-success，请求里不再同步重算；
+        进程没开后台刷新（测试/工具）时退回同步计算，结果与旧实现一致。
+        """
+        from .statistics_deck_naming import snapshot as naming_snapshot
+        def compute():
+            try:
+                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
+                    db.row_factory=sqlite3.Row;db.execute('BEGIN')
+                    payload=naming_snapshot(db,self.database.parent,float(self.clock()),self.replay_root)
+                return self._reply(200,json.dumps(payload,ensure_ascii=False),'application/json; charset=utf-8')
+            except (sqlite3.Error,OSError):
+                return self._reply(503,json.dumps(dict(error='命名统计暂时不可用，请稍后刷新。',
+                                                       code='naming_unavailable'),ensure_ascii=False),
+                                   'application/json; charset=utf-8')
+        if getattr(self,'_refresh',None) is None:
+            status,kind,body,extra=compute()
+            if status!=200:return None,(status,kind,body,extra)
+            return json.loads(body),dict(state='fresh',saved_at=float(self.clock()))
+        from .statistics_roster_version import snapshot_version
+        status,kind,body,extra=self._refresh.get(
+            ('deck-naming',),compute,lambda:snapshot_version(self.database),
+            DECK_NAMING_STATS_SECONDS,wait=0.0,background=True)
+        if status!=200:return None,(status,kind,body,extra)
+        data=json.loads(body)
+        refresh=data.pop('_query_refresh',None) or {}
+        saved=refresh.get('saved_at') or 0.0
+        memo=getattr(self,'_naming_memo',None)
+        if memo is not None and memo[0]==saved:
+            data=memo[1]
+        else:
+            self._naming_memo=(saved,data)
+        return data,dict(state=refresh.get('state') or 'fresh',
+                         saved_at=saved,headers=extra)
 
     def _query_busy_reply(self):
         return self._reply(503,json.dumps(dict(error='统计正在计算，请稍后重试。',

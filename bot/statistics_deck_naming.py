@@ -7,6 +7,8 @@ from datetime import datetime, timezone, timedelta
 TOP_N = 100
 MAX_ROWS = 500
 CST = timezone(timedelta(hours=8))
+# 快照结构版本：字段一改就让旧快照失效，不必等它自然过期。
+SNAPSHOT_VERSION = 1
 
 
 def _latest_views(db, now, replay_root=None, only=None):
@@ -134,11 +136,63 @@ def _row(name, member, view, rank):
                 in_top100=bool(member))
 
 
+def _outside_ranks(db, views, names, roster, now):
+    """榜外已采集玩家的名次：先读本地名次缓存，再做一次有界查询。"""
+    outside = sorted(name for name in names if name not in roster)
+    if not outside:
+        return {}
+    from pathlib import Path
+    from .statistics_rank_scope import ranks_for
+    from .statistics_rank_cache import load as cache_load, update as cache_update
+    data_dir = Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
+    lookup = {name: (views.get(name, {}).get('source_player')
+                     or views.get(name, {}).get('player') or name)
+              for name in outside}
+    cached = cache_load(data_dir, now)
+    extra = {}
+    for name, source in lookup.items():
+        item = cached.get(source) or cached.get(source.strip()) or cached.get(name)
+        if item:
+            extra[name] = item[0]
+    fresh = ranks_for(sorted(set(lookup.values())), now)
+    if fresh:
+        cache_update(data_dir, fresh, now)
+        for name, source in lookup.items():
+            if fresh.get(source):
+                extra[name] = fresh[source]
+    return extra
+
+
+def snapshot(db, data_dir, now, replay_root=None):
+    """卡组命名页的共享快照：名单、最新构筑、未识别集合与榜外名次各算一次。
+
+    列表与详情都读它，后台单 worker 定时重算；口径与同步路径完全一致，
+    只是把“每次请求重算一遍”换成“十分钟算一次、大家共用”。
+    """
+    roster = _roster(db)
+    roster_views = _latest_views(db, now, replay_root, only=set(roster))
+    all_views = _latest_views(db, now, None, only=None)
+    unnamed = {}
+    if replay_root is not None:
+        # 未识别范围：榜内用前100 口径的视角，榜外沿用全量视角（与原实现一致）。
+        blank = {name: view for name, view in all_views.items()
+                 if name not in roster and not view['deck_type']}
+        blank.update({name: view for name, view in roster_views.items() if not view['deck_type']})
+        unnamed = _valid_build_views(db, replay_root, blank)
+    outside = _outside_ranks(db, all_views, set(roster) | set(all_views), roster, now)
+    return dict(version=SNAPSHOT_VERSION, generated_at=float(now), roster=roster,
+                roster_views=roster_views, all_views=all_views, unnamed=unnamed,
+                outside_ranks=outside)
+
+
 _LIST_CACHE = {}
 
 
-def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
-    """scope=100/200/all/unnamed；query/玩家名、deck_query/卡组名非空时跨全部已知玩家搜索。"""
+def list_rows(db, now, scope='100', query='', replay_root=None, deck_query='', stats=None):
+    """scope=100/200/all/unnamed；query/玩家名、deck_query/卡组名非空时跨全部已知玩家搜索。
+
+    stats 为 snapshot() 的结果时只做筛选与排序（毫秒级）；不传则保持原来的同步计算。
+    """
     scope = str(scope or '100')
     if scope not in ('100', '200', 'all', 'unnamed'):
         raise ValueError('范围无效。')
@@ -146,25 +200,37 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
     deck_query = (deck_query or '').strip()
     if len(query) > 128 or len(deck_query) > 128:
         raise ValueError('搜索词过长。')
-    db_path = db.execute('PRAGMA database_list').fetchone()[2] or ''
-    try:
-        from .statistics_roster_version import snapshot_version
-        stamp = snapshot_version(db_path)
-    except OSError:
-        stamp = (0, 0)
-    try:
-        revision = db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
-    except Exception:
-        revision = 0
     import time as _time
-    # 改名/重算会 +revision，新对局会改 -wal：两者都进缓存键，避免改名后 5 分钟看不到。
-    cache_key = (scope, query, deck_query, str(replay_root), stamp, revision)
-    cached = _LIST_CACHE.get(cache_key)
-    if cached is not None and _time.monotonic() - cached[0] <= 300:
-        return cached[1]
-    roster = _roster(db)
-    views = _latest_views(db, now, replay_root if scope in ('100', 'unnamed') else None,
-                          only=set(roster) if scope == '100' else None)
+    if stats is None:
+        db_path = db.execute('PRAGMA database_list').fetchone()[2] or ''
+        try:
+            from .statistics_roster_version import snapshot_version
+            stamp = snapshot_version(db_path)
+        except OSError:
+            stamp = (0, 0)
+        try:
+            revision = db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
+        except Exception:
+            revision = 0
+        # 改名/重算会 +revision，新对局会改 -wal：两者都进缓存键，避免改名后 5 分钟看不到。
+        cache_key = (scope, query, deck_query, str(replay_root), stamp, revision)
+        cached = _LIST_CACHE.get(cache_key)
+        if cached is not None and _time.monotonic() - cached[0] <= 300:
+            return cached[1]
+        roster = _roster(db)
+        views = _latest_views(db, now, replay_root if scope in ('100', 'unnamed') else None,
+                              only=set(roster) if scope == '100' else None)
+        rank_source = None
+    else:
+        cache_key = None
+        roster = stats['roster']
+        if scope == '100':
+            views = stats['roster_views']
+        elif scope == 'unnamed':
+            views = stats['unnamed']
+        else:
+            views = stats['all_views']
+        rank_source = stats.get('outside_ranks') or {}
     names = set(roster) | set(views)
     searched = bool(query or deck_query)
     if deck_query:
@@ -185,31 +251,20 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
         # 所有对局里出现过、有“有效构筑”但还没有卡组名的玩家（不限于前100），按排名排序。
         if replay_root is None:
             raise ValueError('缺少录像根目录。')
-        valid = _valid_build_views(db, replay_root,
-                                   {name: view for name, view in views.items() if not view['deck_type']})
-        names = set(valid)
+        if stats is not None:
+            # 快照里只剩“未识别且有有效构筑”的玩家。
+            names = set(views)
+        else:
+            valid = _valid_build_views(db, replay_root,
+                                       {name: view for name, view in views.items() if not view['deck_type']})
+            names = set(valid)
     outside = sorted(name for name in names if name not in roster)
     extra = {}
     if outside and (searched or scope in ('200', 'unnamed')):
-        from pathlib import Path
-        from .statistics_rank_scope import ranks_for
-        from .statistics_rank_cache import load as cache_load, update as cache_update
-        data_dir = Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
-        lookup = {name: (views.get(name, {}).get('source_player')
-                         or views.get(name, {}).get('player') or name)
-                  for name in outside}
-        cached = cache_load(data_dir, now)
-        extra = {}
-        for name, source in lookup.items():
-            item = cached.get(source) or cached.get(source.strip()) or cached.get(name)
-            if item:
-                extra[name] = item[0]
-        fresh = ranks_for(sorted(set(lookup.values())), now)
-        if fresh:
-            cache_update(data_dir, fresh, now)
-            for name, source in lookup.items():
-                if fresh.get(source):
-                    extra[name] = fresh[source]
+        if rank_source is not None:
+            extra = {name: rank_source[name] for name in outside if name in rank_source}
+        else:
+            extra = _outside_ranks(db, views, names, roster, now)
     if not searched and scope == '200':
         names = {name for name in names if name in roster or (extra.get(name) or 10 ** 6) <= 200}
     rows = []
@@ -228,9 +283,10 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query=''):
                   observed=sum(1 for r in rows if r['observed']),
                   recognized=sum(1 for r in rows if r['deck_type']),
                   rows=rows)
-    _LIST_CACHE[cache_key] = (_time.monotonic(), result)
-    if len(_LIST_CACHE) > 32:
-        _LIST_CACHE.clear()
+    if cache_key is not None:
+        _LIST_CACHE[cache_key] = (_time.monotonic(), result)
+        if len(_LIST_CACHE) > 32:
+            _LIST_CACHE.clear()
     return result
 
 
@@ -242,14 +298,25 @@ def _names(data_dir):
         return {}
 
 
-def detail(db, data_dir, now, player, replay_root=None):
-    """某个玩家最新有效构筑的卡表、当前标签与系列；榜外已采集玩家也可查。"""
+def detail(db, data_dir, now, player, replay_root=None, stats=None):
+    """某个玩家最新有效构筑的卡表、当前标签与系列；榜外已采集玩家也可查。
+
+    stats 为 snapshot() 的结果时直接取其中的视角与名次，不再为一个人重算全量。
+    """
     player = (player or '').strip()
     if not player:
         raise ValueError('player_required')
-    views = _latest_views(db, now, replay_root, only={player})
-    view = views.get(player)
-    member = db.execute('SELECT rank,player,points FROM stat_current_top100 WHERE player=?',
+    if stats is not None:
+        # 榜内玩家用前100 口径的视角，榜外沿用全量视角，与原来的分支一致。
+        if player in stats['roster']:
+            view = stats['roster_views'].get(player)
+        else:
+            view = stats['all_views'].get(player)
+    else:
+        view = _latest_views(db, now, replay_root, only={player}).get(player)
+    # 名单表里有历史遗留的尾部空格写法（如 'chatLDS '）：按去空白匹配，
+    # 否则榜内玩家会走到“榜外查名次”，既显示不出分数，还要等一次网络查询。
+    member = db.execute('SELECT rank,player,points FROM stat_current_top100 WHERE TRIM(player)=?',
                         (player,)).fetchone()
     if view is None and member is None:
         raise LookupError('not_found')
@@ -257,8 +324,10 @@ def detail(db, data_dir, now, player, replay_root=None):
         rank = member['rank']
         points = member['points']
     else:
-        from .statistics_rank_scope import ranks_for
-        rank = ranks_for([player], now).get(player)
+        rank = (stats.get('outside_ranks') or {}).get(player) if stats is not None else None
+        if rank is None:
+            from .statistics_rank_scope import ranks_for
+            rank = ranks_for([player], now).get(player)
         rank = rank if rank and rank > 0 else None
         points = None
     if view is None:
@@ -282,7 +351,9 @@ def detail(db, data_dir, now, player, replay_root=None):
         from . import series_naming as _naming
         config = _naming.load_config(data_dir)
         catalog = _naming.reference_catalog(_Path(data_dir) / 'card-series-reference.json')
-        registry = _naming.build_registry(catalog, config, names)
+        # 注册表按配置/参考/卡名指纹复用：单次详情重建 609 组在线上要 300ms+。
+        from .series_naming_admin import _registry as _cached_registry
+        registry = _cached_registry(data_dir, config, catalog, names)
         rows = _naming.field_contributors(
             [dict(code=card['code'], copies=card['copies']) for card in cards['main']],
             catalog, config, names, registry,
