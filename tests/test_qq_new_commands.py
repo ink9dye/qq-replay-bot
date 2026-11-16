@@ -18,6 +18,13 @@ class NewCommandParseTests(unittest.TestCase):
         self.assertEqual(parse_command('换备'), {'op': 'side_plan', 'player': None})
         self.assertEqual(parse_command('玩家'), {'op': 'player_profile', 'player': None})
 
+    def test_price_commands_are_offline(self):
+        for text in ('查价 决斗者之力 UTR 日文', '预定 决斗者之力 UTR 日文 160',
+                     '我的预定', '取消预定 决斗者之力 UTR 日文'):
+            with self.subTest(text=text):
+                self.assertEqual(parse_command(text),
+                                 {'op': 'error', 'message': '该功能已下线。'})
+
     def test_spaced_subscription_names(self):
         self.assertEqual(parse_command('订阅 久 远'),
                          {'op': 'subscribe', 'player': '久 远', 'rank_top': None,

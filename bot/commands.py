@@ -56,6 +56,10 @@ def parse_command(text: str) -> dict:
     if not tokens:
         return {"op": "empty"}
     head, rest = tokens[0], tokens[1:]
+    # 卡价查价/预定已封存（2026-11-16）：实现保留，入口统一回“已下线”，
+    # 不再触发集换社设备或预定流程；恢复时删掉这段短路即可。
+    if head in ("查价", "预定", "我的预定", "取消预定"):
+        return {"op": "error", "message": "该功能已下线。"}
     if head.casefold() == "ocg饼图":
         if rest:
             return {"op": "error", "message": "直接发送“OCG饼图”即可。"}
