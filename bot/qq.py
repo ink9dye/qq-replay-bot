@@ -287,7 +287,8 @@ class OneBotClient:
         async def guarded():
             return False if self.suspended or not self.connected else await callback()
         self.diagnostics.record('reply_queued', kind=kind, queued=self.outbound.waiting)
-        result = await self.outbound.submit((kind, str(receiver)), body, guarded)
+        result = await self.outbound.submit((kind, str(receiver)), body, guarded,
+                                            request=trace_id.get())
         self.diagnostics.record('reply_complete', kind=kind, success=bool(result))
         return result
 

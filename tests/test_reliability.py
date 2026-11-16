@@ -34,6 +34,24 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         await gate.submit('a', 'three', lambda: send('fresh'))
         self.assertEqual(sent[-1], ('fresh', 18))
 
+    async def test_identical_payload_from_different_requests_is_sent_each_time(self):
+        now, sent = [0], []
+
+        async def pause(seconds):
+            now[0] += seconds
+
+        async def send(name):
+            sent.append(name)
+            return True
+
+        gate = OutboundGate(0, 0, 15, clock=lambda: now[0], pause=pause)
+        self.assertTrue(await gate.submit('a', 'same', lambda: send('first'), request='r1'))
+        self.assertTrue(await gate.submit('a', 'same', lambda: send('second'), request='r2'))
+        self.assertEqual(sent, ['first', 'second'])
+        # 同一次请求里重复提交同样的结果仍然只发一次（发送重试去重保留）。
+        self.assertTrue(await gate.submit('a', 'same', lambda: send('retry'), request='r2'))
+        self.assertEqual(sent, ['first', 'second'])
+
     async def test_queue_limit_is_bounded_and_cancellation_releases_capacity(self):
         started, release = asyncio.Event(), asyncio.Event()
         async def wait():

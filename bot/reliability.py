@@ -53,12 +53,17 @@ class OutboundGate:
         self.last_sent = None
         self.destinations, self.successes = OrderedDict(), OrderedDict()
 
-    async def submit(self, destination, payload, send):
+    async def submit(self, destination, payload, send, request=None):
+        """request 标识一次用户请求：同一请求的相同结果只发一次，不同请求各回一次。
+
+        只用 payload 做键会把“两次不同提问、答案却一样”的第二条回复吞掉
+        （典型是连查几张都命中同一句“没有找到卡片”），用户只看到第一条。
+        """
         if self.waiting >= self.limit:
             return False
         self.waiting += 1
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-        key = (destination, digest)
+        key = (destination, digest) if request is None else (destination, digest, str(request))
         try:
             async with self.lock:
                 now = self.clock()
