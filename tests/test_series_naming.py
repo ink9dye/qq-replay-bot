@@ -306,6 +306,57 @@ CREATE TABLE stat_build_cards(build TEXT,partition TEXT,code INTEGER,copies INTE
             })
 
 
+class SizePrefixTests(unittest.TestCase):
+    """主卡正好 60 张时的名字前缀（2026-11-16 用户口径）。"""
+
+    def config(self, **overrides):
+        raw = dict(exceptions=[], keywords={}, ignore_fields=[], primary_threshold=5,
+                   secondary_threshold=4)
+        raw.update(overrides)
+        return series_naming.normalize_config(raw)
+
+    def named(self, total, **overrides):
+        tags = {code: ['甲'] for code in range(1, total + 1)}
+        copies = {code: 1 for code in range(1, total + 1)}
+        result = series_naming.propose(deck(copies), catalog(tags), self.config(**overrides))
+        return result
+
+    def test_sixty_main_cards_get_the_prefix(self):
+        result = self.named(60)
+        self.assertEqual(result['name'], '60甲')
+        self.assertEqual(result['basis']['size_prefix'], '60')
+        # 前缀不进字段：饼图/系列筛选只看到“甲”。
+        self.assertEqual([item['name'] for item in result['fields']], ['甲'])
+
+    def test_forty_main_cards_keep_the_plain_name(self):
+        result = self.named(40)
+        self.assertEqual(result['name'], '甲')
+        self.assertIsNone(result['basis']['size_prefix'])
+
+    def test_extra_deck_weight_does_not_trigger_the_prefix(self):
+        # 主卡 40 + 额外 15 张（折算 7.5）不能因为“40+7.5”被判成 60 张。
+        tags = {code: ['甲'] for code in range(1, 61)}
+        config = self.config()
+        result = series_naming.propose(deck({code: 1 for code in range(1, 41)}),
+                                       catalog(tags), config,
+                                       extra_cards=deck({code: 1 for code in range(41, 56)}))
+        self.assertEqual(result['basis']['size_prefix'], None)
+        self.assertEqual(result['name'], '甲')
+
+    def test_prefix_can_be_disabled_or_relabelled(self):
+        self.assertEqual(self.named(60, size_prefix_total=0)['name'], '甲')
+        self.assertEqual(self.named(60, size_prefix_label='六零')['name'], '六零甲')
+
+    def test_prefix_sits_outside_the_exception_prefix(self):
+        tags = {code: ['甲'] for code in range(1, 61)}
+        tags[900] = ['混沌']
+        config = self.config(exceptions=[dict(name='混沌', sources=[], add=[900])])
+        copies = {code: 1 for code in range(1, 60)}
+        copies[900] = 1
+        result = series_naming.propose(deck(copies), catalog(tags), config)
+        self.assertEqual(result['name'], '60混沌甲')
+
+
 if __name__ == '__main__':
     unittest.main()
 

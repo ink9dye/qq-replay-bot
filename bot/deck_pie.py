@@ -144,7 +144,10 @@ def group_names(data_dir):
     for row in (catalog.get('cards') or {}).values():
         names.update(row.get('tags') or [])
     names -= set(config.get('ignore_fields') or [])
-    result = sorted(name.strip() for name in names if len(name.strip()) >= 2)
+    # 纯数字（如 60 张主卡的名字前缀 "60"）不是系列字段，永远不升为内环大类；
+    # 只在卡组名里起区分作用（"60烙印" 与 "烙印" 两个名字，但都归到“烙印”大类）。
+    result = sorted(name.strip() for name in names
+                    if len(name.strip()) >= 2 and not name.strip().isdigit())
     _CACHE[key] = (stamp, result)
     return result
 

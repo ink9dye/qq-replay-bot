@@ -65,6 +65,8 @@ def config_summary(config):
                 cluster_specific_ratio=config['cluster_specific_ratio'],
                 exception_order=list(config['exception_order']),
                 exception_position=config['exception_position'],
+                size_prefix_total=config.get('size_prefix_total'),
+                size_prefix_label=config.get('size_prefix_label'),
                 config_hash=config['config_hash'],
                 version=series_naming.version_for(config))
 

@@ -77,5 +77,33 @@ class DeckPieTests(unittest.TestCase):
         self.assertEqual(len(colors), len(set(colors)))
 
 
+class SizePrefixPieTests(unittest.TestCase):
+    """60 张主卡的名字前缀「60」只是名字，不能变成内环大类。"""
+
+    def test_sixty_and_plain_names_stay_two_outer_slices(self):
+        rows = dist([('60烙印', 4), ('烙印', 3), ('烙印甲', 2), ('60烙印甲', 1)])
+        pie = deck_pie.layers(rows, ['烙印'])
+        inner = {item['name']: item for item in pie['inner']}
+        self.assertEqual(set(inner), {'烙印'})
+        self.assertEqual(inner['烙印']['players'], 10)        # 60 张与非 60 张仍归同一大类
+        outer = sorted(item['name'] for item in pie['outer'])
+        self.assertEqual(outer, ['60烙印', '60烙印甲', '烙印', '烙印甲'])  # 外环是不同卡组
+
+    def test_numeric_group_names_are_not_fields(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'card-series-reference.json').write_text(json.dumps(dict(
+                version=1,
+                semantics='contains_official_series_in_observed_main_or_extra',
+                cards={'1': dict(tags=['烙印'], complete=True),
+                       '2': dict(tags=['60'], complete=True)})), encoding='utf-8')
+            groups = deck_pie.group_names(root)
+        self.assertIn('烙印', groups)
+        self.assertNotIn('60', groups)
+
+
 if __name__ == '__main__':
     unittest.main()

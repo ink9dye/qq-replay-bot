@@ -133,6 +133,10 @@ DEFAULT_CONFIG = {
     'require_main_complete': False,   # 主卡不完整仍按已观测部分命名（记 partial 标记）
     'min_main_copies': 20,            # 主卡张数低于此值不命名
     'joiner': '',
+    # 主卡正好 60 张的构筑加名字前缀（2026-11-16 用户确认）：60 张与非 60 张必须区分成
+    # 两个卡组名。前缀只进名字，不进字段/系列，也不是饼图大类（见 deck_pie.group_names）。
+    'size_prefix_total': 60,          # 0 = 关闭
+    'size_prefix_label': '60',        # 空串 = 用张数本身
 }
 
 GROUP_KEYS = ('name', 'small_name', 'sources', 'add', 'remove', 'optional', 'keywords', 'enabled',
@@ -237,6 +241,10 @@ def normalize_config(raw=None):
         raise ConfigError('exception_position 只能是 prefix 或 suffix')
     if not isinstance(config['joiner'], str) or len(config['joiner']) > 4:
         raise ConfigError('joiner 必须是最多 4 个字符的字符串')
+    _number(config['size_prefix_total'], 'size_prefix_total', 0, 99)
+    if not isinstance(config['size_prefix_label'], str) or len(config['size_prefix_label'].strip()) > 8:
+        raise ConfigError('size_prefix_label 必须是最多 8 个字符的字符串')
+    config['size_prefix_label'] = config['size_prefix_label'].strip()
     if (not isinstance(config['ignore_fields'], list)
             or any(not isinstance(item, str) or not item for item in config['ignore_fields'])):
         raise ConfigError('ignore_fields 必须是字符串列表')
@@ -675,7 +683,26 @@ def select_fields(counts, config, registry=None, mandatory=None):
     return result
 
 
-def compose_name(selected, exceptions, config, qualified=None, mandatory=None):
+def size_prefix(config, size_total):
+    """主卡张数正好命中 size_prefix_total 时的名字前缀（如 "60"），否则 None。
+
+    它只是名字前缀：不进字段列表、不进 stat_build_series，也不参与饼图大类合成
+    （deck_pie.group_names 会把纯数字排除在字段之外），所以不会出现「60」这个大类，
+    但 "60烙印" 与 "烙印" 是两个不同的卡组名，各自成片、各自统计。
+    """
+    target = int(config.get('size_prefix_total') or 0)
+    if not target or size_total is None:
+        return None
+    try:
+        total = int(size_total)
+    except (TypeError, ValueError):
+        return None
+    if total != target:
+        return None
+    return str(config.get('size_prefix_label') or target)
+
+
+def compose_name(selected, exceptions, config, qualified=None, mandatory=None, size_total=None):
     """普通字段按门槛/数量选取；必要卡齐全的显式组合始终保留。"""
     qualified = set(qualified or ())
     mandatory = set(mandatory or ())
@@ -712,12 +739,16 @@ def compose_name(selected, exceptions, config, qualified=None, mandatory=None):
         parts = exception_names + field_names
     else:
         parts = field_names + exception_names
+    prefix = size_prefix(config, size_total)
+    if prefix:
+        # 尺寸前缀永远在最外层：60混沌烙印 / 60烙印。
+        parts = [prefix] + parts
     name = config['joiner'].join(parts)
     if not name or len(name) > 120:
         return None, dict(reason='name_too_long', fields=fields, primary=primary,
-                          secondaries=secondaries, exceptions=exception_names)
+                          secondaries=secondaries, exceptions=exception_names, size_prefix=prefix)
     return name, dict(reason='ok', fields=ordered, primary=primary,
-                      secondaries=secondaries, exceptions=exception_names)
+                      secondaries=secondaries, exceptions=exception_names, size_prefix=prefix)
 
 
 def field_contributors(cards, catalog, config, names=None, registry=None, extra_cards=None, extra_weight=0.5):
@@ -779,7 +810,11 @@ def propose(cards, catalog, config, names=None, main_complete=True, registry=Non
                      for field in qualified}
         mandatory = {small_names.get(field, field) if not optional_counts.get(field) else field
                      for field in mandatory}
-    name, basis = compose_name(selected, naming_exceptions, config, qualified, mandatory)
+    # 尺寸前缀按“主卡实际张数”判定：counted['total'] 含额外卡折算(×0.5)，
+    # 60 张主卡 + 15 张额外会算成 67.5，这里必须用主卡自己的份数。
+    main_total = sum(int(card['copies']) for card in cards if int(card['copies']) > 0)
+    name, basis = compose_name(selected, naming_exceptions, config, qualified, mandatory,
+                               size_total=main_total)
     total = counted['total']
     coverage = (basis.get('primary')[1] / total) if basis.get('primary') and total else 0.0
     return dict(name=name, basis=basis,
