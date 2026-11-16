@@ -220,7 +220,7 @@ def message(payload):
     popular = payload.get('popular_matchups')
     if popular is not None:
         popular_rows = popular.get('rows') or []
-        lines.append('前百饼图占比最高的%d个具体卡组（使用后）：' % len(popular_rows))
+        lines.append('对前百饼图占比最高的%d个具体卡组（使用后）：' % len(popular_rows))
         for index, row in enumerate(popular_rows, 1):
             prefix = '%d. %s（饼图占比%.1f%%，%d人）' % (
                 index, row['deck_type'], row['share'], row['players'])

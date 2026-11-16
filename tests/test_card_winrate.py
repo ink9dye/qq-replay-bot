@@ -119,7 +119,7 @@ class CardWinrateMessageTests(unittest.TestCase):
         self.assertIsNone(empty['rate'])
         data = dict(payload([]), popular_matchups=result)
         text = message(data)
-        self.assertIn('前百饼图占比最高的2个具体卡组', text)
+        self.assertIn('对前百饼图占比最高的2个具体卡组', text)
         self.assertIn('热门混轴（饼图占比40.0%，20人） 33.3%', text)
         self.assertIn('3局）（样本少）', text)
         self.assertIn('无使用样本（饼图占比20.0%，10人）：暂无有效样本', text)

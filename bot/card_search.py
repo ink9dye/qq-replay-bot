@@ -490,7 +490,7 @@ class CardSearch:
             raise ValueError("missing results")
         rows = [r for r in rows if isinstance(r, dict) and str(r.get("id", "")).isdigit()]
         if not rows:
-            return "没有找到卡片，请换卡名片段、多关键词或卡片密码；外号可在 data/card_aliases.json 中补充。"
+            return "没有找到卡片，请换卡名片段、多关键词或卡密。"
         if action != "next":
             matches = [r for r in rows if normalize(query) in {
                 normalize(r.get(k, "")) for k in ("id", "cid", "cn_name", "sc_name", "md_name", "nwbbs_n", "cnocg_n", "jp_name", "en_name")
