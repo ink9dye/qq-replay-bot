@@ -15,7 +15,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .card_search import card_name
-from .card_statistics import Filters, win_rate, deck_matches
+from .card_statistics import Filters, win_rate, deck_matches, fraction
 from .card_identity import facts as identity_facts, identity, reference as identity_reference
 from .card_series import annotate, reference as series_reference
 from .statistics_card_names import index
@@ -28,6 +28,7 @@ PARTITIONS = ('auto', 'main', 'side', 'extra')
 PHASES = ('main_first', 'main_second', 'side_first', 'side_second')
 EXTRA_TYPE_BITS = 0x40 | 0x2000 | 0x800000 | 0x4000000
 MAX_CARDS = 100
+MAX_COMBO_DEFS = 99
 MAX_ROWS = 500
 
 
@@ -84,8 +85,8 @@ def parse_combos(values):
                 raise ValueError('组合卡号无效。')
             codes.append(int(part))
         combos.append(tuple(dict.fromkeys(codes)))
-    if len(combos) > 4:
-        raise ValueError('一次最多设置 4 个组合。')
+    if len(combos) > MAX_COMBO_DEFS:
+        raise ValueError('一次最多设置 %d 个组合。' % MAX_COMBO_DEFS)
     return tuple(combos)
 
 
@@ -214,8 +215,8 @@ def _merge_fact_rows(rows, partition):
     绝大多数 (digest,player) 只有一行事实：直接复制并改写 partition，不再走逐字段合并，
     合并结果与逐字段路径相同（单行时 1/0/None 的判定退化为原值）。
     """
-    merged_fields = ('drawn', 'used', 'used_after_draw', 'appeared')
-    counted_fields = ('draw_count', 'initial_count', 'use_count', 'appearance_count')
+    merged_fields = ('drawn', 'used', 'used_after_draw')
+    counted_fields = ('initial_count',)
     result = {}
     duplicated = False
     for row in rows:
@@ -331,8 +332,10 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     needed_codes = None if not (codes or combos) else sorted({
         member for code in (*codes, *(c for combo in combos for c in combo))
         for member in identify(code)['codes']})
+    # 只带本报告真正消费的列：原先多取 appeared/draw_count/use_count/appearance_count
+    # 四列，93 万行要为此多转换一次、缓存也多占三成。
     fact_fields = ('code','digest','player','partition','drawn','used','used_after_draw',
-                   'appeared','draw_count','initial_count','use_count','appearance_count')
+                   'initial_count')
     def fact_dict(row):
         return row if isinstance(row, dict) else dict(zip(fact_fields, row))
     def read_raw_tables(selected_table="_report_selected", builds_table="_report_builds"):
@@ -388,36 +391,48 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
             for build, copies in copies_lookup.get((canonical, part), {}).items():
                 copies_by_build[build] = copies_by_build.get(build, 0) + copies
         carried_rows = [row for build in copies_by_build for row in rows_by_build.get(build, ())]
-        if metric == 'carried':
-            pool = carried_rows
-        else:
-            pool = []
-            for row in carried_rows:
+        # 原来先按指标拼一个 pool 列表，再交给 win_rate 扫四遍；每张卡都重复一次，
+        # 全表报告累计约 70 万行 × 4 遍。这里一趟同时算人数与胜负平。
+        wins=losses=draws=unknown=0
+        people=set()
+        for row in carried_rows:
+            people.add(row['player'])
+            if metric != 'carried':
                 fact = facts.get((row['digest'], row['player']))
                 if not fact:
                     continue
-                if metric == 'drawn' and fact.get('drawn') == 1:
-                    pool.append(row)
-                elif metric == 'opening' and (fact.get('initial_count') or 0) > 0:
-                    pool.append(row)
-        rate = win_rate(pool)
-        games = rate['denominator']
+                if metric == 'drawn':
+                    if fact.get('drawn') != 1:
+                        continue
+                elif (fact.get('initial_count') or 0) <= 0:
+                    continue
+            outcome = row['outcome']
+            if outcome == 'win':
+                wins += 1
+            elif outcome == 'loss':
+                losses += 1
+            elif outcome == 'draw':
+                draws += 1
+            else:
+                unknown += 1
+        games = wins + losses + draws
         if not games or games < min_games:
             continue
         if base['denominator'] and Decimal(games) * 100 < threshold * base['denominator']:
             continue
+        rate = fraction(wins, games, unknown)
         rows.append(dict(
             code=code,
             name=_card_label(code, names),
             partition=part,
-            people=len({row['player'] for row in carried_rows}),
+            people=len(people),
             games=games,
-            wins=rate['wins'],
-            losses=rate['losses'],
-            draws=rate['draws'],
-            unknown=len(pool) - games,
+            wins=wins,
+            losses=losses,
+            draws=draws,
+            unknown=unknown,
             rate=rate['percentage'],
-            interval=interval(rate['wins'], games),
+            interval=interval(wins, games),
             sample_percentage=100 * games / base['denominator'] if base['denominator'] else None,
         ))
 

@@ -20,8 +20,12 @@ QUERY_WAIT_SECONDS=8.0
 QUERY_CACHE_MAX_BYTES = 8 * 1024 * 1024
 CARD_SAMPLES_LIMIT = 200
 CARD_METRICS_CACHE_SECONDS = 600.0
+# card-report 单次计算可达数分钟；同一时间桶内的同条件结果必须留着复用。
+CARD_REPORT_CACHE_SECONDS = 600.0
 PRECOMPUTED_ROSTER_SECONDS = 900.0
-PRECOMPUTED_CARD_REPORT_SECONDS = 3600.0
+# 预计算默认视图的保鲜期。14 天窗口每天约 2200 局，8 小时增量约 2.4%，
+# 对百分比报表可忽略；换来默认页全天命中，不再落到几分钟的实时计算。
+PRECOMPUTED_CARD_REPORT_SECONDS = 28800.0
 CARD_REPORT_PRECOMPUTED_SCOPES = (('100', '100'), ('200', '200'))
 CARD_REPORT_PRECOMPUTED_PHASES = ('main_first', 'main_second', 'side_first', 'side_second')
 PRECOMPUTED_MATRIX_SECONDS = 1800.0
@@ -489,7 +493,7 @@ class StatisticsPortal:
                     min_games=args.get('min',['0'])[0],sort=args.get('sort',['people'])[0],
                     partition=args.get('partition',['auto'])[0],limit=args.get('limit',['500'])[0],
                     exclude=args.get('exclude',[]),phases=args.get('phase',[]),phase_none=args.get('phase_none',['0'])[0]=='1',
-                    combos=args.get('combo',[]))))
+                    combos=args.get('combo',[]))),ttl=CARD_REPORT_CACHE_SECONDS)
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
         if parts in (['statistics','cards'],['statistics','matrix']):

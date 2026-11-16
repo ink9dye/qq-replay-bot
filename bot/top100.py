@@ -18,7 +18,14 @@ import threading
 _ALIVE_CACHE = {}
 _ALIVE_FILES = {'at': 0.0, 'paths': None}
 _ALIVE_TTL = 60.0
+# 存活判定是文件还在不在：文件在就信任久一点；判定为不在只信任 60 秒，
+# 否则录像文件比库行晚到时会被人为排除半小时。
+_ALIVE_VERDICT_TTL = 1800.0
 _ALIVE_LOCK = threading.Lock()
+
+
+def _alive_verdict_ttl(ok):
+    return _ALIVE_VERDICT_TTL if ok else _ALIVE_TTL
 
 SOURCE='https://sapi.moecube.com:444/ygopro/arena/users?o=pt'
 REFRESH_SECONDS=120
@@ -130,15 +137,20 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
         revision=db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
         population=('FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
                     'JOIN stat_current_top100 m ON m.player=v.player WHERE g.expires_at>? ')
+        # 四项诊断原来各扫一遍同样的连接（空闲约 1.3 秒，I/O 紧张时会被放大数十倍）。
+        # 合并成两次扫描：一次算榜内总数与排除数，一次算过期与榜外数。
+        in_roster=db.execute('SELECT COUNT(*),COALESCE(SUM(EXISTS(SELECT 1 FROM stat_exclusions e '
+            "WHERE e.digest=v.digest AND (e.player='' OR e.player=v.player) AND e.scope=?)),0) "
+            +population,(scope,float(now))).fetchone()
+        lifetime=db.execute('SELECT COALESCE(SUM(g.expires_at<=?),0),COALESCE(SUM(g.expires_at>? '
+            'AND NOT EXISTS(SELECT 1 FROM stat_current_top100 m WHERE m.player=v.player)),0) '
+            'FROM stat_views v JOIN stat_games g ON g.digest=v.digest',(float(now),float(now))).fetchone()
         diagnostics=dict(
             population='current_roster_before_optional_internal_filter',
-            current_unexpired_views=db.execute('SELECT COUNT(*) '+population,(float(now),)).fetchone()[0],
-            excluded_current_views=db.execute('SELECT COUNT(*) '+population+
-                "AND EXISTS(SELECT 1 FROM stat_exclusions e WHERE e.digest=v.digest AND (e.player='' OR e.player=v.player) AND e.scope=?)",
-                (float(now),scope)).fetchone()[0],
-            expired_views=db.execute('SELECT COUNT(*) FROM stat_views v JOIN stat_games g ON g.digest=v.digest WHERE g.expires_at<=?',(float(now),)).fetchone()[0],
-            unexpired_outside_roster_views=db.execute('SELECT COUNT(*) FROM stat_views v JOIN stat_games g ON g.digest=v.digest WHERE g.expires_at>? '
-                'AND NOT EXISTS(SELECT 1 FROM stat_current_top100 m WHERE m.player=v.player)',(float(now),)).fetchone()[0])
+            current_unexpired_views=in_roster[0],
+            excluded_current_views=in_roster[1],
+            expired_views=lifetime[0],
+            unexpired_outside_roster_views=lifetime[1])
         if not state['available'] and player is None and not wide_population:return dict(roster=state,classification_revision=revision,views=[],diagnostics=diagnostics,series_reference=series_reference)
         sql=('SELECT v.*,g.recorded_at,g.received_at,g.expires_at,m.rank,b.deck_type,b.classification_status,b.classification_source,b.series_status,b.main_complete,b.extra_complete,b.side_complete FROM stat_views v '
              'JOIN stat_games g ON g.digest=v.digest JOIN stat_current_top100 m ON m.player=v.player '
@@ -185,7 +197,7 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
                 digest=row['digest']
                 if digest in alive:continue
                 hit=cached_alive.get(digest)
-                if hit is not None and 0.0<=now_mono-hit[0]<=_ALIVE_TTL:
+                if hit is not None and 0.0<=now_mono-hit[0]<=_alive_verdict_ttl(hit[1]):
                     source_hits+=1;alive[digest]=hit[1];continue
                 source_misses+=1
                 ok=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
