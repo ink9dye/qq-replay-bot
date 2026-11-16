@@ -342,7 +342,85 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
                     'initial_count'))
     def fact_dict(row):
         return row if isinstance(row, dict) else dict(zip(fact_fields, row))
+    view_keys = [(row['digest'], row['player']) for row in selected]
+    view_index = {key: position for position, key in enumerate(view_keys)}
+    summary_unset = {}
+    summary_used = [False]
+
+    def _chunks(items, size=300):
+        for start in range(0, len(items), size):
+            yield items[start:start + size]
+
+    def _summary_tables(selected_table, builds_table):
+        """从 BLOB 摘要读；任何覆盖缺口都整体回退原表，避免混用两套口径。"""
+        from .statistics_card_summary import load_builds, load_views
+        builds = [r[0] for r in db.execute('SELECT build FROM ' + builds_table)]
+        copies = []
+        seen_builds = set()
+        for chunk in _chunks(builds, 400):
+            for item in load_builds(db, chunk):
+                copies.append(item)
+                seen_builds.add(item[0])
+        missing_builds = set(builds) - seen_builds
+        for chunk in _chunks(list(missing_builds), 300):
+            marks = ','.join('?' for _ in chunk)
+            copies.extend(tuple(row) for row in db.execute(
+                'SELECT build,partition,code,SUM(copies) copies FROM stat_build_cards '
+                'WHERE build IN (%s) GROUP BY build,partition,code' % marks, chunk))
+        keys = [(r[0], r[1]) for r in db.execute('SELECT digest,player FROM ' + selected_table)]
+        facts = []
+        seen_views = set()
+        for chunk in _chunks(keys):
+            for digest, player, part, code, drawn, used, uad, initial in load_views(db, chunk):
+                seen_views.add((digest, player))
+                if initial is None:
+                    position = view_index.get((digest, player))
+                    if position is not None:
+                        summary_unset.setdefault((code, part), set()).add(position)
+                if narrow_opening:
+                    if initial is None or initial <= 0:
+                        continue
+                    facts.append((code, digest, player, part, 1))
+                else:
+                    facts.append((code, digest, player, part, drawn, used, uad, initial))
+        missing_views = set(keys) - seen_views
+        for chunk in _chunks(list(missing_views), 300):
+            marks = ','.join('(?,?)' for _ in chunk)
+            args = [value for key in chunk for value in key]
+            code_filter = ''
+            if needed_codes is not None:
+                code_filter = ' AND f.code IN (' + ','.join('?' for _ in needed_codes) + ')'
+                args += list(needed_codes)
+            if narrow_opening:
+                fact_sql = ('SELECT f.code,f.digest,f.player,f.partition,1 AS initial_count '
+                            'FROM stat_card_facts f WHERE (f.digest,f.player) IN (' + marks + ') '
+                            'AND f.initial_count>0' + code_filter)
+            else:
+                fact_sql = ('SELECT ' + ','.join('f.' + field for field in fact_fields) +
+                            ' FROM stat_card_facts f WHERE (f.digest,f.player) IN (' + marks + ')' + code_filter)
+            facts.extend(tuple(row) for row in db.execute(fact_sql, args))
+            if narrow_opening:
+                null_args = [value for key in chunk for value in key]
+                for code, part, digest, player in db.execute(
+                        'SELECT z.code,z.partition,z.digest,z.player FROM stat_card_facts z '
+                        'WHERE z.initial_count IS NULL AND (z.digest,z.player) IN (' + marks + ')',
+                        null_args):
+                    position = view_index.get((digest, player))
+                    if position is not None:
+                        summary_unset.setdefault((code, part), set()).add(position)
+        if needed_codes is not None:
+            wanted = set(needed_codes)
+            facts = [row for row in facts if row[0] in wanted]
+        return copies, facts
+
     def read_raw_tables(selected_table="_report_selected", builds_table="_report_builds"):
+        try:
+            got = _summary_tables(selected_table, builds_table)
+        except Exception:
+            got = None
+        if got is not None:
+            summary_used[0] = True
+            return dict(copies=got[0], facts=got[1])
         projection = (' AND code IN (' + ','.join('?' for _ in needed_codes) + ')') if needed_codes else ''
         args = needed_codes or ()
         if narrow_opening:
@@ -365,19 +443,20 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
                      chunk_loader=read_raw_tables if needed_codes is None else None,
                      fact_digest_index=fact_fields.index('digest'))
     # 窄读只取 initial_count>0 的行，但旧口径里同一 (digest,player) 只要有一行
-    # 是 NULL，合并结果就是“未知”并排除。这里把受影响的视角找回来（NULL 有
-    # 独立的部分索引，27 万行约 1.3 秒），逐卡从合并结果里移除。
-    view_keys = [(row['digest'], row['player']) for row in selected]
-    view_index = {key: position for position, key in enumerate(view_keys)}
-    unset_by_code_part = {}
-    if narrow_opening and view_index:
-        for code, part, digest, player in db.execute(
-                'SELECT z.code,z.partition,z.digest,z.player FROM stat_card_facts z '
-                'WHERE z.initial_count IS NULL AND (z.digest,z.player) IN '
-                '(SELECT digest,player FROM _report_selected)'):
-            position = view_index.get((digest, player))
-            if position is not None:
-                unset_by_code_part.setdefault((code, part), set()).add(position)
+    # 是 NULL，合并结果就是“未知”并排除。摘要路径已在解码时顺手收集；回退路径
+    # 仍查 NULL 部分索引（27 万行约 1.3 秒）。
+    if summary_used[0]:
+        unset_by_code_part = summary_unset
+    else:
+        unset_by_code_part = {}
+        if narrow_opening and view_index:
+            for code, part, digest, player in db.execute(
+                    'SELECT z.code,z.partition,z.digest,z.player FROM stat_card_facts z '
+                    'WHERE z.initial_count IS NULL AND (z.digest,z.player) IN '
+                    '(SELECT digest,player FROM _report_selected)'):
+                position = view_index.get((digest, player))
+                if position is not None:
+                    unset_by_code_part.setdefault((code, part), set()).add(position)
     copies_lookup = {}
     for build, part, code, count in raw.pop('copies'):
         copies_lookup.setdefault((code, part), {})[build] = count

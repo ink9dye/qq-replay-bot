@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import time
 from collections import Counter
 from pathlib import Path
@@ -84,6 +85,10 @@ END;
 def initialize(db):
     db.execute('PRAGMA foreign_keys=ON')
     db.executescript(SCHEMA)
+    from .statistics_match_index import initialize as initialize_match_identity
+    initialize_match_identity(db)
+    from .statistics_card_summary import initialize as initialize_card_summary
+    initialize_card_summary(db)
     db.commit()
 
 
@@ -287,6 +292,7 @@ def import_replay(db, replay, path, report=None, now=None):
                         new_report_version, digest, name))
     if existing is None or version > int(existing['report_version'] or 0):
         db.execute('UPDATE stat_games SET report_version=? WHERE digest=?', (version, digest))
+    wrote_evidence = False
     if report is not None and (existing is None or version >= existing['report_version']):
         payload = {key: report.get(key) for key in ('winner', 'first_player', 'initiative_chooser',
                    'result_source', 'result_conflict', 'inference_rule', 'match_evidence', 'version')}
@@ -296,14 +302,58 @@ def import_replay(db, replay, path, report=None, now=None):
                 'game_no', 'session_id', 'previous_game', 'association', 'captured_from_start')}
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         kind = 'analysis:' + hashlib.sha256(encoded.encode()).hexdigest()
-        db.execute('INSERT OR IGNORE INTO stat_evidence VALUES(?,?,?,?)',
-                   (digest, kind, report.get('result_source') or 'unknown', encoded))
+        wrote_evidence = db.execute('INSERT OR IGNORE INTO stat_evidence VALUES(?,?,?,?)',
+                   (digest, kind, report.get('result_source') or 'unknown', encoded)).rowcount > 0
     record_upload_session(db, replay['id'], digest, report)
+    try:
+        from .statistics_match_index import indexed, refresh
+        if wrote_evidence or not indexed(db, digest):
+            refresh(db, [digest])
+    except (sqlite3.Error, OSError):
+        # 身份索引失败不回滚录像事实；未索引的 digest 查询时仍走原推导。
+        pass
+    _name_imported_builds(db, digest, now)
+    # 卡片报表的紧凑摘要：入库即刷新，缺失时报表自动回退原表。
+    try:
+        from .statistics_card_summary import refresh_build, refresh_digest
+        for build in [r[0] for r in db.execute('SELECT DISTINCT build FROM stat_views WHERE digest=?', (digest,))]:
+            refresh_build(db, build, now)
+        refresh_digest(db, digest, now)
+    except sqlite3.Error:
+        pass
     # 未变行不写事实页；revision 仍按既有契约每次真实导入推进，供报表缓存失效。
     changed = db.total_changes > start_changes
     db.execute('INSERT INTO stat_fact_revisions VALUES(?,1) ON CONFLICT(digest) '
                'DO UPDATE SET revision=revision+1', (digest,))
     return changed
+
+
+def _name_imported_builds(db, digest, now):
+    """Every ingest path names only this replay's pending builds, in its transaction."""
+    import logging
+    import sqlite3
+    from .card_series import reference
+    from .series_naming import load_config, version_for, _filter_pending, plan, apply_plan
+    database = next((row[2] for row in db.execute('PRAGMA database_list') if row[1] == 'main'), '')
+    if not database:
+        return
+    # Isolate naming failures so valid game evidence is still committed. Pending
+    # versions remain untouched and can be retried by a later import/full sync.
+    db.execute('SAVEPOINT imported_build_names')
+    try:
+        catalog = reference(db)
+        if catalog.get('status') == 'ready':
+            config = load_config(Path(database).parent)
+            builds = [row[0] for row in db.execute('SELECT DISTINCT build FROM stat_views WHERE digest=?', (digest,))]
+            pending = _filter_pending(db, builds, version_for(config), config['respect_manual'])
+            if pending:
+                result = plan(db, now, config, catalog=catalog, builds=pending)
+                apply_plan(db, result['rows'], config, commit=False)
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        db.execute('ROLLBACK TO imported_build_names')
+        logging.getLogger(__name__).exception('Imported build naming deferred for %s', digest[:16])
+    finally:
+        db.execute('RELEASE imported_build_names')
 
 
 def visible_games(db, replay_root, now):
