@@ -204,8 +204,8 @@ def message(payload):
     lines = ["对局胜率：%s" % player]
     basis = payload.get('basis_build') or {}
     if basis:
-        lines.append("基准：最新构筑 %s（构筑指纹 %s）；与当前构筑录像范围一致。" % (
-            basis.get('deck_type') or '未识别', str(basis.get('build') or '')[:16]))
+        lines.append("基准：最新构筑 %s；与当前构筑录像范围一致。" % (
+            basis.get('deck_type') or '未识别'))
     total = payload.get("total") or {}
     if total.get("games"):
         mark = "（样本少）" if total.get("low_sample") else ""
