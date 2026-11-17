@@ -43,10 +43,17 @@ POPULAR = [dict(deck_type='卡组A', players=10, share=50.0),
 def compute_rows(tmp, rows=ROWS, opponents=OPPONENTS, popular=POPULAR):
     path = Path(tmp) / 'stats.db'
     sqlite3.connect(path).close()
-    with patch('bot.top100.eligible_views', return_value=dict(views=rows)), \
+    detail = (dict(selected=dict(digest='d3', build='latest-build'),
+                   person=dict(deck_type='最新卡组'),
+                   matches=[dict(item, game_no=item['observed_game_no'],
+                                 session_id=item['observed_session_id']) for item in rows])
+              if rows else None)
+    with patch('bot.statistics_build_detail.query', return_value=detail) as build_query, \
          patch('bot.card_statistics._opponent_rows', return_value=opponents), \
          patch('bot.card_winrate._popular_decks', return_value=popular):
-        return _compute(path, tmp, 0, '甲')
+        result = _compute(path, tmp, 0, '甲')
+        assert build_query.call_args.kwargs == dict(scope='build')
+        return result
 
 
 class GameWinrateComputeTests(unittest.TestCase):
@@ -129,6 +136,8 @@ class GameWinrateMessageTests(unittest.TestCase):
             result = compute_rows(tmp)
             text = message(result)
         self.assertIn('对局胜率：甲', text)
+        self.assertIn('基准：最新构筑 最新卡组（构筑指纹 latest-build）', text)
+        self.assertIn('最新构筑对应录像范围的小局（含同场换备局）', text)
         self.assertIn('总体小局胜率 50.0%（4胜/3负/1平，共8局）', text)
         self.assertIn('主卡局先攻胜率 100.0%（2胜/0负/0平，共2局）（样本少）', text)
         self.assertIn('主卡局后攻胜率 0.0%（0胜/1负/1平，共2局）（样本少）', text)
@@ -161,6 +170,58 @@ class GameWinrateMessageTests(unittest.TestCase):
         self.assertIn('主卡局先攻胜率：暂无有效样本', text)
         self.assertIn('Side局后攻胜率：暂无有效样本', text)
         self.assertIn('暂无已识别的具体卡组。', text)
+
+
+class GameWinrateScopeIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        import json
+        import test_card_statistics as C
+        C.CardStatisticsTests.setUp(self)
+        self.now = C.NOW
+        db = self.store._db
+        # 第1/4条同场，4为换备后不同主卡；第2条是旧构筑且名称相同。
+        for index, (session, number) in enumerate((('s1', 1), ('old', 1),
+                                                  ('s3', 1), ('s1', 2), ('latest', 1))):
+            db.execute('INSERT INTO stat_evidence VALUES(?,?,?,?)', (
+                self.rows[index]['digest'], 'scope-fixture', 'live_server',
+                json.dumps(dict(capture=dict(session_id=session, game_no=number,
+                                             captured_from_start=True)))))
+        old = dict(db.execute('SELECT b.* FROM stat_builds b JOIN stat_views v '
+                              'ON b.fingerprint=v.build WHERE v.digest=? AND v.player=?',
+                              (self.rows[1]['digest'], '甲')).fetchone())
+        original = old['fingerprint']
+        old['fingerprint'] = 'old-main-same-name'
+        columns = list(old)
+        db.execute('INSERT INTO stat_builds (' + ','.join(columns) + ') VALUES (' +
+                   ','.join('?' for _ in columns) + ')', [old[c] for c in columns])
+        db.execute('INSERT INTO stat_build_cards SELECT ?,partition,code+100,copies '
+                   'FROM stat_build_cards WHERE build=?', (old['fingerprint'], original))
+        db.execute('UPDATE stat_views SET build=? WHERE digest=? AND player=?',
+                   (old['fingerprint'], self.rows[1]['digest'], '甲'))
+        db.commit()
+
+    def test_latest_build_matches_recordings_and_keeps_side_games(self):
+        from bot.statistics_build_detail import query
+        detail = query(self.store._db, self.replays, self.now, '甲', scope='build')
+        self.assertEqual(detail['selected']['digest'], self.rows[4]['digest'])
+        digests = {r['digest'] for r in detail['matches']}
+        self.assertEqual(digests, {self.rows[i]['digest'] for i in (0, 2, 3, 4)})
+        popular = [dict(deck_type='对手B', players=10, share=50.0)]
+        with patch('bot.card_winrate._popular_decks', return_value=popular):
+            result = _compute(self.store.path, self.replays, self.now, '甲')
+        self.assertEqual(result['basis_build']['digest'], detail['selected']['digest'])
+        self.assertEqual(result['total']['games'], 3)
+        self.assertEqual(result['total']['wins'], 2)
+        self.assertEqual(result['outcome_unknown'], 1)  # 同场换备局保留
+        self.assertEqual(result['sections']['main_first']['games'], 3)
+        self.assertEqual(result['popular_rows'][0]['games'], 2)
+        self.assertEqual(result['popular_rows'][0]['wins'], 2)
+
+    def test_no_reliable_first_game_does_not_use_all_player_games(self):
+        self.store._db.execute('DELETE FROM stat_evidence')
+        self.store._db.commit()
+        result = _compute(self.store.path, self.replays, self.now, '甲')
+        self.assertFalse(result['found'])
 
 
 class GameWinrateCollectTests(unittest.TestCase):

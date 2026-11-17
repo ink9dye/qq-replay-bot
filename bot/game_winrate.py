@@ -2,9 +2,10 @@
 """QQ「对局胜率 [玩家名]」：主卡局/Side局的先攻、后攻小局胜率
 + 对前百饼图占比最高的5个具体卡组的大局（整场BO3）胜率。
 
-口径（2026-11-17 用户确认，玩家维度）：
-- 只统计该玩家当前保留窗口（14天）内的有效小局：eligible_views(player=…)，
-  录像源文件在、局次已知、未被排除，与「构筑」「换备」同一条资格路径；
+口径（2026-11-17 用户纠正，最新构筑维度）：
+- 直接复用 statistics_build_detail.query(scope='build') 的 matches，
+  与构筑页当前构筑录像范围完全一致（14天、有效源、排除状态同源）；
+  同场换备后的小局随场次保留，不另写构筑匹配算法；
 - 主卡局 = 该场第 1 局；Side局 = 第 2/3 局；
 - 先攻/后攻按该小局该玩家自己的座位（first_player=1/0），不用首局座位代替；
 - 胜负明确才计入各分项，平局进分母；胜负未知不计入任何胜率，座位未知只进总体；
@@ -62,7 +63,7 @@ def _finalize(bucket, low_sample_after):
 
 
 def _compute(database, replay_root, now, player):
-    from .top100 import eligible_views
+    from .statistics_build_detail import query as build_query
     from .card_statistics import _opponent_rows
     from .card_winrate import _popular_decks
 
@@ -70,11 +71,11 @@ def _compute(database, replay_root, now, player):
                                 uri=True, timeout=5)) as db:
         db.row_factory = sqlite3.Row
         db.execute("BEGIN")
-        basis = eligible_views(db, Path(replay_root), float(now), False, "default",
-                               annotate_series=False, player=str(player))
-        rows = [dict(row) for row in basis["views"]]
-        if not rows:
+        detail = build_query(db, Path(replay_root), float(now), str(player), scope='build')
+        if detail is None:
             return dict(player=player, found=False)
+        rows = [dict(row, observed_game_no=row['game_no'],
+                     observed_session_id=row['session_id']) for row in detail['matches']]
 
         total = _new_bucket()
         sections = {key: _new_bucket() for key, _ in _SECTION_LABELS}
@@ -148,6 +149,8 @@ def _compute(database, replay_root, now, player):
         return dict(
             player=player,
             found=True,
+            basis_build=dict(detail['selected'], deck_type=detail['person'].get('deck_type')),
+            scope='build',
             total=_finalize(total, MIN_GAMES),
             sections={key: _finalize(value, MIN_GAMES)
                       for key, value in sections.items()},
@@ -197,8 +200,12 @@ def message(payload):
     """纯文字回复：总体 + 主卡/Side×先/后攻小局胜率 + 对饼图Top5卡组的大局胜率。"""
     player = payload.get("player")
     if not payload.get("found"):
-        return "没有找到 %s 的有效小局（最近14天没有可收录的对局）。" % player
+        return "没有找到 %s 的有效小局基准（最近14天没有可用的最新首局构筑）。" % player
     lines = ["对局胜率：%s" % player]
+    basis = payload.get('basis_build') or {}
+    if basis:
+        lines.append("基准：最新构筑 %s（构筑指纹 %s）；与当前构筑录像范围一致。" % (
+            basis.get('deck_type') or '未识别', str(basis.get('build') or '')[:16]))
     total = payload.get("total") or {}
     if total.get("games"):
         mark = "（样本少）" if total.get("low_sample") else ""
@@ -234,7 +241,7 @@ def message(payload):
             undetermined, ambiguous))
     if payload.get("no_session"):
         lines.append("另有 %d局缺少场次关联，只计入小局分项。" % payload["no_session"])
-    lines.append("口径：仅统计当前保留（14天）内该玩家的已收录小局；主卡局=该场第1局，"
+    lines.append("口径：仅统计当前保留（14天）内最新构筑对应录像范围的小局（含同场换备局）；主卡局=该场第1局，"
                  "Side局=第2/3局；先后攻按该小局自己座位；平局进分母；"
                  "大局=同一场BO3按已收录小局汇总，胜局多即胜；对手卡组按该场第1局命名；"
                  "小局不足%d局、大局不足%d场标“样本少”。" % (MIN_GAMES, MIN_MATCHES))
