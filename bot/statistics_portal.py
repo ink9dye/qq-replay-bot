@@ -14,6 +14,24 @@ from pathlib import Path
 from urllib.parse import urlsplit,parse_qs,quote as url_quote
 from .card_search import card_name
 
+# 2026-11-17：库 2.3GB（约 60 万页），SQLite 默认 mmap_size=0、cache_size 仅 2MB，
+# 每次录像/构筑查询都得真读盘（实测磁盘 busy 591%、web 单进程读 17.5MB/s）。
+# mmap 走 page cache：内存紧张时内核可直接回收，不像 cache_size 那样计入进程 RSS 去挤 OOM 线。
+READONLY_MMAP_BYTES = 134217728
+
+
+def open_readonly(database, timeout=5.0):
+    """只读连接统一入口：mode=ro + 128MB mmap。
+
+    只读路径必须保持“不持有跨请求事务”，否则会钉住 WAL 读标记、让 checkpoint 推不动。
+    这里不能加 PRAGMA query_only：statistics_recording_filters 要在连接上建 TEMP 表，
+    query_only 会连临时库一起禁写，recordings 直接 503（2026-11-17 踩过）。
+    """
+    db = sqlite3.connect(Path(database).resolve().as_uri()+'?mode=ro', uri=True, timeout=timeout)
+    db.row_factory = sqlite3.Row
+    db.execute('PRAGMA mmap_size=%d' % READONLY_MMAP_BYTES)
+    return db
+
 COOKIE='qqstats_owner'
 SESSION_SECONDS=5*3600
 QUERY_WAIT_SECONDS=8.0
@@ -231,7 +249,7 @@ class StatisticsPortal:
             args=parse_qs(parsed.query);player=args.get('player',[''])[0];digest=args.get('digest',[None])[0];match=args.get('match',[None])[0];scope=args.get('scope',['build'])[0]
             if not player or len(player)>128 or scope not in ('build','player')or(match is not None and(len(match)!=16 or any(c not in '0123456789abcdef'for c in match))):return self._reply(400,'打包条件无效。')
             try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5))as db:
+                with closing(open_readonly(self.database, timeout=5))as db:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN')
                     body,filename,count=archive(db,self.replay_root,float(self.clock()),player,digest,scope,match,clock=self.clock)
                 status,kind,_,headers=self._reply(200,'','application/zip',{'Content-Disposition':"attachment; filename=replays.zip; filename*=UTF-8''"+quote(filename),'X-Replay-Count':str(count),'Cache-Control':'no-store'})
@@ -244,7 +262,7 @@ class StatisticsPortal:
             args=parse_qs(parsed.query)
             if any(len(v)>2000 for v in args.values()):return self._reply(400,'筛选项过多。')
             try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5))as db:
+                with closing(open_readonly(self.database, timeout=5))as db:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN')
                     body,filename,files,views=filtered_archive(db,self.replay_root,float(self.clock()),args,clock=self.clock)
                 status,kind,_,headers=self._reply(200,'','application/zip',{'Content-Disposition':"attachment; filename=replays.zip; filename*=UTF-8''"+quote(filename),'X-Replay-Count':str(files),'X-View-Count':str(views),'Cache-Control':'no-store'})
@@ -304,7 +322,7 @@ class StatisticsPortal:
             now=float(self.clock())
             try:
                 if player:
-                    with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
+                    with closing(open_readonly(self.database, timeout=5)) as db:
                         db.row_factory=sqlite3.Row;db.execute('BEGIN')
                         result=detail(db,self.database.parent,now,player,self.replay_root,stats=snapshot)
                 else:
@@ -397,7 +415,7 @@ class StatisticsPortal:
                 return result
             if parts[1]=='api':return self._query_reply(run)
             try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
+                with closing(open_readonly(self.database, timeout=3)) as db:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN');result=run(db)
                     if result is None:return self._reply(404,'构筑来源当前不可用。')
                     inferred=args.get('inferred',['0'])[0]=='1'
@@ -712,7 +730,7 @@ class StatisticsPortal:
             from .statistics_samples import details
             args=parse_qs(parsed.query);player=args.get('player',[''])[0];digest=args.get('digest',[''])[0] if parts[1]=='api' else parts[2]
             try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
+                with closing(open_readonly(self.database, timeout=3)) as db:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN');result=details(db,self.replay_root,float(self.clock()),player,digest,file_only=parts[1]=='sample')
                     if result is None:return self._reply(404,'样本已失效、被排除或不属于当前榜单。')
                     detail,file=result
@@ -753,7 +771,7 @@ class StatisticsPortal:
             player=parse_qs(parsed.query).get('player',[''])[0]
             if not player or len(player)>128:return self._reply(400,'需要玩家名称。')
             try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
+                with closing(open_readonly(self.database, timeout=3)) as db:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN')
                     file=source_file(db,self.replay_root,float(self.clock()),player,parts[2])
                     if file is None:return self._reply(404,'源录像已失效或不属于当前有效观测。')
@@ -767,7 +785,7 @@ class StatisticsPortal:
             value=parts[2]
             if not value.isdigit() or len(value)>12:return self._reply(400,'录像编号无效。')
             try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
+                with closing(open_readonly(self.database, timeout=3)) as db:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN')
                     row=db.execute('SELECT id,digest,rel_path FROM replays WHERE id=?',(int(value),)).fetchone()
                 if row is None:return self._reply(404,'录像不存在或已过期。')
@@ -796,7 +814,7 @@ class StatisticsPortal:
             deck=args.get('deck',[]);series=args.get('series',[])
             if len(deck)>100 or len(series)>100 or any(len(v)>128 for v in deck+series):return self._reply(400,'筛选条件过长。')
             try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
+                with closing(open_readonly(self.database, timeout=3)) as db:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN')
                     result=investment(db,self.replay_root,code,float(self.clock()),deck,series)
                 return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
@@ -914,8 +932,7 @@ class StatisticsPortal:
         try:
             from .query_precompute import read_precomputed, cache_path, MISS
             latest = 0.0
-            with closing(sqlite3.connect(self.database.resolve().as_uri() + '?mode=ro',
-                                         uri=True, timeout=2)) as db:
+            with closing(open_readonly(self.database, timeout=2)) as db:
                 row = db.execute('SELECT MAX(recorded_at) FROM replays WHERE focus_player=?',
                                  (player,)).fetchone()
                 if row and row[0] is not None:
@@ -1023,7 +1040,7 @@ class StatisticsPortal:
         from .series_naming_admin import combo_stats
         def compute():
             try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
+                with closing(open_readonly(self.database, timeout=5)) as db:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN')
                     payload=combo_stats(db,self.database.parent,float(self.clock()))
                 return self._reply(200,json.dumps(payload,ensure_ascii=False),'application/json; charset=utf-8')
@@ -1055,7 +1072,7 @@ class StatisticsPortal:
         from .statistics_deck_naming import snapshot as naming_snapshot
         def compute():
             try:
-                with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
+                with closing(open_readonly(self.database, timeout=5)) as db:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN')
                     payload=naming_snapshot(db,self.database.parent,float(self.clock()),self.replay_root)
                 return self._reply(200,json.dumps(payload,ensure_ascii=False),'application/json; charset=utf-8')
@@ -1246,7 +1263,7 @@ class StatisticsPortal:
 
     def _query_reply(self,callback):
         try:
-            with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as db:
+            with closing(open_readonly(self.database, timeout=3)) as db:
                 db.row_factory=sqlite3.Row;db.execute('BEGIN');result=callback(db)
             return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
         except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')

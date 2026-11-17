@@ -52,7 +52,13 @@ class Store:
             self._db.row_factory = sqlite3.Row
             self._db.execute('PRAGMA query_only=ON')
             self._db.execute('PRAGMA busy_timeout=5000')
-            self._db.execute('BEGIN')
+            # 2026-11-17：这里原来是 execute('BEGIN') 长期持一个读快照，只有 get_link 会 COMMIT/BEGIN
+            # 刷新一次。后果是连接空闲时也钉着 WAL 读标记，checkpoint 推不动（WAL 涨到 511MB、
+            # TRUNCATE 返回 busy=1）。改成自动提交：每条 SELECT 自己开合事务，连接不占读标记；
+            # 需要多语句一致性的查询自己包 BEGIN…rollback（card_statistics / current_top100_views / fact_details）。
+            self._db.isolation_level = None
+            # 2.3GB 库配默认 2MB 缓存，读基本全落盘；mmap 走 page cache，内存紧张时内核可直接回收。
+            self._db.execute('PRAGMA mmap_size=134217728')
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.path), check_same_thread=False)
@@ -312,16 +318,26 @@ class Store:
     def fact_details(self, digest: str, replay_root: Path, now: float):
         with self._lock:
             from .share import safe_replay_file
-            game = self._db.execute('SELECT * FROM stat_games WHERE digest=? AND expires_at>?', (digest, float(now))).fetchone()
-            if game is None:
-                return None
-            sources = self._db.execute('SELECT r.rel_path FROM replays r JOIN stat_files f ON r.id=f.replay_id WHERE f.digest=?', (digest,)).fetchall()
-            if not any(safe_replay_file(replay_root, r['rel_path']) for r in sources):
-                return None
-            views = [dict(r) for r in self._db.execute('SELECT * FROM stat_views WHERE digest=? ORDER BY player_index', (digest,))]
-            cards = [dict(r) for r in self._db.execute('SELECT * FROM stat_card_facts WHERE digest=? ORDER BY player,partition,code', (digest,))]
-            evidence = [dict(r) for r in self._db.execute('SELECT * FROM stat_evidence WHERE digest=?', (digest,))]
-            return dict(digest=digest, views=views, cards=cards, evidence=evidence)
+            # 这 5 条 SELECT 必须落在同一个快照上，否则会出现“有对局但缺卡表”的半新半旧结果。
+            # 只读连接已改成自动提交，所以这里自己开一个短事务，读完立刻回滚（不占 WAL 读标记）。
+            begun = False
+            if self.readonly:
+                self._db.execute('BEGIN')
+                begun = True
+            try:
+                game = self._db.execute('SELECT * FROM stat_games WHERE digest=? AND expires_at>?', (digest, float(now))).fetchone()
+                if game is None:
+                    return None
+                sources = self._db.execute('SELECT r.rel_path FROM replays r JOIN stat_files f ON r.id=f.replay_id WHERE f.digest=?', (digest,)).fetchall()
+                if not any(safe_replay_file(replay_root, r['rel_path']) for r in sources):
+                    return None
+                views = [dict(r) for r in self._db.execute('SELECT * FROM stat_views WHERE digest=? ORDER BY player_index', (digest,))]
+                cards = [dict(r) for r in self._db.execute('SELECT * FROM stat_card_facts WHERE digest=? ORDER BY player,partition,code', (digest,))]
+                evidence = [dict(r) for r in self._db.execute('SELECT * FROM stat_evidence WHERE digest=?', (digest,))]
+                return dict(digest=digest, views=views, cards=cards, evidence=evidence)
+            finally:
+                if begun:
+                    self._db.rollback()
 
     def purge_expired_facts(self, now: float) -> int:
         from .statistics_facts import purge
@@ -670,14 +686,9 @@ class Store:
             self._commit()
 
     def get_link(self, token: str) -> Optional[dict]:
+        # 只读连接已是自动提交（见 __init__），每条 SELECT 自己开合事务，
+        # 这里不再需要历史上的 COMMIT/BEGIN 刷新快照。
         with self._lock:
-            if self.readonly:
-                # 独立 share 进程启动时 BEGIN 固定了快照；QQ 之后写入的新链接必须重新可见。
-                try:
-                    self._db.execute('COMMIT')
-                except sqlite3.OperationalError:
-                    pass
-                self._db.execute('BEGIN')
             row = self._db.execute(
                 "SELECT * FROM share_links WHERE token = ?",
                 (token,),
