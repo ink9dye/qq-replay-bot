@@ -104,7 +104,9 @@ def _card_image_blob(code, data_dir):
     path = card_image_cache.ensure_full(data_dir, code, timeout=12)
     if path is not None:
         return path.read_bytes()
-    return b''
+    # 彻底取不到时发占位卡面，而不是让用户点一个慢链、最后看到裂图。
+    card_image_cache.log_miss(data_dir, code, 'full', 'card_query', 'qq-card')
+    return card_image_cache.placeholder_bytes(data_dir)
 
 
 def card_image_payload(code, data_dir):

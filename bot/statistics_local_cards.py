@@ -88,6 +88,12 @@ def _image_codes(code):
     return result
 
 
+def _failed_recently(code):
+    """这张卡的后台取图是否刚失败过（冷却期内不再重试，也不给 302）。"""
+    with _lock:
+        return time.time() - _failed.get(code, 0) < RETRY_SECONDS
+
+
 def _schedule(data_dir, code, pics):
     now = time.time()
     with _lock:
@@ -99,30 +105,38 @@ def _schedule(data_dir, code, pics):
     def work():
         try:
             pics.mkdir(parents=True, exist_ok=True)
-            existing = _existing_picture(pics, code)
+            existing = _existing_picture(pics, code, data_dir)
             if existing is not None:
                 return existing[0]
-            for candidate in _image_codes(code):
-                # 超先行号段 momobako 可能还留着上一期卡包的同号图（换包后卡号会改指另一张卡），
-                # 这类卡只认 super-pre；普通卡仍先试 momobako。
-                templates = (REMOTE_FALLBACK, REMOTE) if code >= 100_000_000 else (REMOTE, REMOTE_FALLBACK)
-                for template in templates:
-                    try:
-                        with urllib.request.urlopen(template % candidate, timeout=10) as response:
-                            blob = response.read(2 * 1024 * 1024 + 1)
-                    except OSError:
-                        continue
-                    if not blob or len(blob) > 2 * 1024 * 1024:
-                        continue
-                    path = (pics / (str(candidate) + '.jpg')).resolve()
-                    if not path.is_relative_to(pics):
-                        continue
-                    temporary = path.with_suffix('.jpg.tmp')
-                    temporary.write_bytes(blob)
-                    os.replace(temporary, path)
-                    with _lock:
-                        _failed.pop(code, None)
-                    return path
+            # 只按卡号本身下载、按卡号落盘：±1e8 猜号在 CDN 上命中的可能是
+            # 另一张卡（11-09/11-10 两次串卡），不再作为请求或写入文件名。
+            # 超先行（≥1e8）只认 super-pre；普通卡先 momobako，super-pre 兜底。
+            templates = (REMOTE_FALLBACK, REMOTE) if code >= 100_000_000 else (REMOTE, REMOTE_FALLBACK)
+            for template in templates:
+                try:
+                    with urllib.request.urlopen(template % code, timeout=10) as response:
+                        blob = response.read(2 * 1024 * 1024 + 1)
+                except OSError:
+                    continue
+                if not blob or len(blob) > 2 * 1024 * 1024:
+                    continue
+                path = (pics / (str(code) + '.jpg')).resolve()
+                if not path.is_relative_to(pics):
+                    continue
+                temporary = path.with_suffix('.jpg.tmp')
+                temporary.write_bytes(blob)
+                os.replace(temporary, path)
+                with _lock:
+                    _failed.pop(code, None)
+                return path
+            # CDN 没有这张普通卡：交给卡图缓存走百鸽映射（ensure_full 按卡密
+            # 落盘 data/card-images/，并已接入失败冷却与缺图台账）。
+            from . import card_image_cache
+            full = card_image_cache.ensure_full(data_dir, code, timeout=15)
+            if full is not None:
+                with _lock:
+                    _failed.pop(code, None)
+                return full
             raise ValueError('no image for card')
         except (OSError, ValueError):
             with _lock:
@@ -145,6 +159,15 @@ def _card_number(code):
     return int(text) if text.isdigit() else None
 
 
+def _cached_full(data_dir, code):
+    """卡图缓存里的原图（只读本地文件）；模块不可用时当作没有。"""
+    try:
+        from . import card_image_cache
+        return card_image_cache.local_full(data_dir, code)
+    except (ImportError, OSError, ValueError):
+        return None
+
+
 def prefetch(data_dir, codes):
     """后台预热一批卡图；不阻塞请求。"""
     root = library_root(data_dir)
@@ -156,6 +179,8 @@ def prefetch(data_dir, codes):
     numbers = {_card_number(c) for c in codes}
     for code in numbers:
         if code is None or not 0 < code <= 4294967295:
+            continue
+        if _cached_full(data_dir, code) is not None:
             continue
         if any((pics / (str(candidate) + suffix)).is_file()
                for candidate in _image_codes(code) for suffix in ('.jpg', '.png', '.webp')):
@@ -174,9 +199,11 @@ def wait_for(data_dir, codes, timeout=30):
     wanted = {int(c) for c in codes if str(c).isdigit()}
     deadline = time.time() + max(0, timeout)
     while time.time() < deadline:
-        remaining = [c for c in wanted if not any((pics / (str(candidate) + suffix)).is_file()
-                                                  for candidate in _image_codes(c)
-                                                  for suffix in ('.jpg', '.png', '.webp'))]
+        remaining = [c for c in wanted
+                     if _cached_full(data_dir, c) is None
+                     and not any((pics / (str(candidate) + suffix)).is_file()
+                                 for candidate in _image_codes(c)
+                                 for suffix in ('.jpg', '.png', '.webp'))]
         with _lock:
             pending = [c for c in remaining if c in _pending]
         if not pending:
@@ -184,8 +211,21 @@ def wait_for(data_dir, codes, timeout=30):
         time.sleep(0.2)
 
 
-def _existing_picture(pics, code):
-    for candidate in _image_codes(code):
+def _existing_picture(pics, code, data_dir=None):
+    """读序：本卡号 → 可信映射号（百鸽）→ ±1e8 猜号（仅兼容旧缓存，最后手段）。"""
+    candidates = [int(code)]
+    if data_dir is not None and code < 100_000_000:
+        try:
+            from . import card_image_cache
+            mapped = card_image_cache.image_id_cached(data_dir, code)
+            if mapped and mapped not in candidates:
+                candidates.append(mapped)
+        except (ImportError, OSError, ValueError):
+            pass
+    for guess in _image_codes(code):
+        if guess not in candidates:
+            candidates.append(guess)
+    for candidate in candidates:
         for suffix, mime in (('.jpg', 'image/jpeg'), ('.png', 'image/png'), ('.webp', 'image/webp')):
             path = (pics / (str(candidate) + suffix)).resolve()
             if path.is_relative_to(pics) and path.is_file() and path.stat().st_size <= 8 * 1024 * 1024:
@@ -204,17 +244,26 @@ def picture(data_dir, code):
     pics = (root / 'pics').resolve()
     if not pics.is_relative_to(root):
         return None
-    found = _existing_picture(pics, code)
+    found = _existing_picture(pics, code, data_dir)
     if found is not None:
         return found
     # 详情页大图优先用卡图缓存里的原图（只读本地文件，不走网络、不额外占内存）。
+    cache = None
     try:
         from . import card_image_cache
+        cache = card_image_cache
         full = card_image_cache.local_full(data_dir, code)
     except (ImportError, OSError, ValueError):
         full = None
     if full is not None:
         return full, 'image/jpeg'
+    # 已经确认取不到（后台下载失败 / 映射不可信 / 源站冷却）时给占位卡面，
+    # 不再 302 到一个会 404 的 CDN，避免用户看到裂图。
+    if cache is not None and (cache.cooling(data_dir, code, 'full') or _failed_recently(code)):
+        fallback = cache.placeholder_path(data_dir)
+        if fallback is not None:
+            cache.log_miss(data_dir, code, 'full', 'cooling_placeholder', 'portal-card-image')
+            return fallback, 'image/webp'
     # 卡号可能是本体号，实际卡图存在 100xxxxxx 异画编号；后台缓存，当前请求立即返回。
     _schedule(data_dir, code, pics)
     return None
@@ -233,10 +282,9 @@ def thumb_dir(data_dir):
 
 
 def _thumb_file(thumbs, code):
-    candidates = list(_image_codes(code))
-    # 映射只作兜底：先认本卡号/本体号的缩略图，再认映射出来的先行图号。
-    # 超先行（≥100000000）的图本来就按卡号存放，不查映射。
-    # 旧写法把映射插到候选首位，一条错映射就会把别张卡的缩略图当成本卡的图。
+    """读序：本卡号 → 可信映射号（百鸽）→ ±1e8 猜号（仅兼容旧缓存，最后手段）。
+    新缩略图一律按本卡号落盘，映射号/猜号只用于读历史文件。"""
+    candidates = [int(code)]
     if code < 100_000_000:
         try:
             from . import card_image_cache
@@ -245,6 +293,9 @@ def _thumb_file(thumbs, code):
                 candidates.append(mapped)
         except (ImportError, OSError, ValueError):
             pass
+    for guess in _image_codes(code):
+        if guess not in candidates:
+            candidates.append(guess)
     for candidate in candidates:
         for suffix in ('.webp', '.jpg', '.png'):
             path = thumbs / (str(candidate) + suffix)
@@ -282,9 +333,14 @@ def _schedule_thumb(data_dir, code, thumbs, pics=None):
             return
         _thumb_pending.add(code)
     def work():
-        def try_thumb(candidate):
+        def try_thumb(source_number):
+            """!thumb2 按 source_number 下载，但缩略图一律落盘到本卡卡密名下。
+
+            旧写法按下载号落盘：映射/猜号下到别的卡时，会覆盖那个号自己的
+            缩略图文件（11-10 串卡）。现在只有卡密这一个写入命名空间。
+            """
             try:
-                with urllib.request.urlopen(THUMB_REMOTE % candidate, timeout=15) as response:
+                with urllib.request.urlopen(THUMB_REMOTE % source_number, timeout=15) as response:
                     blob = response.read(2 * 1024 * 1024 + 1)
             except OSError:
                 return False
@@ -298,7 +354,7 @@ def _schedule_thumb(data_dir, code, thumbs, pics=None):
                 suffix = '.png'
             else:
                 return False
-            path = (thumbs / (str(candidate) + suffix)).resolve()
+            path = (thumbs / (str(code) + suffix)).resolve()
             if not path.is_relative_to(thumbs):
                 return False
             temporary = path.with_suffix(suffix + '.tmp')
@@ -308,23 +364,14 @@ def _schedule_thumb(data_dir, code, thumbs, pics=None):
         try:
             thumbs.mkdir(parents=True, exist_ok=True)
             from . import card_image_cache
-            # 普通卡先按卡号拿 !thumb2，命中就不查百鸽页；超先行没有 !thumb2，直接走原图。
-            if code < 100_000_000:
-                # momobako 只按普通卡号取 !thumb2：先行图号（≥1e8）在 momobako 可能挂着
-                # 另一张卡的图，下回来会把这个图号自己的缩略图覆盖成错图。
-                for candidate in _image_codes(code):
-                    if candidate >= 100_000_000:
-                        continue
-                    if try_thumb(candidate):
-                        with _lock:
-                            _thumb_failed.pop(code, None)
-                        return
-                mapped = card_image_cache.image_id(data_dir, code)
-                if (mapped and mapped < 100_000_000 and mapped not in _image_codes(code)
-                        and try_thumb(mapped)):
-                    with _lock:
-                        _thumb_failed.pop(code, None)
-                    return
+            # 普通卡先按卡号拿 !thumb2（momobako 权威源），命中就不查百鸽页；
+            # 不再向 momobako 请求任何映射号/±1e8 猜号（另一张卡的图）。
+            if code < 100_000_000 and try_thumb(code):
+                with _lock:
+                    _thumb_failed.pop(code, None)
+                return
+            # 其余情况走原图（ensure_full 内部按百鸽映射/super-pre 选源、按卡密
+            # 落盘），再本地缩；先行卡本来就没有 !thumb2。
             full = card_image_cache.ensure_full(data_dir, code, timeout=15)
             if full is not None:
                 derived = _derive_thumb(thumbs, full, code)
@@ -359,12 +406,19 @@ def thumb_picture(data_dir, code):
     if pics is not None and not pics.is_relative_to(root):
         pics = None
     if pics is not None:
-        existing = _existing_picture(pics, number)
+        existing = _existing_picture(pics, number, data_dir)
         if existing is not None:
             derived = _derive_thumb(thumbs, existing[0], number)
             if derived is not None:
                 return derived
             return existing[0]
+    # 拼图的缺图格子由 deck_image 自己画灰块（并按 missing 跳过 1 小时缓存），
+    # 这里只记台账，不改返回语义。
+    try:
+        from . import card_image_cache
+        card_image_cache.log_miss(data_dir, number, 'thumb', 'deck_render', 'qq-deck')
+    except (ImportError, OSError, ValueError):
+        pass
     _schedule_thumb(data_dir, number, thumbs, pics)
     return None
 
@@ -385,7 +439,7 @@ def wait_for_thumbs(data_dir, codes, timeout=3):
         if _thumb_file(thumbs, code) is not None:
             continue
         if pics is not None:
-            existing = _existing_picture(pics, code)
+            existing = _existing_picture(pics, code, data_dir)
             if existing is not None and _derive_thumb(thumbs, existing[0], code) is not None:
                 continue
         pending.append(code)
@@ -411,8 +465,10 @@ def web_thumb(data_dir, code):
     found = _thumb_file(thumbs, number)
     if found is not None:
         return found
+    cache = None
     try:
         from . import card_image_cache
+        cache = card_image_cache
         full = card_image_cache.local_full(data_dir, number)
         if full is not None:
             derived = _derive_thumb(thumbs, full, number)
@@ -420,5 +476,11 @@ def web_thumb(data_dir, code):
                 return derived
     except (ImportError, OSError, ValueError):
         pass
+    # 已知补不出来时给占位缩略图，省得 302 到 404 的 CDN。
+    if cache is not None and (cache.cooling(data_dir, number, 'thumb') or _failed_recently(number)):
+        fallback = cache.placeholder_path(data_dir)
+        if fallback is not None:
+            cache.log_miss(data_dir, number, 'thumb', 'cooling_placeholder', 'portal-card-thumb')
+            return fallback
     _schedule_thumb(data_dir, number, thumbs)
     return None

@@ -37,12 +37,17 @@ MAP_FILE = "card-image-ids.json"
 MAP_TTL = 30 * 86400
 SUPER_PRE_FLOOR = 100_000_000  # 先行/超先行图号段（100xxxxxx / 101xxxxxx）
 UA = {"User-Agent": "qq-replay-bot/card-image"}
+PLACEHOLDER = "_placeholder.webp"  # 缺图时的兜底卡面，全站共用一张
+COOLING_SECONDS = 600  # 失败后的冷却：同一张卡同一用途 10 分钟内不再打源站
+MISS_LOG = ("logs", "card-image-misses.jsonl")
 
 _lock = threading.RLock()
 _maps: dict[str, dict[int, tuple[int, float]]] = {}
 _stamps: dict[str, int] = {}
 _pending: dict[tuple[str, int, str], Future] = {}
 _thumb_pending: set[tuple[str, int]] = set()
+_unavailable: dict[tuple[str, int, str], float] = {}
+_miss_logged: dict[tuple[str, int, str, str], float] = {}
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="card-image")
 _opener = build_opener(ProxyHandler({}))
 
@@ -281,6 +286,8 @@ def ensure_full(data_dir, card_id, timeout=12) -> Path | None:
     found = local_full(data_dir, card_id)
     if found is not None:
         return found
+    if cooling(data_dir, card_id, "full"):
+        return None
     key = (_key(data_dir), card_id, "full")
     with _lock:
         future = _pending.get(key)
@@ -334,6 +341,8 @@ def ensure_full(data_dir, card_id, timeout=12) -> Path | None:
     finally:
         with _lock:
             _pending.pop(key, None)
+        if result is None:
+            mark_cooling(data_dir, card_id, "full", "no_source")
         try:
             future.set_result(result)
         except Exception:
@@ -365,10 +374,13 @@ def ensure_thumb(data_dir, card_id, timeout=8) -> Path | None:
     full = local_full(data_dir, card_id)
     if full is not None and _derive_thumb(full, thumb_path(data_dir, card_id)):
         return thumb_path(data_dir, card_id)
+    if cooling(data_dir, card_id, "thumb"):
+        return None
     if card_id >= 100_000_000:
         full = ensure_full(data_dir, card_id)
         if full is not None and _derive_thumb(full, thumb_path(data_dir, card_id)):
             return thumb_path(data_dir, card_id)
+        mark_cooling(data_dir, card_id, "thumb", "no_source")
         return None
     def take(candidate: int) -> bool:
         try:
@@ -397,6 +409,7 @@ def ensure_thumb(data_dir, card_id, timeout=8) -> Path | None:
     full = ensure_full(data_dir, card_id)
     if full is not None and _derive_thumb(full, thumb_path(data_dir, card_id)):
         return thumb_path(data_dir, card_id)
+    mark_cooling(data_dir, card_id, "thumb", "no_source")
     return None
 
 
@@ -447,3 +460,164 @@ def full_url(data_dir, card_id) -> str:
     if card_id >= 100_000_000:
         return FULL_PRE % card_id
     return FULL_MOMO % card_id
+
+
+# ---------------------------------------------------------------------------
+# 统一入口：冷却（负缓存）、缺图台账、占位图
+# ---------------------------------------------------------------------------
+
+_PLACEHOLDER_FONTS = (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
+)
+
+
+def cooling(data_dir, card_id, want="full") -> bool:
+    """同一张卡同一用途是否在失败冷却期内；期内不再打源站，直接走保底。"""
+    key = (_key(data_dir), int(card_id), want)
+    with _lock:
+        stamp = _unavailable.get(key)
+        if stamp is None:
+            return False
+        if time.time() - stamp < COOLING_SECONDS:
+            return True
+        _unavailable.pop(key, None)
+        return False
+
+
+def mark_cooling(data_dir, card_id, want="full", reason="no_source", entry="") -> None:
+    key = (_key(data_dir), int(card_id), want)
+    with _lock:
+        _unavailable[key] = time.time()
+    log_miss(data_dir, card_id, want, reason, entry)
+
+
+def log_miss(data_dir, card_id, want="full", reason="no_source", entry="") -> None:
+    """缺图台账：同卡同用途同入口 10 分钟只记一行，避免刷日志。"""
+    try:
+        card_id = int(card_id)
+    except (TypeError, ValueError):
+        return
+    dedup = (_key(data_dir), card_id, want, entry)
+    now = time.time()
+    with _lock:
+        if now - _miss_logged.get(dedup, 0) < COOLING_SECONDS:
+            return
+        if len(_miss_logged) > 4096:
+            _miss_logged.clear()
+        _miss_logged[dedup] = now
+    folder = Path(data_dir).joinpath(*MISS_LOG[:-1])
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        line = json.dumps({"t": round(now, 3), "code": card_id, "want": want,
+                           "reason": reason, "entry": entry}, ensure_ascii=False)
+        with (folder / MISS_LOG[-1]).open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _build_placeholder(path: Path) -> Path | None:
+    """造一张 240x330 的「图暂缺」卡面；没有 PIL 或字体时返回 None。"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return None
+    width, height = 240, 330
+    try:
+        image = Image.new("RGB", (width, height), "#26303d")
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((7, 7, width - 8, height - 8), radius=12, outline="#44546a", width=2)
+        title, note = "图暂缺", "IMAGE NOT AVAILABLE"
+        font = None
+        for candidate in _PLACEHOLDER_FONTS:
+            try:
+                font = ImageFont.truetype(candidate, 30)
+                break
+            except OSError:
+                continue
+        if font is None:
+            title, note = "NO IMAGE", ""
+            font = ImageFont.load_default()
+        box = draw.textbbox((0, 0), title, font=font)
+        draw.text(((width - (box[2] - box[0])) / 2, height / 2 - 30), title, fill="#aab6c6", font=font)
+        if note:
+            try:
+                small = ImageFont.truetype(font.path, 11)
+            except (OSError, AttributeError):
+                small = ImageFont.load_default()
+            box = draw.textbbox((0, 0), note, font=small)
+            draw.text(((width - (box[2] - box[0])) / 2, height / 2 + 12), note, fill="#6f8098", font=small)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        image.save(temporary, "WEBP", quality=85, method=4)
+        os.replace(temporary, path)
+        return path
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def placeholder_path(data_dir) -> Path | None:
+    """占位卡面路径；首次调用时生成并落盘，之后只读。"""
+    path = Path(data_dir) / "card-images" / PLACEHOLDER
+    try:
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+    except OSError:
+        pass
+    return _build_placeholder(path)
+
+
+def placeholder_bytes(data_dir) -> bytes:
+    path = placeholder_path(data_dir)
+    if path is None:
+        return b""
+    try:
+        return path.read_bytes()
+    except OSError:
+        return b""
+
+
+def _result(path: Path, source: str) -> dict:
+    suffix = path.suffix.lower()
+    mime = {".webp": "image/webp", ".png": "image/png"}.get(suffix, "image/jpeg")
+    return {"path": path, "mime": mime, "source": source, "hit": True}
+
+
+def resolve(data_dir, card_id, want="full", allow_fetch=True, entry="") -> dict:
+    """全站唯一取图入口：本地 → 网络 → 占位图，失败进冷却并记台账。
+
+    返回 {'path','mime','source','hit'}；source 为 'placeholder' 表示走了保底。
+    网页线程要避免阻塞时应传 allow_fetch=False，由调用方决定 302 还是占位。
+    """
+    try:
+        card_id = int(card_id)
+    except (TypeError, ValueError):
+        return {"path": None, "mime": "", "source": "invalid", "hit": False}
+    if want == "thumb":
+        found = local_thumb(data_dir, card_id)
+        if found is not None:
+            return _result(found, "local-thumb")
+        full = local_full(data_dir, card_id)
+        if full is not None and _derive_thumb(full, thumb_path(data_dir, card_id)):
+            return _result(thumb_path(data_dir, card_id), "derived")
+        if allow_fetch and not cooling(data_dir, card_id, "thumb"):
+            found = ensure_thumb(data_dir, card_id)
+            if found is not None:
+                return _result(found, "network")
+    else:
+        found = local_full(data_dir, card_id)
+        if found is not None:
+            return _result(found, "local-full")
+        if allow_fetch and not cooling(data_dir, card_id, "full"):
+            found = ensure_full(data_dir, card_id)
+            if found is not None:
+                return _result(found, "network")
+    fallback = placeholder_path(data_dir)
+    if fallback is None:
+        return {"path": None, "mime": "", "source": "none", "hit": False}
+    log_miss(data_dir, card_id, want, "placeholder", entry)
+    return {"path": fallback, "mime": "image/webp", "source": "placeholder", "hit": False}

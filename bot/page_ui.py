@@ -169,10 +169,11 @@ def directory_body(app, link, title_provider, points_provider):
                      f'<p class="note">另从主卡构筑完全相同的 {current["history_count"]} 场历史录像补充side；'
                      '重复卡按观测到的最大张数合并，不跨场累加。未出现过的side无法推断，不保证为完整副卡组。</p>'
                      f'<details><summary>查看本场来源 · {e(date(group["stamp"]))}</summary><p>{e(source_names)}</p></details></section>')
+    db = getattr(getattr(app, 'store', None), '_db', None)
     matches = []
     for index, group in enumerate(groups, 1):
         _, first, first_path = group['entries'][0]
-        matchup, _ = matchup_labels(first, first_path, cache)
+        matchup, _ = matchup_labels(first, first_path, cache, db)
         label = '整场对战' if group['confirmed'] else '录像记录 · 场次待确认'
         file_urls = ','.join(f'/s/{token}/file/{replay["id"]}' for _, replay, _ in group['entries'])
         download_button = (f'<button class="button primary" type="button" onclick="downloadMatch(this)" '
@@ -191,7 +192,7 @@ def directory_body(app, link, title_provider, points_provider):
         games = []
         for order, (number, replay, path) in enumerate(group['entries'], 1):
             game_label = f'录像 {order}' if group['id'].startswith('legacy:') else f'第 {number} 局'
-            matchup_game, filename = matchup_labels(replay, path, cache)
+            matchup_game, filename = matchup_labels(replay, path, cache, db)
             games.append(f'<div class="game"><span class="game-no">{game_label}</span><div class="game-content">'
                          f'<span class="game-name">{e(filename)}</span>'
                          f'<p class="note">{e(matchup_game)} · {e(date(replay["recorded_at"]))} · {path.stat().st_size:,} 字节</p>'
