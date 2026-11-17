@@ -94,6 +94,11 @@ def parse_command(text: str) -> dict:
         if len(player) > 100:
             return {"op": "error", "message": "格式：换备 [玩家名]，玩家名最多100字。"}
         return {"op": "side_plan", "player": player or None}
+    if head == "对局胜率":
+        player = " ".join(rest).strip()
+        if len(player) > 100:
+            return {"op": "error", "message": "格式：对局胜率 [玩家名]，玩家名最多100字。"}
+        return {"op": "game_winrate", "player": player or None}
     if head == "玩家":
         player = " ".join(rest).strip()
         if len(player) > 100:

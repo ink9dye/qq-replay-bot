@@ -16,6 +16,10 @@ class NewCommandParseTests(unittest.TestCase):
         self.assertEqual(parse_command('构筑'), {'op': 'deck_build', 'player': None})
         self.assertEqual(parse_command('录像'), {'op': 'replays', 'player': None})
         self.assertEqual(parse_command('换备'), {'op': 'side_plan', 'player': None})
+        self.assertEqual(parse_command('对局胜率'), {'op': 'game_winrate', 'player': None})
+        self.assertEqual(parse_command('对局胜率 久 远'),
+                         {'op': 'game_winrate', 'player': '久 远'})
+        self.assertEqual(parse_command('对局胜率 ' + '名' * 101)['op'], 'error')
         self.assertEqual(parse_command('玩家'), {'op': 'player_profile', 'player': None})
 
     def test_price_commands_are_offline(self):

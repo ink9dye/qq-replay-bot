@@ -130,6 +130,7 @@ SLOW_COMMAND_HINTS = {
     "card_search": "查卡中，完成后把结果发到这里。",
     "top100_deck": "前百构筑请求已收到，按顺序处理；完成后把结果发到这里。",
     "side_plan": "换备统计中，约几秒…",
+    "game_winrate": "对局胜率统计中，约几秒…",
 }
 
 # 「绑定mc」后再发玩家名的等待时间：只认同一 QQ 号的下一条文字消息。
@@ -866,6 +867,11 @@ class BotService:
             if error:
                 return error
             return self._side_plan_text(player)
+        if op == "game_winrate":
+            player, error = self._player_or_self(user, command.get("player"), "对局胜率")
+            if error:
+                return error
+            return self._game_winrate_text(player)
         if op == "unknown":
             answer = command.get('text') or ''
             pending_key = (conversation + ":" + user) if conversation else user
@@ -1198,6 +1204,17 @@ class BotService:
             return card_name(info) if info else '#%d' % int(code)
         pages = format_text(plan, name_for)
         return pages[0] if len(pages) == 1 else TextPages(pages)
+
+    def _game_winrate_text(self, player: str):
+        """对局胜率：主卡/Side×先/后攻小局胜率 + 对饼图Top5卡组的大局胜率。"""
+        from .game_winrate import collect, message
+        try:
+            payload = collect(self.store.path, self.replay_root, self.clock(), player)
+        except ValueError as exc:
+            return f"对局胜率查询失败：{exc}"
+        except (sqlite3.Error, OSError):
+            return "对局统计暂时读取失败，请稍后重试。"
+        return message(payload)
 
     def _replay_text(self, user_id: str, player: str) -> str:
         self.index_player_replays(player)
@@ -2270,7 +2287,7 @@ class BotService:
         """先回一句“正在…”，再在后台跑慢命令；结果（含合并转发卡片）单独发。"""
         try:
             if (parse_command(text).get('op') in ('top100_deck', 'top100_pie', 'card_usage', 'card_flow', 'card_winrate',
-                                                'card_profile', 'card_select', 'card_next')
+                                                'card_profile', 'card_select', 'card_next', 'game_winrate')
                     or text.strip().isdigit() or text.strip().casefold() == 'next'):
                 async with observed_lock(self._statistics_queue_lock()):
                     reply = await observed_thread(self.handle_text, user_id, text, conversation)
