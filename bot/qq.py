@@ -16,7 +16,8 @@ from .watch_core import WebSocketClient
 from .account_guard import AccountMismatch, verify_transport_account
 from .reliability import OutboundGate, RequestGuard, AccountAttention, restriction_hint, write_state
 from pathlib import Path
-from .qq_diagnostics import Diagnostics, trace_id, exception_fields
+from .qq_diagnostics import (Diagnostics, trace_id, exception_fields, active_diagnostics,
+                             command_operation, phase, observe, request_timing, RequestTiming)
 from .qq_recovery import GIVE_UP_AFTER_FAILURES
 
 
@@ -280,15 +281,38 @@ class OneBotClient:
         self.publish_state('reconnecting', '已收到手动恢复请求，只重连接口，不自动登录QQ。')
         return True
 
+    @observe('reply_total')
     async def queued_send(self, kind, receiver, body, callback):
+        timing = request_timing.get()
+        actual = False
         if self.suspended or not self.connected:
             self.diagnostics.record('reply_skipped', reason='not_connected', kind=kind)
+            if timing is not None:
+                timing.sent(False, False)
             return False
         async def guarded():
-            return False if self.suspended or not self.connected else await callback()
+            nonlocal actual
+            # Includes throttle/lock/serialization before this callback, not the API wait.
+            from .qq_diagnostics import _phase_record, parent_span
+            _phase_record('phase_complete', phase='send_wait', span=uuid.uuid4().hex[:12],
+                          parent_span=parent_span.get(), outcome='ok',
+                          elapsed_ms=round((time.monotonic() - queued_at) * 1000, 3))
+            if self.suspended or not self.connected:
+                return False
+            actual = True
+            return await callback()
         self.diagnostics.record('reply_queued', kind=kind, queued=self.outbound.waiting)
-        result = await self.outbound.submit((kind, str(receiver)), body, guarded,
-                                            request=trace_id.get())
+        queued_at = time.monotonic()
+        try:
+            with phase('outbound_submit'):
+                result = await self.outbound.submit((kind, str(receiver)), body, guarded,
+                                                    request=trace_id.get())
+        except BaseException:
+            if timing is not None:
+                timing.sent(False, actual)
+            raise
+        if timing is not None:
+            timing.sent(bool(result), actual)
         self.diagnostics.record('reply_complete', kind=kind, success=bool(result))
         return result
 
@@ -575,6 +599,7 @@ class OneBotClient:
                 if online is True and self.connected:
                     self.publish_state('online')
             if data.get('post_type') == 'message':
+                data['_local_received_mono'] = time.monotonic()
                 self.received_messages += 1
                 data['_local_diagnostic_trace'] = uuid.uuid4().hex[:12]
                 token = trace_id.set(data['_local_diagnostic_trace'])
@@ -603,9 +628,18 @@ class OneBotClient:
 
     async def _dispatch(self, event: dict) -> None:
         token = trace_id.set(event.get('_local_diagnostic_trace') or uuid.uuid4().hex[:12])
+        sink_token = active_diagnostics.set(self.diagnostics)
+        op_token = command_operation.set('unknown')
+        timing = RequestTiming(event.get('_local_received_mono'))
+        timing_token = request_timing.set(timing)
         try:
             await self._dispatch_command(event)
         finally:
+            timing.foreground_done = True
+            timing.complete()
+            request_timing.reset(timing_token)
+            command_operation.reset(op_token)
+            active_diagnostics.reset(sink_token)
             trace_id.reset(token)
 
     async def _dispatch_command(self, event: dict) -> None:
@@ -636,10 +670,21 @@ class OneBotClient:
             return
         from .commands import parse_command
         self.handled_commands += 1
+        operation = parse_command(text or '').get('op', 'unknown')
+        command_operation.set(operation)
+        timing = request_timing.get()
+        if timing is not None:
+            timing.accepted = True
+            self.diagnostics.record('command_timeline_start', operation=operation)
+        if '_local_received_mono' in event:
+            self.diagnostics.record('phase_complete', phase='dispatch_wait', operation=operation,
+                outcome='ok', span=uuid.uuid4().hex[:12],
+                elapsed_ms=round((time.monotonic()-event['_local_received_mono'])*1000, 3))
         started = time.monotonic()
         self.diagnostics.record('command_start', operation=parse_command(text or '').get('op', 'unknown'), kind=kind)
         try:
-            await self.on_event(event)
+            with phase('foreground'):
+                await self.on_event(event)
             self.diagnostics.record('command_complete', elapsed_ms=round((time.monotonic()-started)*1000))
         except Exception as exc:
             self.diagnostics.record('command_error', **exception_fields(exc), elapsed_ms=round((time.monotonic()-started)*1000))
@@ -653,6 +698,7 @@ class OneBotClient:
             if not future.done():
                 future.set_exception(exc)
 
+    @observe('onebot_api')
     async def call(self, action: str, params: dict, *, timeout: Optional[float] = None) -> dict:
         if not self.connected:
             raise ConnectionError("NapCat 尚未连接")

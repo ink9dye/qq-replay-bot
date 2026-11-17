@@ -28,6 +28,7 @@ from .commands import HELP, PRICE_HELP, parse_command
 from .roles import normalize_roles
 from .replay_window import REPLAY_WINDOW_SECONDS, replay_in_window
 from .qq import OneBotClient, event_text, group_command_text
+from .qq_diagnostics import observe, observed_lock, observed_thread, phase
 from .share import ShareApp, ShareServer, format_time, safe_replay_file
 from .store import Store
 from .watch_core import (
@@ -667,6 +668,7 @@ class BotService:
             grant(self, user, "query_enroll")
         return _enroll_reply(result, int(cfg.get("code_hours") or 24))
 
+    @observe('handler')
     def handle_text(self, user_id, text: str, conversation: str = "") -> str:
         user = str(user_id)
         from .private_commands import dispatch
@@ -1084,24 +1086,30 @@ class BotService:
         cache_key = self._deck_cache_key(user_id, player)
         cached = self._deck_cache.get(cache_key)
         if cached and time.monotonic() - cached[0] < 3600:
-            return cached[1]
-        self.index_player_replays(player)
+            with phase('deck_cache_hit'):
+                return cached[1]
+        with phase('deck_index_replays'):
+            self.index_player_replays(player)
         from .match_history import recover_sessions_from_prefix
-        recover_sessions_from_prefix(self.store, self.replay_root, player)
+        with phase('deck_recover_sessions'):
+            recover_sessions_from_prefix(self.store, self.replay_root, player)
         public_ready = bool(self.share.public_base())
         now = float(self.clock())
-        rows = [row for row in (self.visible_replays(user_id, player) or [])
-                if safe_replay_file(self.replay_root, row['rel_path'])]
-        deck_ids = [replay['id'] for replay in self.store.replays_for_player(player)
-                    if replay_in_window(replay, now)
-                    and safe_replay_file(self.replay_root, replay['rel_path'])]
+        with phase('deck_visible_replays'):
+            rows = [row for row in (self.visible_replays(user_id, player) or [])
+                    if safe_replay_file(self.replay_root, row['rel_path'])]
+        with phase('deck_replay_ids'):
+            deck_ids = [replay['id'] for replay in self.store.replays_for_player(player)
+                        if replay_in_window(replay, now)
+                        and safe_replay_file(self.replay_root, replay['rel_path'])]
         if not deck_ids:
             return f"没有找到 {player} 最近14天的有效录像，暂时没有构筑图。"
         try:
-            link = self.share.create_link(
-                user_id, player, [row['id'] for row in rows], now - REPLAY_WINDOW_SECONDS,
-                deck_replay_ids=deck_ids,
-            )
+            with phase('deck_share_link'):
+                link = self.share.create_link(
+                    user_id, player, [row['id'] for row in rows], now - REPLAY_WINDOW_SECONDS,
+                    deck_replay_ids=deck_ids,
+                )
         except Exception:
             return "分享链接暂时生成失败，请稍后再试。"
         if not link.get('public'):
@@ -1110,7 +1118,8 @@ class BotService:
         with closing(sqlite3.connect(self.store.path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as db:
             db.row_factory = sqlite3.Row
             db.execute('BEGIN')
-            result = build_query(db, self.replay_root, now, player)
+            with phase('deck_build_query'):
+                result = build_query(db, self.replay_root, now, player)
         if result is None:
             return f"没有找到 {player} 的有效构筑（最近14天没有可用录像）。"
         inferred = result.get('inferred_side') or {}
@@ -1130,22 +1139,25 @@ class BotService:
 
         image_codes = [int(card.get('code') or 0) for card in
                        (result.get('cards') or []) + ((result.get('inferred_side') or {}).get('cards') or [])]
-        wait_for_thumbs(self.data_dir, image_codes, timeout=4)
+        with phase('deck_thumb_wait'):
+            wait_for_thumbs(self.data_dir, image_codes, timeout=4)
 
         def load(code):
             return thumb_picture(self.data_dir, code)
 
         image_stats = {}
         try:
-            blob = deck_image.render_cached(result, load, self.data_dir / "cache" / "qq-build-images", stats=image_stats,
-                                     card_data=load_card_data(self.data_dir, image_codes))
+            with phase('deck_image_render'):
+                blob = deck_image.render_cached(result, load, self.data_dir / "cache" / "qq-build-images", stats=image_stats,
+                                         card_data=load_card_data(self.data_dir, image_codes))
         except Exception:
             return f"构筑图生成失败；YDK 可从这里下载：{ydk_url}"
         image_url = 'base64://' + base64.b64encode(blob).decode('ascii')
         selected = result.get('selected') or {}
         person = result.get('person') or {}
         recorded = selected.get('recorded_at')
-        rank = self._top100_rank(player)
+        with phase('deck_rank_lookup'):
+            rank = self._top100_rank(player)
         rank_line = f"排名：#{rank}\n" if rank else ""
         text = (f"玩家：{player}\n"
                 f"{rank_line}"
@@ -1721,7 +1733,7 @@ class BotService:
         if is_group and parsed_command.get("op") in ("query_enroll", "watch_token"):
             from .watch_token_command import confidential_allowed
             if confidential_allowed(self, user_id, conversation):
-                private_reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+                private_reply = await observed_thread(self.handle_text, user_id, text, conversation)
                 if private_reply:
                     delivered = await self.qq.send_private(user_id, private_reply)
                     if not delivered:
@@ -1794,12 +1806,12 @@ class BotService:
             return
         if parsed_command.get('op') == 'help':
             # 帮助是一条分组清单，直接发文字，不再走合并转发。
-            reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+            reply = await observed_thread(self.handle_text, user_id, text, conversation)
             if reply is None:
                 return
             ok = await send(receiver, reply)
         else:
-            reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+            reply = await observed_thread(self.handle_text, user_id, text, conversation)
             if reply is None:
                 return
             pages = getattr(reply, 'forward_cards', None)
@@ -2238,10 +2250,11 @@ class BotService:
         until = self._confidential_retry.pop(str(user_id), None)
         return until is not None and until >= self.clock()
 
+    @observe('background_job')
     async def _deck_build_job(self, user_id, text, conversation, receiver, send):
         try:
-            async with self._statistics_queue_lock():
-                reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+            async with observed_lock(self._statistics_queue_lock()):
+                reply = await observed_thread(self.handle_text, user_id, text, conversation)
         except asyncio.TimeoutError:
             reply = "构筑生成超时，请稍后再试。"
         except Exception as exc:
@@ -2252,17 +2265,18 @@ class BotService:
             self.write_log(f"构筑结果发送失败：{exc}")
 
 
+    @observe('background_job')
     async def _slow_text_job(self, user_id, text, conversation, receiver, send, forward=None, self_id=None):
         """先回一句“正在…”，再在后台跑慢命令；结果（含合并转发卡片）单独发。"""
         try:
             if (parse_command(text).get('op') in ('top100_deck', 'top100_pie', 'card_usage', 'card_flow', 'card_winrate',
                                                 'card_profile', 'card_select', 'card_next')
                     or text.strip().isdigit() or text.strip().casefold() == 'next'):
-                async with self._statistics_queue_lock():
-                    reply = await asyncio.to_thread(self.handle_text, user_id, text, conversation)
+                async with observed_lock(self._statistics_queue_lock()):
+                    reply = await observed_thread(self.handle_text, user_id, text, conversation)
             else:
                 reply = await asyncio.wait_for(
-                    asyncio.to_thread(self.handle_text, user_id, text, conversation), timeout=120)
+                    observed_thread(self.handle_text, user_id, text, conversation), timeout=120)
         except asyncio.TimeoutError:
             reply = "处理超时，请稍后再试。"
         except Exception as exc:
@@ -2293,10 +2307,11 @@ class BotService:
             self.write_log(f"慢命令结果发送失败：{exc}")
 
 
+    @observe('background_job')
     async def _history_job(self, user_id, text, conversation, receiver, send):
         try:
             reply = await asyncio.wait_for(
-                asyncio.to_thread(self.handle_text, user_id, text, conversation), timeout=60)
+                observed_thread(self.handle_text, user_id, text, conversation), timeout=60)
         except asyncio.TimeoutError:
             reply = "历史查询超时，请稍后再试。"
         except Exception as exc:
@@ -2307,6 +2322,7 @@ class BotService:
         except Exception as exc:
             self.write_log(f"历史结果发送失败：{exc}")
 
+    @observe('background_job')
     async def _player_profile_job(self, user_id, text, conversation, receiver, send, forward, self_id):
         """玩家 xxx：把历史/当月/构筑/换备/录像合并成一条聊天记录。"""
         command = parse_command(text)
@@ -2319,13 +2335,13 @@ class BotService:
                                     ('换备', '换备'), ('录像', '录像')):
             try:
                 if command_text in ('构筑', '换备'):
-                    async with self._statistics_queue_lock():
+                    async with observed_lock(self._statistics_queue_lock()):
                         reply = await asyncio.wait_for(
-                            asyncio.to_thread(self.handle_text, user_id,
+                            observed_thread(self.handle_text, user_id,
                                               f'{command_text} {player}', conversation), timeout=90)
                 else:
                     reply = await asyncio.wait_for(
-                        asyncio.to_thread(self.handle_text, user_id,
+                        observed_thread(self.handle_text, user_id,
                                           f'{command_text} {player}', conversation), timeout=60)
             except asyncio.TimeoutError:
                 sections.append({'text': f'【{title}】读取超时。'})
@@ -2367,10 +2383,11 @@ class BotService:
             except Exception as exc:
                 self.write_log(f"玩家资料分段发送失败：{type(exc).__name__}: {exc}")
 
+    @observe('background_job')
     async def _price_quote_job(self, command, receiver, send):
         try:
             reply = await asyncio.wait_for(
-                asyncio.to_thread(self._price_quote_blocking, command), timeout=300)
+                observed_thread(self._price_quote_blocking, command), timeout=300)
         except asyncio.TimeoutError:
             reply = "查价超时：集换社页面没有响应，已复位，请稍后重试。"
             await asyncio.to_thread(self._reset_price_ui)
