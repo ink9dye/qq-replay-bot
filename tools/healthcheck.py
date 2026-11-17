@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Watchdog: restart dead services, email state transitions."""
 import asyncio
+import datetime
 import json
 import shutil
 import smtplib
@@ -62,6 +63,20 @@ PSI_IO_FULL10 = 35.0       # io full avg10 超过它：磁盘排队已经影响�
 QQ_DIAG_LOG = ROOT / 'data' / 'logs' / 'qq-diagnostics.jsonl'
 QQ_SEND_WINDOW = 300       # 发送失败统计窗口（秒）
 QQ_SEND_FAIL_ALERT = 3     # 窗口内发送超时达到这次数就报（本次 2 分钟内 3 次）
+
+# 网页接口级观测（2026-11-17 补）：14:10–14:49 有 47 次 503、一条 matrix-cell 请求持全局查询锁 163 秒，
+# 期间 ygo-web active、8787 端口在、/health 200、PSI 正常——旧判据因此全绿。
+# /health 200 是结构性的：statistics_server.py:40 把 /health 和 /favicon.ico 直接短路返回，根本不碰库，
+# 所以"数据库/全局锁"这一层的任何故障都不会体现在 /health 上。
+# 真实信号只留在 data/logs/web-access.jsonl 里：status、elapsed_ms、lock_wait_ms、lock_hold_ms、lock_task。
+# 这里按"用户实际看到了什么"判：报错次数、单请求耗时、等锁超时。只读日志尾部，不连库不发请求。
+WEB_ACCESS_LOG = ROOT / 'data' / 'logs' / 'web-access.jsonl'
+WEB_WINDOW = 600            # 统计窗口（秒）。窗口跨两次巡检，重复告警靠 repeat 压住，不靠短窗口
+WEB_5XX_ALERT = 5           # 窗口内 5xx 达到这次数才算“有报错”（占比低于一半时按 P2 报）
+WEB_5XX_SEVERE = 20         # 窗口内 5xx 达到这次数直接按 P1 报（11-16 白天最差 37 次/10 分钟）
+WEB_SLOW_MS = 30000         # 单请求超过 30 秒：用户已经在盯着转圈
+WEB_STALL_MS = 60000        # 单请求或单次持全局锁超过 60 秒：别人全在排队，按 P1 报
+WEB_TIMEOUT_ALERT = 3       # 窗口内等锁超时达到这次数：全局查询锁被长期占住
 
 CHECK_META = {
     'memory_low': {
@@ -199,6 +214,60 @@ CHECK_META = {
         ],
         'consequence': '用户白等；同一指令反复重发还会刷屏。',
         'recovered': 'QQ 发送已恢复正常',
+    },
+    'web_5xx': {
+        'sev': SEV1,
+        'title': '网页接口大面积报错（503）',
+        'impact': '统计页多个区块同时显示“暂时不可用”，用户点进去是空的或报错；'
+                  'QQ 查询走另一条路径，一般不受影响。',
+        'action': [
+            '先看是谁在报错：tail -n 300 /opt/ygobot/data/logs/web-access.jsonl '
+            '| grep \'"status": 50\' ，上面这条已经把接口名和占比写出来了。',
+            '再看是不是锁竞争：同一批日志里 lock_timeout=true 或 lock_hold_ms 很大，'
+            '说明有单个请求长期占着全局查询锁，其他接口全在排队等它（14:10–14:49 就是这种）。',
+            '确认是锁问题就重启 ygo-web（会打断长查询、立刻放锁）：systemctl restart ygo-web；'
+            '重启前先 cat data/capture-status.json 确认 active_observations 为 0。',
+        ],
+        'consequence': '统计页持续不可用；用户会反复刷新，请求越多排队越长，问题会自我放大。',
+        'recovered': '网页接口已恢复正常返回',
+    },
+    'web_5xx_mild': {
+        'sev': SEV2,
+        'title': '网页接口有零星报错（503）',
+        'impact': '统计页个别区块偶尔报错，刷新一下通常能出来。',
+        'action': [
+            '一般不用处理：看清上面写的接口名，若是 card-report / deck-naming 这类"正在计算"的接口，'
+            '等后台算完就好。',
+            '同一接口连续几小时都这样，再看 tail -n 300 data/logs/web-access.jsonl 里的 elapsed_ms，'
+            '耗时接近超时上限就是锁排队，不是接口本身错。',
+        ],
+        'consequence': '用户偶尔要刷新一次；不影响数据正确性。',
+        'recovered': '网页接口报错已减少',
+    },
+    'web_stall': {
+        'sev': SEV1,
+        'title': '网页有请求卡死超过 1 分钟',
+        'impact': '这条请求占着全局查询锁期间，其他所有统计接口都在排队，最后一起超时返回 503，'
+                  '页面上多处同时转圈。',
+        'action': [
+            '看这条日志的 lock_task 和 lock_hold_ms：持锁几十秒以上，就是单个重查询把全局锁占住了，'
+            '不是机器慢（PSI 应该正常、available 也够）。',
+            '短期：systemctl restart ygo-web 立刻放锁（确认 active_observations 为 0 再重启）。',
+            '长期：把这个接口从全局锁里摘出去、加并发闸，别让它挡住别人。',
+        ],
+        'consequence': '卡住的那几十秒到几分钟里，所有统计接口一起 503，用户看到整页“暂时不可用”。',
+        'recovered': '网页请求耗时已回落到正常范围',
+    },
+    'web_slow': {
+        'sev': SEV2,
+        'title': '网页有请求慢到几十秒',
+        'impact': '这一条请求期间，同一时间进来的其他接口会在锁上排队，页面上会看到多处一起转圈。',
+        'action': [
+            '看日志里的 lock_hold_ms：持锁时间长说明是单个重查询占着全局锁，不是机器慢。',
+            '通常自己会结束；同一接口反复出现就按“摘锁 / 加并发闸”处理。',
+        ],
+        'consequence': '偶发一两次影响不大；变成常态就说明有接口在长期占锁。',
+        'recovered': '网页请求耗时已回落到正常范围',
     },
 }
 
@@ -477,6 +546,10 @@ def issue_id(detail):
     if detail.startswith('内存压力过高：'): return 'psi_memory'
     if detail.startswith('磁盘压力过高：'): return 'psi_io'
     if detail.startswith('QQ 发送失败：'): return 'qq_send_fail'
+    if detail.startswith('网页接口大面积报错：'): return 'web_5xx'
+    if detail.startswith('网页接口报错：'): return 'web_5xx_mild'
+    if detail.startswith('网页接口卡死：'): return 'web_stall'
+    if detail.startswith('网页接口卡住：'): return 'web_slow'
     if detail.startswith('磁盘使用 '): return 'disk_high'
     if detail.startswith('watch-metrics 已 '): return 'metrics_stale'
     if detail.startswith('8787 /health '): return 'health_bad'
@@ -553,6 +626,16 @@ def fmt_duration(seconds):
     if minutes < 60: return '%d 分钟' % minutes
     hours, rest = divmod(minutes, 60)
     return ('%d 小时 %d 分钟' % (hours, rest)) if rest else ('%d 小时' % hours)
+
+
+def fmt_ms(value):
+    """毫秒说成人话：163043 → 2 分 43 秒；用户关心的是“等了多久”，不是精确毫秒。"""
+    if value is None:
+        return '未知'
+    seconds = max(0.0, float(value) / 1000.0)
+    if seconds < 90:
+        return '%.1f 秒' % seconds
+    return '%d 分 %d 秒' % (int(seconds // 60), int(seconds % 60))
 
 
 def human_bytes(value):
@@ -840,6 +923,98 @@ def read_psi(kind):
     return result
 
 
+def web_issues(trouble):
+    """把一次访问日志汇总转成告警文字列表；级别由 issue_id + describe 决定，这里只产事实。
+
+    503 有很多含义（正在计算、暂无档案、真出错、等锁超时都可能是 503），
+    所以按“次数 + 占比 + 耗时”分轻重：大面积报错、单请求卡死才是 P1。
+    """
+    if not trouble:
+        return []
+    found = []
+    errors = trouble['errors']
+    hits = sum(errors.values())
+    share = hits / float(max(1, trouble['total']))
+    if hits >= WEB_5XX_ALERT:
+        names = '、'.join('%s %d 次' % (name, count) for name, count in
+                          sorted(errors.items(), key=lambda kv: -kv[1])[:3])
+        # 大面积的标准：次数够多，或者占比过半且样本不算太少。
+        # 半夜低峰时"5 个请求错 4 个"占比很高但没什么人受影响，那种交给 P2 进日报，不半夜叫人。
+        severe = hits >= WEB_5XX_SEVERE or (share >= 0.5 and hits >= 10 and trouble['total'] >= 30)
+        detail = ('%s：最近 %d 分钟 %d 次 5xx（占这 %d 个请求的 %d%%；%s）'
+                  % ('网页接口大面积报错' if severe else '网页接口报错',
+                     WEB_WINDOW // 60, hits, trouble['total'], round(share * 100), names))
+        if trouble['timeouts']:
+            detail += '，其中 %d 次是等全局查询锁超时' % trouble['timeouts']
+        found.append(detail)
+    if trouble['slow']:
+        top = trouble['slow'][0]
+        worst = max(top['ms'], top.get('lock_hold') or 0)
+        detail = ('%s：%s 单次请求用了 %s'
+                  % ('网页接口卡死' if worst >= WEB_STALL_MS else '网页接口卡住',
+                     top['path'], fmt_ms(top['ms'])))
+        if top.get('lock_hold'):
+            detail += '（同一请求持全局查询锁 %s，锁标记 %s）' % (
+                fmt_ms(top['lock_hold']), top.get('lock_task') or 'unknown')
+        if len(trouble['slow']) > 1:
+            detail += '；期间另有 %d 个请求超过 %d 秒' % (len(trouble['slow']) - 1,
+                                                      WEB_SLOW_MS // 1000)
+        found.append(detail)
+    return found
+
+
+def recent_web_trouble(window=WEB_WINDOW, tail_bytes=2 * 1024 * 1024):
+    """读 web-access.jsonl 尾部，汇总最近 window 秒的接口异常：5xx、慢请求、等锁超时。
+
+    只读日志，不连库、不发 HTTP 探测，不给线上加任何负载。
+    文件读不到时返回 None（当作“没有数据”，绝不据此判定恢复或故障）。
+    """
+    try:
+        with WEB_ACCESS_LOG.open('rb') as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - tail_bytes))
+            raw = handle.read()
+    except OSError:
+        return None
+    now = time.time()
+    cutoff = now - window
+    errors = {}
+    slow = []
+    timeouts = 0
+    total = 0
+    for line in raw.splitlines():
+        if not line.startswith(b'{'):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        stamp = row.get('at')
+        if not isinstance(stamp, str):
+            continue
+        try:
+            when = datetime.datetime.strptime(stamp[:19], '%Y-%m-%dT%H:%M:%S').timestamp()
+        except ValueError:
+            continue
+        # 只算“最近 window 秒”：早于窗口的不要，晚于当前时间 1 分钟以上的也不认（时钟跳变/回放）。
+        if when < cutoff or when > now + 60:
+            continue
+        total += 1
+        path = str(row.get('path') or '?')
+        status = row.get('status')
+        if isinstance(status, int) and status >= 500:
+            errors[path] = errors.get(path, 0) + 1
+        elapsed = row.get('elapsed_ms')
+        if isinstance(elapsed, (int, float)) and elapsed >= WEB_SLOW_MS:
+            slow.append(dict(path=path, ms=elapsed, lock_task=row.get('lock_task'),
+                             lock_hold=row.get('lock_hold_ms'), at=stamp))
+        if row.get('lock_timeout'):
+            timeouts += 1
+    slow.sort(key=lambda item: -item['ms'])
+    return dict(total=total, errors=errors, slow=slow, timeouts=timeouts)
+
+
 def recent_send_failures(window=QQ_SEND_WINDOW, tail_bytes=512 * 1024):
     """数最近 window 秒内 QQ 侧发送失败：api_error/send_* 的次数 + 判定未送达的指令数。
 
@@ -917,6 +1092,12 @@ def build_digest(state, now):
                 if wal_info.get('gap_bytes') else '')
     restarts = read_restarts()
     web_fds = read_web_db_fds()
+    trouble = recent_web_trouble(30 * 60)
+    if trouble:
+        web_digest = ('%d 次' % sum(trouble['errors'].values()),
+                      fmt_ms(trouble['slow'][0]['ms']) if trouble['slow'] else '正常')
+    else:
+        web_digest = ('读不到日志', '读不到日志')
     qq_state = read_qq_state()
     metrics_age = file_age(ROOT / 'data' / 'logs' / 'watch-metrics.jsonl')
     disk = shutil.disk_usage('/').free
@@ -948,6 +1129,7 @@ def build_digest(state, now):
               '· 磁盘可用：%s / WAL：%s%s' % (human_bytes(disk), human_bytes(wal), wal_note),
               '· 网页 DB 连接：%s' % (('%d 个（正常 1–2；持续上涨说明读事务没关，会把 WAL 钉大）' % web_fds)
                                  if web_fds is not None else '未知'),
+              '· 网页接口：最近 30 分钟 5xx %s，最慢请求 %s' % (web_digest[0], web_digest[1]),
               '· 服务重启次数：web %s / collector %s / qq %s' % tuple(restarts)]
     if alert_counts:
         lines += ['', '【期间报过的事项】']
@@ -1124,6 +1306,11 @@ def main():
                 detail += '，另有 %d 条指令判定未送达' % lifecycle
             issues.append(detail)
 
+    # 网页接口级：进程活着、端口通、/health 200，不代表用户能用。
+    # 14:10–14:49 有 47 个 503、一条 matrix-cell 持全局查询锁 163 秒，以上判据全部是绿的，
+    # 只有访问日志里留着 status / elapsed_ms / lock_hold_ms，所以这里直接读日志。
+    issues.extend(web_issues(recent_web_trouble()))
+
     host = socket.gethostname()
     if DRY:
         print(json.dumps({'issues': issues, 'detail': EXTRA}, ensure_ascii=False, indent=2))
@@ -1136,10 +1323,13 @@ def main():
         state, issues, now,
         hold={'unit_down:*': 0, 'qq_silent': 0, 'qq_login': 120, 'qq_api': 180,
               'metrics_stale': 120, 'port:*': 180, 'health_bad': 600,
-              'qq_send_fail': 0, '*': 60},
+              'qq_send_fail': 0, 'web_5xx': 0, 'web_stall': 0,
+              'web_slow': 60, 'web_5xx_mild': 300, '*': 60},
         clear_hold=300,
         max_gap=300,
-        repeat={'*': ALERT_EVERY, 'qq_send_fail': max(ALERT_EVERY, 3600)})
+        repeat={'*': ALERT_EVERY, 'qq_send_fail': max(ALERT_EVERY, 3600),
+                'web_5xx': 7200, 'web_stall': 3600,
+                'web_slow': 3600, 'web_5xx_mild': 7200})
     emit_events(events, host, now)
     maybe_digest(state, now)
 
