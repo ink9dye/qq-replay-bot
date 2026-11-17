@@ -49,6 +49,20 @@ EVENT_LOG = ROOT / 'data' / 'logs' / 'alert-events.jsonl'
 SEV1 = 'P1'   # 需要人处理
 SEV2 = 'P2'   # 知道即可，可自愈
 
+# 资源压力与发送失败（2026-11-17 补）：11-17 13:32 那次“机器人忽然没反应”，
+# 可用内存 300–450MB、三个服务全 active、端口全在、/health 200，旧判据一条都不响；
+# 真实信号是 PSI——13:32:52 起 memory full avg10 从 0.23 飙到 43.39→46.39（全体进程 46% 时间在等回收），
+# 同期 ygo-qq 的 cgroup 从 6MB 被换到 220MB，NapCat 的 sendMsg 回调被拖到 8 秒超时。
+# 所以这里看 PSI，不看内存绝对值（稳态 available 就在 350–420MB，按绝对值设阈值只会制造噪音）。
+# 阈值 35 是按 11-17 全天数据定的：白天常态 full_avg10 在 15–25，凌晨偶发 36/48 单点，
+# 只有 13:32–13:33 那次是 43.39→46.39 连续两跳。配合“连续两次巡检超标才报”（hold=60），
+# 回放全天只会命中这一次，不产生噪音。
+PSI_MEMORY_FULL10 = 35.0   # memory full avg10 超过它：全体进程已被内存回收拖住
+PSI_IO_FULL10 = 35.0       # io full avg10 超过它：磁盘排队已经影响全体进程
+QQ_DIAG_LOG = ROOT / 'data' / 'logs' / 'qq-diagnostics.jsonl'
+QQ_SEND_WINDOW = 300       # 发送失败统计窗口（秒）
+QQ_SEND_FAIL_ALERT = 3     # 窗口内发送超时达到这次数就报（本次 2 分钟内 3 次）
+
 CHECK_META = {
     'memory_low': {
         'sev': SEV2,
@@ -79,7 +93,7 @@ CHECK_META = {
         'impact': '新对局不会入库，网页统计会停在旧数据，QQ 查询也查不到新对局。',
         'action': [
             'ssh 后运行 systemctl status ygo-collector --no-pager -n 30 看退出原因。',
-            '若报 database is locked，按 docs/ALERTING_AND_WAL_20261106.md 处理 WAL；否则 restart ygo-collector。',
+            '若报 database is locked，按 docs/topics/ALERTING_AND_WAL_20261106.md 处理 WAL；否则 restart ygo-collector。',
         ],
         'consequence': '停着期间的录像和对局不会自动补采。',
         'recovered': '采集心跳已恢复，新对局会继续入库',
@@ -102,7 +116,7 @@ CHECK_META = {
         'action': [
             '先确认没有人在电脑上登录同一个 QQ（同号互踢会掉线），这是第一嫌疑。',
             '等 10 分钟，再用同一部手机、同一网络扫码；不要连续扫。',
-            '按 docs/QQ_OBSERVATION_PERIOD_RULES.md §4 的掉线 SOP 处理，不要换号。',
+            '按 docs/core/QQ_OBSERVATION_PERIOD_RULES.md §4 的掉线 SOP 处理，不要换号。',
         ],
         'consequence': '机器人一直不回话，直到重新登录；观察期内不要用换号解决。',
         'recovered': 'QQ 已重新登录，收发恢复',
@@ -124,7 +138,7 @@ CHECK_META = {
         'impact': '表面看机器人“在线”，但实际收不到群消息，所有指令都不会响应。',
         'action': [
             '先看 data/qq-status.json 和 data/logs/qq-diagnostics.jsonl，确认最后一条消息时间。',
-            '按 docs/QQ_OBSERVATION_PERIOD_RULES.md §4 处理；不要连扫、不要换号、不要升级版本。',
+            '按 docs/core/QQ_OBSERVATION_PERIOD_RULES.md §4 处理；不要连扫、不要换号、不要升级版本。',
         ],
         'consequence': '所有 QQ 指令继续无响应，但监控上仍显示在线。',
         'recovered': 'QQ 消息收发已恢复',
@@ -141,6 +155,50 @@ CHECK_META = {
         ],
         'consequence': '按每小时 200–300MB 估算，几天内会把盘占满；届时采集与写入会直接失败。',
         'recovered': 'WAL 已回落到 128MB 附近',
+    },
+    'psi_memory': {
+        'sev': SEV2,
+        'title': '机器被内存回收拖住了',
+        'impact': '所有进程都会卡顿几十秒到几分钟：网页查询变慢、QQ 消息发不出去，'
+                  '用户看到的就是“机器人忽然没反应”。对局采集本身不丢数据。',
+        'action': [
+            '先看压力曲线：ls -t data/logs/memory-samples/*.jsonl | head -1 | xargs tail -n 10，'
+            '看 psi_full_avg10 和 ygo-qq 的 cgroup 是否同时暴涨（QQ 进程被换出是典型特征）。',
+            '再看后台任务：systemctl list-units "side-inference*" "ygobot-card-report*" --no-pager。'
+            '这两个每十几分钟全扫一遍库，正好压在低内存上。',
+            '通常 2–5 分钟自己回落；持续 10 分钟以上再考虑给定时任务错峰。'
+            '不要为此重启 NapCat。',
+        ],
+        'consequence': '压力期间群里的指令会超时丢回复（send_group_msg 8 秒超时无法确认送达），'
+                       '用户以为机器人坏了并重复发指令。',
+        'recovered': '内存压力已回落',
+    },
+    'psi_io': {
+        'sev': SEV2,
+        'title': '磁盘排队太长',
+        'impact': '所有读写都在排队，网页查询和 QQ 收发一起变慢。',
+        'action': [
+            'ssh 后运行 cat /proc/pressure/io，确认 full avg10 是否仍然高。',
+            '多半是后台全库扫描（side-inference / card-report 预计算）叠加采集写入；'
+            '等它跑完通常就回落，不需要动手。',
+        ],
+        'consequence': '持续高排队会把 QQ 发送回调拖到超时，群里表现为没反应。',
+        'recovered': '磁盘压力已回落',
+    },
+    'qq_send_fail': {
+        'sev': SEV1,
+        'title': '消息发不出去（QQ 发送超时）',
+        'impact': '群里发指令后没有回复，或回复只到一半。消息可能实际已送达，也可能真丢了，'
+                  '机器人侧拿到的是超时，无法确认。',
+        'action': [
+            '先判断是不是整机被压住了：cat /proc/pressure/memory /proc/pressure/io，'
+            '再看 data/logs/memory-samples/ 下最新那份采样。',
+            '再看 data/logs/qq-diagnostics.jsonl：error_type=TimeoutError 是机器忙，'
+            'retcode 非 0 才是 QQ 侧拒收。',
+            '按踩坑记录 L35 的规矩不要自动重发（会重复）；确认真的没到再人工补发。',
+        ],
+        'consequence': '用户白等；同一指令反复重发还会刷屏。',
+        'recovered': 'QQ 发送已恢复正常',
     },
 }
 
@@ -416,6 +474,9 @@ def save_state(state, path=None):
 def issue_id(detail):
     """把一条人类可读的 issue 映射成稳定 id，状态和去重都按 id 走。"""
     if detail.startswith('可用内存低于 '): return 'memory_low'
+    if detail.startswith('内存压力过高：'): return 'psi_memory'
+    if detail.startswith('磁盘压力过高：'): return 'psi_io'
+    if detail.startswith('QQ 发送失败：'): return 'qq_send_fail'
     if detail.startswith('磁盘使用 '): return 'disk_high'
     if detail.startswith('watch-metrics 已 '): return 'metrics_stale'
     if detail.startswith('8787 /health '): return 'health_bad'
@@ -758,6 +819,61 @@ def read_qq_state():
         return '未知'
 
 
+def read_psi(kind):
+    """读 /proc/pressure/<kind>，返回 {'full_avg10': 43.4, ...}；内核没开 PSI 时返回 {}。"""
+    result = {}
+    try:
+        text = (Path('/proc/pressure') / kind).read_text(encoding='utf-8')
+    except OSError:
+        return result
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        prefix = parts[0]          # some / full
+        for token in parts[1:]:
+            key, _, value = token.partition('=')
+            try:
+                result['%s_%s' % (prefix, key)] = float(value)
+            except ValueError:
+                continue
+    return result
+
+
+def recent_send_failures(window=QQ_SEND_WINDOW, tail_bytes=512 * 1024):
+    """数最近 window 秒内 QQ 侧发送失败：api_error/send_* 的次数 + 判定未送达的指令数。
+
+    只读 qq-diagnostics.jsonl 尾部，不碰数据库；文件读不到时返回 None（不误判为故障）。
+    """
+    try:
+        with QQ_DIAG_LOG.open('rb') as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - tail_bytes))
+            raw = handle.read()
+    except OSError:
+        return None
+    cutoff = time.time() - window
+    errors = {}
+    lifecycle = 0
+    for line in raw.splitlines():
+        if not line.startswith(b'{'):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        stamp = row.get('time')
+        if not isinstance(stamp, (int, float)) or stamp < cutoff:
+            continue
+        if row.get('event') == 'api_error' and str(row.get('action') or '').startswith('send_'):
+            action = row.get('action')
+            errors[action] = errors.get(action, 0) + 1
+        elif row.get('event') == 'command_lifecycle_complete' and row.get('outcome') == 'send_failure':
+            lifecycle += 1
+    return errors, lifecycle
+
+
 def load_events(since):
     rows = []
     try:
@@ -871,12 +987,16 @@ def resources_main():
     maximum = float(cfg.get('HEALTH_MAX_DISK_PERCENT', '85'))
     hold = max(0, int(cfg.get('HEALTH_RESOURCE_HOLD_SECONDS', '300')))
     ALERT_EVERY = max(60, int(cfg.get('HEALTH_REPEAT_SECONDS', '21600')))
+    psi_limit_memory = float(cfg.get('HEALTH_PSI_MEMORY_FULL10', str(PSI_MEMORY_FULL10)))
+    psi_limit_io = float(cfg.get('HEALTH_PSI_IO_FULL10', str(PSI_IO_FULL10)))
     # Read failures must not turn an existing resource alarm into a recovery.
     mem = {}
     for line in Path('/proc/meminfo').read_text().splitlines():
         key, _, value = line.partition(':')
-        if key == 'MemAvailable': mem[key] = int(value.strip().split()[0])
+        if key in ('MemAvailable', 'SwapTotal', 'SwapFree'):
+            mem[key] = int(value.strip().split()[0])
     available = mem['MemAvailable']
+    swap_used_mb = (mem.get('SwapTotal', 0) - mem.get('SwapFree', 0)) // 1024
     usage = shutil.disk_usage('/')
     percent = usage.used / usage.total * 100
     path = ROOT / 'data' / 'resource-health-state.json'
@@ -888,9 +1008,25 @@ def resources_main():
     if available < minimum * 1024:
         issues.append('可用内存低于 %dMB（%d MB）' % (minimum, available//1024))
     if percent > maximum: issues.append('磁盘使用 %.0f%%' % percent)
+    # PSI 量的是“全体进程因为等内存/磁盘停了多久”，比内存绝对值更接近用户感知的卡顿：
+    # 11-17 13:32 那次 available 还有 300MB 以上，但 memory full avg10 已经到 46。
+    psi_mem = read_psi('memory')
+    psi_io = read_psi('io')
+    mem_full10 = psi_mem.get('full_avg10')
+    io_full10 = psi_io.get('full_avg10')
+    if mem_full10 is not None and mem_full10 > psi_limit_memory:
+        issues.append('内存压力过高：全体进程有 %.0f%% 的时间在等内存回收（swap 已用 %dMB）'
+                      % (mem_full10, swap_used_mb))
+    if io_full10 is not None and io_full10 > psi_limit_io:
+        issues.append('磁盘压力过高：全体进程有 %.0f%% 的时间在等磁盘（swap 已用 %dMB）'
+                      % (io_full10, swap_used_mb))
     wal_issue = wal_stall_issue(state, now)
     if wal_issue: issues.append(wal_issue)
-    observation = '可用内存 %d MB，磁盘使用 %.1f%%' % (available//1024, percent)
+    observation = '可用内存 %d MB，swap 已用 %dMB，磁盘使用 %.1f%%' % (available//1024, swap_used_mb, percent)
+    if mem_full10 is not None:
+        observation += '，PSI 内存 full %.1f（60s %.1f）' % (mem_full10, psi_mem.get('full_avg60', 0))
+    if io_full10 is not None:
+        observation += '，PSI 磁盘 full %.1f（60s %.1f）' % (io_full10, psi_io.get('full_avg60', 0))
     wal_info = read_wal_state()
     if wal_info['bytes']:
         observation += '，WAL %s' % human_bytes(wal_info['bytes'])
@@ -903,11 +1039,17 @@ def resources_main():
         print(json.dumps(dict(issues=issues, observation=observation, hold_seconds=hold), ensure_ascii=False))
         return 0
     state = migrate_state(state)
+    # 压力事件的窗口常常只有 2–3 分钟（本次 13:32–13:35，采样跨度 112 秒），
+    # 所以 psi_memory 的 hold 压到 60 秒：定时器每 61 秒跑一次，等于"连续两次巡检都超标"才报，
+    # 既不会把单次尖峰当故障，也不会像默认 300 秒那样整段漏掉。
+    # psi_io 保留默认 hold，避免磁盘突发刷屏。
     events = update_alerts(state, issues, now,
-                           hold={'memory_low': hold, 'disk_high': 0, '*': hold},
+                           hold={'memory_low': hold, 'disk_high': 0,
+                                 'psi_memory': 60, 'psi_io': hold, '*': hold},
                            clear_hold={'memory_low': 600, 'disk_high': 3600, '*': 600},
                            max_gap=300,
-                           repeat={'memory_low': 86400, 'disk_high': ALERT_EVERY, '*': ALERT_EVERY})
+                           repeat={'memory_low': 86400, 'disk_high': ALERT_EVERY,
+                                   'psi_memory': 3600, 'psi_io': 3600, '*': ALERT_EVERY})
     emit_events(events, socket.gethostname(), now, observation)
     save_state(state, path)
     return 0
@@ -967,6 +1109,21 @@ def main():
     if age > 900:
         issues.append('watch-metrics 已 %.0f 分钟未更新' % (age / 60))
 
+    # 发送失败是“用户已经感觉到坏了”的直接信号：11-17 13:32 那次群回复连续 8 秒超时，
+    # 但 /health、端口、登录状态全绿，只有 qq-diagnostics 里留着记录。
+    failures = recent_send_failures()
+    if failures:
+        errors, lifecycle = failures
+        total = sum(errors.values())
+        if total >= QQ_SEND_FAIL_ALERT or lifecycle >= 2:
+            detail = 'QQ 发送失败：最近 %d 分钟 %d 次发送超时' % (QQ_SEND_WINDOW // 60, total)
+            if errors:
+                detail += '（' + '、'.join('%s %d 次' % (name, count)
+                                          for name, count in sorted(errors.items())) + '）'
+            if lifecycle:
+                detail += '，另有 %d 条指令判定未送达' % lifecycle
+            issues.append(detail)
+
     host = socket.gethostname()
     if DRY:
         print(json.dumps({'issues': issues, 'detail': EXTRA}, ensure_ascii=False, indent=2))
@@ -978,10 +1135,11 @@ def main():
     events = update_alerts(
         state, issues, now,
         hold={'unit_down:*': 0, 'qq_silent': 0, 'qq_login': 120, 'qq_api': 180,
-              'metrics_stale': 120, 'port:*': 180, 'health_bad': 600, '*': 60},
+              'metrics_stale': 120, 'port:*': 180, 'health_bad': 600,
+              'qq_send_fail': 0, '*': 60},
         clear_hold=300,
         max_gap=300,
-        repeat={'*': ALERT_EVERY})
+        repeat={'*': ALERT_EVERY, 'qq_send_fail': max(ALERT_EVERY, 3600)})
     emit_events(events, host, now)
     maybe_digest(state, now)
 
