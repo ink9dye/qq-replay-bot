@@ -83,3 +83,35 @@ class QueryConcurrencyTests(unittest.TestCase):
         def fail(db):raise ValueError('test failure')
         with self.assertRaises(ValueError):self.portal._cached_query_reply(('bad',),fail)
         self.assertEqual(self.portal._cached_query_reply(('good',),lambda db:{'ok':True})[0],200)
+
+    def _cell_headers(self):
+        return {'Host':'localhost','Cookie':'qqstats_owner='+self.portal._session(1100)}
+
+    def test_matrix_cell_does_not_queue_behind_global_compute_lock(self):
+        entered=threading.Event();release=threading.Event()
+        def hold():
+            with self.portal._query_compute_lock:
+                entered.set();release.wait(3)
+        thread=threading.Thread(target=hold);thread.start()
+        self.addCleanup(thread.join);self.addCleanup(release.set)
+        self.assertTrue(entered.wait(2))
+        with patch('bot.statistics_portal.QUERY_WAIT_SECONDS',0):
+            status,kind,body,extra=self.portal.route(
+                '/statistics/api/matrix-cell?row=%22A%22&column=%22B%22',self._cell_headers(),'127.0.0.1')
+        # 空库上必然失败，但必须是“库不可用”，不能是“统计正在计算”——后者说明它还在等全局锁。
+        self.assertEqual(status,503)
+        self.assertNotIn(b'query_busy',body)
+
+    def test_second_matrix_cell_waits_on_its_own_gate(self):
+        entered=threading.Event();release=threading.Event()
+        def hold():
+            with self.portal._cell_lock:
+                entered.set();release.wait(3)
+        thread=threading.Thread(target=hold);thread.start()
+        self.addCleanup(thread.join);self.addCleanup(release.set)
+        self.assertTrue(entered.wait(2))
+        with patch('bot.statistics_portal.QUERY_WAIT_SECONDS',0.05):
+            status,kind,body,extra=self.portal.route(
+                '/statistics/api/matrix-cell?row=%22A%22&column=%22B%22',self._cell_headers(),'127.0.0.1')
+        self.assertEqual(status,503)
+        self.assertIn(b'query_busy',body)

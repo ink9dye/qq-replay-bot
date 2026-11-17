@@ -128,6 +128,11 @@ class StatisticsPortal:
         self._card_metrics_lock=threading.Lock()
         from .web_perf_metrics import ObservedQueryLock
         self._query_compute_lock=ObservedQueryLock()
+        # 矩阵格展开（matrix-cell）单独一把闸：它和矩阵网格一样要跑全库 eligible_views，
+        # 冷算可达百秒级；挂在全局计算锁上会把 matrix/roster/card-report 一起堵到 8 秒超时
+        # 并成片返回 503（2026-11-17 14:42 那笔持锁 163 秒）。这里只限制“同时最多一个
+        # matrix-cell”，不再和别的接口互相排队。
+        self._cell_lock=ObservedQueryLock()
         self._refresh=None
         if background:
             from .statistics_refresh import QueryRefresh
@@ -158,7 +163,8 @@ class StatisticsPortal:
         combo_path=api_path.startswith('/statistics/api/deck-naming/groups')
         if api_path.startswith('/statistics/api/') and not candidate_groups and not combo_path and api_path not in CACHED_API_PATHS and api_path not in (
                 '/statistics/api/devices','/statistics/api/card-search','/statistics/api/card-info',
-                '/statistics/api/small-world-cards','/statistics/api/card-options','/statistics/api/sample'):
+                '/statistics/api/small-world-cards','/statistics/api/card-options','/statistics/api/sample',
+                '/statistics/api/matrix-cell'):
             from .web_perf_metrics import acquire_query_lock
             if not acquire_query_lock(self._query_compute_lock,timeout=QUERY_WAIT_SECONDS,task=api_path):
                 return self._query_busy_reply()
@@ -622,10 +628,16 @@ class StatisticsPortal:
                 if order not in ('all','first','second'):raise ValueError()
                 ranges=parse_ranges(args)
             except (ValueError,TypeError):return self._reply(400,'矩阵格子条件无效。')
+            from .web_perf_metrics import acquire_query_lock
+            if not acquire_query_lock(self._cell_lock,timeout=QUERY_WAIT_SECONDS,task='/statistics/api/matrix-cell'):
+                return self._query_busy_reply()
             try:
                 return self._query_reply(lambda db:scoped_query(ranges,lambda:matrix_cell(db,self.replay_root,float(self.clock()),row,column,None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1',threshold=args.get('threshold',['10'])[0])))
             except ValueError as exc:
                 return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
+            finally:
+                self._cell_lock.release()
+
         if parts==['statistics','api','side-analysis']:
             # 玩家排行/构筑页与对战矩阵共用的 Side 换入换出证据查询；只读。
             from .statistics_side_analysis import query as side_analysis

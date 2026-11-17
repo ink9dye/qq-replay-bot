@@ -48,7 +48,7 @@ def add_metric(name,value):
 
 def task_label(value):
     value = str(value).rsplit('/', 1)[-1]
-    return value if value in {'roster','recordings','matrix','card-report','card-table',
+    return value if value in {'roster','recordings','matrix','matrix-cell','card-report','card-table',
         'groups','deck-candidates','cards-extra','deck-detail','build','side-analysis',
         'side-recent','usage','winrate','flow'} else 'other'
 
