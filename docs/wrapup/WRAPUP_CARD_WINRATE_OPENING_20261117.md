@@ -27,3 +27,4 @@
 
 QQ自动重试后新进程3036816已在线，qq-status.json的process_id与systemctl MainPID完全一致，state=online、SubState=running、NRestarts=1；不是旧状态文件。其他三服务active。旧QQ PID3034847；首次启动3036641因写锁失败后自动恢复。
 
+代码及首版收尾提交：aaf1ee93eb502669，已push master，远端一致。本轮用量起60%，部署核验时62%；最终读数另记交接（账户整数百分比，非精确任务计费）。
