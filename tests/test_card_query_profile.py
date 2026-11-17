@@ -34,6 +34,15 @@ class CardQueryTests(unittest.TestCase):
         self.service._card_flow_reply = Mock(return_value=CardReply('流向', image_urls=['base64://flow']))
         self.service._card_winrate_reply = Mock(return_value='胜率')
 
+    def test_profile_keeps_both_winrate_pages_as_separate_nodes(self):
+        from bot.service import TextPages
+        self.rows = [card(123, 'test')]
+        self.service._card_winrate_reply.return_value = TextPages(['used','opening'])
+        reply = self.service._card_query_reply('u', 'search', 'test', 'card_profile')
+        self.assertEqual(len(reply.forward_cards), 6)
+        self.assertTrue(reply.forward_cards[-2]['text'].endswith('used'))
+        self.assertTrue(reply.forward_cards[-1]['text'].endswith('opening'))
+
     def test_parse(self):
         self.assertEqual(parse_command('卡片 测试 卡'), {'op': 'card_profile', 'name': '测试 卡'})
         self.assertEqual(parse_command('卡片')['op'], 'error')

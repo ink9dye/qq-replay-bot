@@ -87,7 +87,7 @@ def _basis(db, replay_root, now):
 
 def _compute(database, replay_root, now, code, limit=MATCHUP_LIMIT):
     from .card_identity import identity, facts as identity_facts
-    from .card_statistics import matchups, _opponent_rows
+    from .card_statistics import _opponent_rows
     with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
                                  uri=True, timeout=5)) as db:
         db.row_factory = sqlite3.Row
@@ -114,17 +114,29 @@ def _compute(database, replay_root, now, code, limit=MATCHUP_LIMIT):
         for row in selected:
             row['copies'] = copies.get(row['build'], 0)
         opponents = _opponent_rows(db, {row['digest'] for row in selected})
-        result = matchups(db, selected, facts, 'main', limit,
-                          MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES, opponents=opponents, prefiltered_population=True)
-        popular = _popular_matchups(db, replay_root, now, selected, facts, opponents)
-        # 按每个小局的玩家视角分桶；复用同一份事实和对手，不重查人口或录像。
-        order = {}
-        for label, value in (('first', 1), ('second', 0), ('unknown', None)):
-            subset = [row for row in selected if row.get('first_player') == value]
-            order[label] = matchups(db, subset, facts, 'main', limit=0,
-                                    opponents=opponents, prefiltered_population=True)['base']
-    return dict(card=info['canonical_card'], matchups=result, order=order,
-                popular_matchups=popular)
+        decks = _popular_decks(db, replay_root, now)
+        used = _summarize(db, replay_root, now, selected, facts, opponents, decks, limit)
+        # initial_count is opening-hand evidence; drawn also includes later draws.
+        opening_facts = {key: dict(fact, used=(int(fact['initial_count'] > 0)
+                         if fact.get('initial_count') is not None else None))
+                         for key, fact in facts.items()}
+        opening = _summarize(db, replay_root, now, selected, opening_facts, opponents, decks, limit)
+        opening['matchups']['unit'] = 'initial_hand_small_game_perspective'
+    return dict(card=info['canonical_card'], **used, opening=opening)
+
+
+def _summarize(db, replay_root, now, selected, facts, opponents, decks, limit):
+    from .card_statistics import matchups
+    result = matchups(db, selected, facts, 'main', limit,
+                      MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES,
+                      opponents=opponents, prefiltered_population=True)
+    popular = _popular_matchups(db, replay_root, now, selected, facts, opponents, decks=decks)
+    order = {}
+    for label, value in (('first', 1), ('second', 0), ('unknown', None)):
+        subset = [row for row in selected if row.get('first_player') == value]
+        order[label] = matchups(db, subset, facts, 'main', limit=0,
+                               opponents=opponents, prefiltered_population=True)['base']
+    return dict(matchups=result, order=order, popular_matchups=popular)
 
 
 def _popular_decks(db, replay_root, now):
@@ -140,10 +152,10 @@ def _popular_decks(db, replay_root, now):
             if name != '未识别'][:MATCHUP_LIMIT]
 
 
-def _popular_matchups(db, replay_root, now, selected, facts, opponents):
+def _popular_matchups(db, replay_root, now, selected, facts, opponents, decks=None):
     from .card_statistics import matchups
     rows = []
-    for deck in _popular_decks(db, replay_root, now):
+    for deck in (_popular_decks(db, replay_root, now) if decks is None else decks):
         # 复用已有事实与逐局对手，不按当前代表构筑替换历史对手卡组。
         subset = [row for row in selected
                   if any(other['player'] != row['player']
@@ -182,7 +194,7 @@ def collect(database, replay_root, now, card_name=None, *, code=None, limit=MATC
     return payload
 
 
-def message(payload):
+def message(payload, *, opening=False):
     """纯文字回复：总体/先攻/后攻使用后胜率 + 对手卡组 Top 5。"""
     code = int(payload['code'])
     name = payload.get('name') or ('#%d' % code)
@@ -238,4 +250,14 @@ def message(payload):
                      MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES))
     if popular is not None:
         lines.append('饼图榜按人数取前5，不合并大类或“其他”；样本不足仍保留，无样本不算0%。')
-    return '\n'.join(lines)
+    text = '\n'.join(lines)
+    if opening:
+        text = text.replace('使用后', '起手抽到后').replace(
+            '主卡实际使用', '主卡起手实际抽到')
+        text += '\n起手抽到即计入，无需使用；过程抽到不计；起手证据未知不纳入。'
+    label = '起手抽到' if opening else '实际使用'
+    return '【' + label + '】\n' + text
+
+
+def messages(payload):
+    return [message(payload), message(dict(payload, **payload['opening']), opening=True)]

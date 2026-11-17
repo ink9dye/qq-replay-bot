@@ -2072,8 +2072,9 @@ class BotService:
         for title, _, handler in handlers:
             try:
                 result = handler(code)
-                sections.append({'text': f'【{title}】\n{result}',
-                                 'images': list(getattr(result, 'image_urls', None) or [])})
+                for page in getattr(result, 'pages', None) or [result]:
+                    sections.append({'text': f'【{title}】\n{page}',
+                                     'images': list(getattr(result, 'image_urls', None) or [])})
             except Exception as exc:
                 self.write_log(f"卡片资料 {title} 读取失败：{type(exc).__name__}: {exc}")
                 sections.append({'text': f'【{title}】读取失败，请稍后单独查询。'})
@@ -2106,12 +2107,12 @@ class BotService:
         return CardReply(text, image_urls=image_urls)
 
     def _card_winrate_reply(self, card_name):
-        from .card_winrate import collect, message
+        from .card_winrate import collect, messages
         try:
             payload = collect(self.store.path, self.replay_root, self.clock(), card_name)
         except ValueError as exc:
             return f"单卡胜率查询失败：{exc}"
-        return message(payload)
+        return TextPages(messages(payload))
 
     def _card_usage_reply(self, card_name):
         from .card_usage_pie import render
