@@ -29,8 +29,12 @@ PAGE_URL = "https://ygocdb.com/card/%d"
 FULL_MOMO = "https://cdn.233.momobako.com/ygopro/pics/%d.jpg"
 FULL_PRE = "https://cdntx.moecube.com/ygopro-super-pre/data/pics/%d.jpg"
 THUMB_MOMO = "https://cdn.233.momobako.com/ygopro/pics/%d.jpg!thumb2"
+# 2026-10 起 momobako 渐进上新路径：新卡（如 IMPH 的 31321471）只有 ygoimg，
+# 老 ygopro/pics 全 404；ygoimg 支持即时转码（!/format/jpg = 原分辨率 jpeg）。
+IMG_MOMO = "https://cdn.233.momobako.com/ygoimg/ygopro/%d.webp!/format/jpg"
+IMG_THUMB = "https://cdn.233.momobako.com/ygoimg/ygopro/%d.webp!/format/webp/fw/400/quality/85"
 
-IMAGE_RE = re.compile(r"/pics/(\d+)\.(?:jpg|jpeg|png|webp)", re.I)
+IMAGE_RE = re.compile(r"/(?:pics/|ygoimg/ygopro/)(\d+)\.(?:jpg|jpeg|png|webp)", re.I)
 MAX_BYTES = 2 * 1024 * 1024
 THUMB_MAX = (120, 165)
 MAP_FILE = "card-image-ids.json"
@@ -48,6 +52,7 @@ _pending: dict[tuple[str, int, str], Future] = {}
 _thumb_pending: set[tuple[str, int]] = set()
 _unavailable: dict[tuple[str, int, str], float] = {}
 _miss_logged: dict[tuple[str, int, str, str], float] = {}
+_hits: dict[tuple[str, int], str] = {}
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="card-image")
 _opener = build_opener(ProxyHandler({}))
 
@@ -280,6 +285,17 @@ def _save_blob(path: Path, blob: bytes) -> bool:
         return False
 
 
+def _remember_hit(data_dir, card_id, url) -> None:
+    """记录某张卡实际下到图的 URL；聊天兜底链接优先复用已知可用源。"""
+    with _lock:
+        _hits[(_key(data_dir), int(card_id))] = url
+
+
+def _hit(data_dir, card_id) -> str | None:
+    with _lock:
+        return _hits.get((_key(data_dir), int(card_id)))
+
+
 def ensure_full(data_dir, card_id, timeout=12) -> Path | None:
     """本地有直接返回；没有才解析 image id 并下载原图，按卡密落盘。"""
     card_id = int(card_id)
@@ -306,7 +322,8 @@ def ensure_full(data_dir, card_id, timeout=12) -> Path | None:
             # 萌卡超先行：图只在 super-pre，按卡号直取，不查百鸽页。
             candidates.extend([FULL_PRE % card_id, FULL_MOMO % card_id])
         else:
-            candidates.append(FULL_MOMO % card_id)
+            # 普通卡：老路径优先（老卡快），新卡老路径 404 后由 ygoimg 兜底。
+            candidates.extend([FULL_MOMO % card_id, IMG_MOMO % card_id])
         seen = set()
         for url in candidates:
             if url in seen:
@@ -317,6 +334,7 @@ def ensure_full(data_dir, card_id, timeout=12) -> Path | None:
             except OSError:
                 continue
             if _valid_image(blob) and _save_blob(full_path(data_dir, card_id), blob):
+                _remember_hit(data_dir, card_id, url)
                 result = full_path(data_dir, card_id)
                 break
         if result is None and card_id < 100_000_000:
@@ -324,7 +342,8 @@ def ensure_full(data_dir, card_id, timeout=12) -> Path | None:
             candidates = []
             if image != card_id:
                 candidates.append(FULL_PRE % image)
-            candidates.extend([FULL_MOMO % image, FULL_MOMO % card_id, FULL_PRE % card_id])
+            candidates.extend([FULL_MOMO % image, IMG_MOMO % image,
+                               FULL_MOMO % card_id, IMG_MOMO % card_id, FULL_PRE % card_id])
             for url in candidates:
                 if url in seen:
                     continue
@@ -336,6 +355,7 @@ def ensure_full(data_dir, card_id, timeout=12) -> Path | None:
                 if not _valid_image(blob):
                     continue
                 if _save_blob(full_path(data_dir, card_id), blob):
+                    _remember_hit(data_dir, card_id, url)
                     result = full_path(data_dir, card_id)
                     break
     finally:
@@ -383,22 +403,26 @@ def ensure_thumb(data_dir, card_id, timeout=8) -> Path | None:
         mark_cooling(data_dir, card_id, "thumb", "no_source")
         return None
     def take(candidate: int) -> bool:
-        try:
-            blob = _download(THUMB_MOMO % candidate, timeout=timeout)
-        except OSError:
-            return False
-        if len(blob) < 64 or not _valid_image(blob):
-            return False
-        target = thumb_path(data_dir, card_id)
-        if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
-            return _save_blob(target, blob)
-        source = target.with_name(target.name + ".src")
-        if _save_blob(source, blob) and _derive_thumb(source, target):
+        # 老路径 !thumb2 优先；新卡老路径 404 时由 ygoimg 缩略图兜底。
+        for url in (THUMB_MOMO % candidate, IMG_THUMB % candidate):
             try:
-                source.unlink()
+                blob = _download(url, timeout=timeout)
             except OSError:
-                pass
-            return True
+                continue
+            if len(blob) < 64 or not _valid_image(blob):
+                continue
+            target = thumb_path(data_dir, card_id)
+            if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+                if _save_blob(target, blob):
+                    return True
+                continue
+            source = target.with_name(target.name + ".src")
+            if _save_blob(source, blob) and _derive_thumb(source, target):
+                try:
+                    source.unlink()
+                except OSError:
+                    pass
+                return True
         return False
 
     if take(card_id):
@@ -448,12 +472,17 @@ def page_urls(data_dir, card_id) -> tuple[str, str]:
     if card_id >= 100_000_000:
         # 萌卡超先行没有 !thumb2，直接给 super-pre 原图。
         return FULL_PRE % card_id, FULL_MOMO % card_id
-    return THUMB_MOMO % card_id, FULL_MOMO % card_id
+    # 普通卡：回退图用 ygoimg（新卡只有这里才有图），浏览器可直接渲染 jpeg。
+    return THUMB_MOMO % card_id, IMG_MOMO % card_id
 
 
 def full_url(data_dir, card_id) -> str:
     """聊天兜底 URL：先行卡必须走 super-pre，否则 momobako 会 404。"""
     card_id = int(card_id)
+    # 实际下到过图的源优先——新卡老路径 404，命中过 ygoimg 就直接给新路径。
+    hit = _hit(data_dir, card_id)
+    if hit:
+        return hit
     image = image_id_cached(data_dir, card_id) or card_id
     if image != card_id:
         return FULL_PRE % image

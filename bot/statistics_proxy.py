@@ -18,6 +18,7 @@ UPSTREAM = "http://127.0.0.1:8788"
 BLOCKED = ("/statistics/access",)
 TEXT_TYPES = ("text/html", "text/javascript", "application/javascript", "text/css", "application/json")
 IMAGE_SOURCES = ("https://cdn.233.momobako.com/ygopro/pics/",
+                 "https://cdn.233.momobako.com/ygoimg/ygopro/",
                  "https://cdntx.moecube.com/ygopro-super-pre/data/pics/")
 IMAGE_PATHS = ("/statistics/card-thumb/", "/statistics/card-image/")
 

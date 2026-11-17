@@ -17,6 +17,8 @@ _image_futures = {}
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='card-image')
 REMOTE = 'https://cdn.233.momobako.com/ygopro/pics/%d.jpg'
 REMOTE_FALLBACK = 'https://cdntx.moecube.com/ygopro-super-pre/data/pics/%d.jpg'
+# 2026-10 起新卡只有 ygoimg 有图（老路径全 404）；即时转 jpeg，落盘仍是 .jpg。
+REMOTE_NEW = 'https://cdn.233.momobako.com/ygoimg/ygopro/%d.webp!/format/jpg'
 RETRY_SECONDS = 600
 
 
@@ -110,8 +112,9 @@ def _schedule(data_dir, code, pics):
                 return existing[0]
             # 只按卡号本身下载、按卡号落盘：±1e8 猜号在 CDN 上命中的可能是
             # 另一张卡（11-09/11-10 两次串卡），不再作为请求或写入文件名。
-            # 超先行（≥1e8）只认 super-pre；普通卡先 momobako，super-pre 兜底。
-            templates = (REMOTE_FALLBACK, REMOTE) if code >= 100_000_000 else (REMOTE, REMOTE_FALLBACK)
+            # 超先行（≥1e8）只认 super-pre；普通卡老路径优先，新卡由 ygoimg 兜底。
+            templates = ((REMOTE_FALLBACK, REMOTE) if code >= 100_000_000
+                         else (REMOTE, REMOTE_NEW, REMOTE_FALLBACK))
             for template in templates:
                 try:
                     with urllib.request.urlopen(template % code, timeout=10) as response:
@@ -119,6 +122,9 @@ def _schedule(data_dir, code, pics):
                 except OSError:
                     continue
                 if not blob or len(blob) > 2 * 1024 * 1024:
+                    continue
+                if template == REMOTE_NEW and blob[:2] != b'\xff\xd8':
+                    # 新路径必须回真 jpeg；HTML/占位页宁缺勿错。
                     continue
                 path = (pics / (str(code) + '.jpg')).resolve()
                 if not path.is_relative_to(pics):
@@ -270,6 +276,7 @@ def picture(data_dir, code):
 
 
 THUMB_REMOTE = 'https://cdn.233.momobako.com/ygopro/pics/%d.jpg!thumb2'
+THUMB_REMOTE_NEW = 'https://cdn.233.momobako.com/ygoimg/ygopro/%d.webp!/format/webp/fw/400/quality/85'
 THUMB_MAX = (120, 165)
 THUMB_PENDING_MAX = 64
 _thumb_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='card-thumb')
@@ -339,28 +346,31 @@ def _schedule_thumb(data_dir, code, thumbs, pics=None):
             旧写法按下载号落盘：映射/猜号下到别的卡时，会覆盖那个号自己的
             缩略图文件（11-10 串卡）。现在只有卡密这一个写入命名空间。
             """
-            try:
-                with urllib.request.urlopen(THUMB_REMOTE % source_number, timeout=15) as response:
-                    blob = response.read(2 * 1024 * 1024 + 1)
-            except OSError:
-                return False
-            if len(blob) < 64 or len(blob) > 2 * 1024 * 1024:
-                return False
-            if blob[:4] == b'RIFF' and blob[8:12] == b'WEBP':
-                suffix = '.webp'
-            elif blob[:2] == b'\xff\xd8':
-                suffix = '.jpg'
-            elif blob[:4] == b'\x89PNG':
-                suffix = '.png'
-            else:
-                return False
-            path = (thumbs / (str(code) + suffix)).resolve()
-            if not path.is_relative_to(thumbs):
-                return False
-            temporary = path.with_suffix(suffix + '.tmp')
-            temporary.write_bytes(blob)
-            os.replace(temporary, path)
-            return True
+            # 老路径 !thumb2 优先；新卡老路径 404 时由 ygoimg 缩略图兜底。
+            for template in (THUMB_REMOTE, THUMB_REMOTE_NEW):
+                try:
+                    with urllib.request.urlopen(template % source_number, timeout=15) as response:
+                        blob = response.read(2 * 1024 * 1024 + 1)
+                except OSError:
+                    continue
+                if len(blob) < 64 or len(blob) > 2 * 1024 * 1024:
+                    continue
+                if blob[:4] == b'RIFF' and blob[8:12] == b'WEBP':
+                    suffix = '.webp'
+                elif blob[:2] == b'\xff\xd8':
+                    suffix = '.jpg'
+                elif blob[:4] == b'\x89PNG':
+                    suffix = '.png'
+                else:
+                    continue
+                path = (thumbs / (str(code) + suffix)).resolve()
+                if not path.is_relative_to(thumbs):
+                    return False
+                temporary = path.with_suffix(suffix + '.tmp')
+                temporary.write_bytes(blob)
+                os.replace(temporary, path)
+                return True
+            return False
         try:
             thumbs.mkdir(parents=True, exist_ok=True)
             from . import card_image_cache

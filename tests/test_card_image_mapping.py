@@ -25,6 +25,7 @@ class MappingGuardTests(unittest.TestCase):
     def tearDown(self):
         cache._maps.clear()
         cache._stamps.clear()
+        cache._hits.clear()
         self.tmp.cleanup()
 
     def _write_map(self, entries):
@@ -95,6 +96,65 @@ class MappingGuardTests(unittest.TestCase):
         thumb, full = cache.page_urls(self.data, 99522650)
         self.assertIn('super-pre', thumb)
         self.assertIn('super-pre', full)
+
+
+class NewCdnFallbackTests(unittest.TestCase):
+    """2026-10 起 momobako 渐进上新路径 ygoimg：新卡老路径全 404。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data = Path(self.tmp.name)
+
+    def tearDown(self):
+        cache._maps.clear()
+        cache._stamps.clear()
+        cache._hits.clear()
+        self.tmp.cleanup()
+
+    def test_parse_image_id_reads_ygoimg_webp(self):
+        page = ('<img src="https://cdn.233.momobako.com/ygoimg/ygopro/31321471.webp'
+                '!/format/webp/fw/400/quality/85">')
+        self.assertEqual(cache.parse_image_id(page), 31321471)
+
+    def test_ygoimg_image_id_equal_to_card_is_not_mapped(self):
+        # 图名==卡密的普通卡不需要映射，也不许写映射文件。
+        page = '<a href="/card/31321471">x</a><img src="/ygoimg/ygopro/31321471.webp">'
+        self.assertIsNone(cache.remember_page(self.data, 31321471, page))
+        self.assertEqual(cache.load_map(self.data), {})
+
+    def test_page_urls_fall_back_to_ygoimg_for_normal_card(self):
+        thumb, full = cache.page_urls(self.data, 12345678)
+        self.assertIn('pics', thumb)
+        self.assertIn('ygoimg', full)
+        self.assertIn('12345678', full)
+
+    def test_ensure_full_falls_back_to_ygoimg(self):
+        jpeg = b'\xff\xd8' + b'x' * 64
+        seen = []
+
+        def fake_download(url, timeout=8):
+            seen.append(url)
+            if 'ygoimg' in url:
+                return jpeg
+            raise OSError('404')
+
+        with mock.patch.object(cache, '_download', side_effect=fake_download), \
+                mock.patch.object(cache, 'image_id', return_value=None):
+            path = cache.ensure_full(self.data, 31321471)
+        self.assertIsNotNone(path)
+        self.assertEqual(path.name, '31321471.jpg')
+        self.assertTrue(any('ygoimg' in url for url in seen))
+        # 老路径 404 的新卡：命中后聊天兜底 URL 直接给已知可用的 ygoimg。
+        self.assertIn('ygoimg', cache.full_url(self.data, 31321471))
+
+    def test_full_url_keeps_super_pre_for_alias(self):
+        self._write_map({58406693: 101307051})
+        self.assertIn('super-pre', cache.full_url(self.data, 58406693))
+
+    def _write_map(self, entries):
+        payload = {"version": 1,
+                   "cards": {str(k): {"image": v, "checked_at": 1.0} for k, v in entries.items()}}
+        (self.data / cache.MAP_FILE).write_text(json.dumps(payload), encoding='utf-8')
 
 
 if __name__ == '__main__':

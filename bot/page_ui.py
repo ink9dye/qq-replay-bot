@@ -55,7 +55,10 @@ def deck_card_images(main, extra, side, names, data_dir=None):
                 primary, fallback = card_image_cache.page_urls(data_dir, number)
             else:
                 primary = CARD_IMAGE_URL.format(code=raw)
-                fallback = f'https://cdn.233.momobako.com/ygopro/pics/{raw}.jpg'
+                # 新卡老路径 404，数字卡号的回退图走 ygoimg（即时转 jpeg）。
+                fallback = (f'https://cdn.233.momobako.com/ygoimg/ygopro/{int(raw)}.webp!/format/jpg'
+                            if number is not None
+                            else f'https://cdn.233.momobako.com/ygopro/pics/{raw}.jpg')
             items.append(
                 f'<a class="card-item" href="javascript:void(0)" onclick="openCardModal(\'{raw}\')" title="{e(name)}">'
                 f'<img src="{primary}" onerror="this.onerror=null;this.src=&quot;{fallback}&quot;" alt="{e(name)}" loading="lazy">{badge}</a>'

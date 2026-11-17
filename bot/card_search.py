@@ -60,6 +60,8 @@ def card_image_url(code):
             return cached
         candidates = [
             f"https://cdn.233.momobako.com/ygopro/pics/{int(code)}.jpg",
+            # 新卡老路径 404，ygoimg 全量兜底（即时转 jpeg）。
+            f"https://cdn.233.momobako.com/ygoimg/ygopro/{int(code)}.webp!/format/jpg",
             f"https://cdntx.moecube.com/ygopro-super-pre/data/pics/{int(code)}.jpg",
         ]
         import urllib.request

@@ -77,6 +77,86 @@ class ThumbTests(unittest.TestCase):
         self.assertTrue(path.is_file())
         self.assertLessEqual(path.stat().st_size, 4 * 1024 * 1024)
 
+    def test_thumb_falls_back_to_ygoimg_when_old_path_404(self):
+        buffer = io.BytesIO()
+        Image.new('RGB', (82, 120), (10, 90, 160)).save(buffer, 'WEBP')
+        payload = buffer.getvalue()
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(url, timeout=None):
+            if '!thumb2' in url:
+                raise OSError('404')  # 新卡老路径全 404
+            return Response(payload)
+
+        code = 31321471
+        with mock.patch.object(cards.urllib.request, 'urlopen', side_effect=fake_urlopen):
+            cards._schedule_thumb(str(self.data), code, self.data / 'card-thumbs')
+            self._wait_idle(code)
+        path = cards.thumb_picture(str(self.data), code)
+        self.assertIsNotNone(path)
+        self.assertTrue(path.is_file())
+
+    def test_full_image_falls_back_to_ygoimg_when_old_path_404(self):
+        buffer = io.BytesIO()
+        Image.new('RGB', (480, 700), (5, 5, 8)).save(buffer, 'JPEG')
+        payload = buffer.getvalue()
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(url, timeout=None):
+            if 'ygoimg' in url:
+                return Response(payload)
+            raise OSError('404')
+
+        code = 31321471
+        with mock.patch.object(cards.urllib.request, 'urlopen', side_effect=fake_urlopen):
+            cards._schedule(str(self.data), code, self.root / 'pics')
+            deadline = time.time() + 3
+            while time.time() < deadline and code in cards._pending:
+                time.sleep(0.05)
+        saved = self.root / 'pics' / (str(code) + '.jpg')
+        self.assertTrue(saved.is_file())
+        with Image.open(saved) as image:
+            self.assertEqual(image.format, 'JPEG')
+
+    def test_super_pre_chain_stays_super_pre_first(self):
+        seen = []
+        buffer = io.BytesIO()
+        Image.new('RGB', (82, 120), (5, 5, 5)).save(buffer, 'JPEG')
+        payload = buffer.getvalue()
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(url, timeout=None):
+            seen.append(url)
+            return Response(payload)
+
+        with mock.patch.object(cards.urllib.request, 'urlopen', side_effect=fake_urlopen):
+            cards._schedule(str(self.data), 100268010, self.root / 'pics')
+            deadline = time.time() + 3
+            while time.time() < deadline and 100268010 in cards._pending:
+                time.sleep(0.05)
+        self.assertTrue(seen)
+        self.assertIn('super-pre', seen[0])
+        # 超先行串卡防线：不把 ygoimg 当作超先行候选。
+        self.assertFalse([url for url in seen if 'ygoimg' in url])
+
     def test_render_reports_missing_tiles(self):
         result = dict(cards=[dict(partition='main', code=1, copies=1, name='x')],
                       inferred_side=dict(cards=[]), person=dict(player='p', deck_type='d'))
