@@ -2347,11 +2347,11 @@ class BotService:
         if error:
             await send(receiver, error)
             return
-        sections = [{'text': f'玩家：{player}\n依次为：历史、当月历史、构筑、换备、录像。'}]
+        sections = [{'text': f'玩家：{player}\n依次为：历史、当月历史、构筑、对局胜率、换备、录像。'}]
         for title, command_text in (('历史', '历史'), ('当月历史', '当月历史'), ('构筑', '构筑'),
-                                    ('换备', '换备'), ('录像', '录像')):
+                                    ('对局胜率', '对局胜率'), ('换备', '换备'), ('录像', '录像')):
             try:
-                if command_text in ('构筑', '换备'):
+                if command_text in ('构筑', '换备', '对局胜率'):
                     async with observed_lock(self._statistics_queue_lock()):
                         reply = await asyncio.wait_for(
                             observed_thread(self.handle_text, user_id,
