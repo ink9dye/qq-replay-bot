@@ -47,18 +47,18 @@ function cleanError(error){const text=String((error&&error.message)||'').trim();
 function statusProblem(nodes){const box=$('status');box.className='build-problem';box.replaceChildren(...nodes);box.scrollIntoView({block:'nearest'})}
 function unavailableNodes(){
  const share=location.pathname.startsWith('/s/'),items=digest?[
-  '这局已超过 14 天保留期：到期后原始录像和构筑记录会被删除，不能补查。',
+  '这局已超过 28 天保留期：到期后原始录像和构筑记录会被删除，不能补查。',
   '这局的结果或局次还没确认，暂时被统计质量过滤排除（刚打完的局常见，等 1–2 分钟再刷新）。',
   '这个来源编号不属于当前玩家，或该局已被排除。'
  ]:[
-  '这名玩家最近 14 天内没有可用的采集小局（没排到、录像未上传，或记录已到期）。',
+  '这名玩家最近 28 天内没有可用的采集小局（没排到、录像未上传，或记录已到期）。',
   '已采集的小局结果或局次还没确认，暂时被质量过滤排除（刚打完的局常见，等 1–2 分钟再刷新）。',
   share?'本分享链接的授权范围不包含这名玩家的对局。':'当前链接的玩家名与统计库记录不一致，建议从玩家列表重新进入。'
  ];
  const list=el('ul');for(const text of items)list.append(el('li',text));
  const retry=el('button','重新读取');retry.className='secondary';retry.onclick=()=>load();
  return [el('strong','这份构筑现在打不开'),el('p','常见原因（满足任一都会这样）：'),list,
-  el('p','保留期只有 14 天，网页不保存更早的构筑；需要留档请当场下载 YDK 或整场录像。','hint'),retry]
+  el('p','保留期只有 28 天，网页不保存更早的构筑；需要留档请当场下载 YDK 或整场录像。','hint'),retry]
 }
 async function load(){if(!player){statusNote('请从玩家列表或小局来源打开构筑。');return}const id=++request,q=new URLSearchParams({player,scope:$('scope').value});if(digest)q.set('digest',digest);statusNote('读取构筑中…');try{const r=await SS.api('build-detail?'+q);if(id!==request)return;if(!r){statusProblem(unavailableNodes());return}render(r)}catch(e){statusProblem([el('strong','构筑读取失败'),el('p',cleanError(e)),el('p','请稍后刷新；如果一直失败，请重新获取统计或分享链接。','hint')])}}
 $('scope').onchange=load;$('copy').onclick=async()=>{if(!data)return;const url=location.href;try{await navigator.clipboard.writeText(url);$('copy').textContent='已复制本页链接'}catch(e){$('copy').textContent='请复制地址栏中的链接'}};load();
@@ -273,7 +273,7 @@ function renderRecent(){
   const box=$('sideRecent'),opponents=(recentData&&recentData.opponents)||[];
   $('sideContent').hidden=true;box.hidden=false;
   if(!opponents.length){
-    $('sideRecentMeta').textContent='当前构筑最近14天没有足够的对手卡组数据。';
+    $('sideRecentMeta').textContent='当前构筑最近28天没有足够的对手卡组数据。';
     for(const id of ['recentFirstIn','recentFirstOut','recentSecondIn','recentSecondOut'])$(id).replaceChildren();
     recentSessionTable([]);$('sideRecentNotes').textContent=(recentData&&recentData.notes||[]).join(' ');
     return;

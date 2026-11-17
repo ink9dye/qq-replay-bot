@@ -14,6 +14,42 @@ def payload(rows, base=None):
 
 
 class CardWinrateMessageTests(unittest.TestCase):
+    def test_basis_uses_both_top200_and_restores_default_scope(self):
+        from bot.card_winrate import _matched_basis
+        from bot.statistics_rank_scope import current
+        def eligible(*args, **kwargs):
+            self.assertEqual((current()['own'], current()['opponent']), ('200', '200'))
+            return dict(views=[dict(player='rank200')])
+        with patch('bot.top100.eligible_views', side_effect=eligible):
+            self.assertEqual(_matched_basis(None, '.', 0), [dict(player='rank200')])
+        self.assertIsNone(current())
+
+    def test_population_includes_rank200_excludes_201_and_unknown(self):
+        from bot.statistics_rank_scope import population_scope, filter_rows
+        with sqlite3.connect(':memory:') as db:
+            db.row_factory = sqlite3.Row
+            db.execute('CREATE TABLE stat_views(digest TEXT,player TEXT)')
+            pairs = [('ok','a'), ('ok','b'), ('bad','a'), ('bad','c'), ('unknown','a'), ('unknown','u')]
+            db.executemany('INSERT INTO stat_views VALUES(?,?)', pairs)
+            rows = [dict(digest=d, player='a') for d in ('ok','bad','unknown')]
+            with patch('bot.statistics_rank_scope.ranks_for', return_value={'b':200,'c':201}):
+                with population_scope('200','200'):
+                    result = filter_rows(db, rows, {'members':[dict(player='a',rank=1)]}, 0)
+            self.assertEqual([r['digest'] for r in result], ['ok'])
+
+    def test_top200_sample_does_not_change_default_web_population(self):
+        from bot.card_statistics import matchups
+        with sqlite3.connect(':memory:') as db:
+            db.executescript("CREATE TABLE stat_current_top100(player TEXT);"
+                             "INSERT INTO stat_current_top100 VALUES('a');")
+            rows = [dict(player='a', digest='d', copies=1, outcome='win')]
+            facts = {('d', 'a'): dict(used=1)}
+            opponents = {'d': [dict(player='rank200', deck_type='test')]}
+            self.assertEqual(matchups(db, rows, facts, opponents=opponents)['base']['games'], 0)
+            result = matchups(db, rows, facts, opponents=opponents, prefiltered_population=True)
+            self.assertEqual(result['base']['games'], 1)
+            self.assertEqual(result['population'], 'self_and_opponent_current_top200')
+
     def test_message_shows_overall_then_top_rows(self):
         text = message(payload([
             dict(deck_type='甲卡组', games=12, wins=9, losses=3, draws=0, rate=75.0,
@@ -22,8 +58,8 @@ class CardWinrateMessageTests(unittest.TestCase):
                  low_sample=True),
         ]))
         self.assertIn('单卡胜率：灰流丽（14558127）', text)
-        self.assertIn('使用后胜率 50.0%（1胜/1负/0平，共2局；双方当前前100）', text)
-        self.assertIn('对前百卡组最高的2个（使用后）：', text)
+        self.assertIn('使用后胜率 50.0%（1胜/1负/0平，共2局；双方当前前200）', text)
+        self.assertIn('对前百卡组胜率最高的2个（使用后）：', text)
         self.assertIn('1. 甲卡组 75.0%（9胜/3负/0平，12局）', text)
         self.assertIn('2. 乙卡组 50.0%（3胜/3负/0平，6局）（样本少）', text)
         self.assertIn('每行至少10局', text)
@@ -56,7 +92,7 @@ class CardWinrateMessageTests(unittest.TestCase):
             opponents = {r['digest']: [dict(player='榜外' if i == 5 else '乙',
                                             deck_type='对手卡组')]
                          for i, r in enumerate(rows)}
-            with patch('bot.card_winrate._basis', return_value=rows), \
+            with patch('bot.card_winrate._basis', return_value=[r for i, r in enumerate(rows) if i != 5]), \
                  patch('bot.card_winrate._popular_decks', return_value=[
                      dict(deck_type='对手卡组', players=20, share=20)]), \
                  patch('bot.card_identity.identity', return_value=dict(codes=[1], canonical_card=1)), \
@@ -98,7 +134,7 @@ class CardWinrateMessageTests(unittest.TestCase):
             selected, facts, opponents = [], {}, {}
             # 未使用、未知胜负、榜外与不唯一对手均不能计作胜率样本。
             cases = [('win', 1, 'b'), ('draw', 1, 'b'), ('loss', 1, 'b'),
-                     ('win', 0, 'b'), ('unknown', 1, 'b'), ('win', 1, 'outside'),
+                     ('win', 0, 'b'), ('unknown', 1, 'b'),
                      ('win', 1, 'ambiguous')]
             for i, (outcome, used, opponent) in enumerate(cases):
                 digest = str(i)

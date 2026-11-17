@@ -115,5 +115,5 @@ def message(service,command):
         lines.append('复用房间玩家名次与当前榜单，不逐个联网补查历史玩家。')
     if r['keyword']:lines.append('按已识别卡组名作文字包含匹配；双方都匹配也只计一个小局。')
     lines.append('统计截至北京时间 '+datetime.fromtimestamp(r['at'],TZ).strftime('%m-%d %H:%M:%S'))
-    lines.append('按录像指纹去重；仅统计当前保留范围（14天），不是终身累计；已过期删除的不计。')
+    lines.append('按录像指纹去重；仅统计当前保留范围（28天），不是终身累计；已过期删除的不计。')
     return '\n'.join(lines)

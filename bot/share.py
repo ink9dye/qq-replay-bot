@@ -236,7 +236,7 @@ class ShareApp:
             if replay is not None and replay['focus_player'] != link['player']:
                 return self._text(404, "这个链接不能下载其他玩家的录像。")
             if replay is not None and not replay_in_window(replay, float(self.clock())):
-                return self._text(410, "这份录像已保存满14天，不再提供下载，关联文件按保留策略清理。")
+                return self._text(410, "这份录像已保存满28天，不再提供下载，关联文件按保留策略清理。")
             path = safe_replay_file(self.replay_root, replay["rel_path"]) if replay else None
             if path is None:
                 return self._text(404, "录像文件不在分享目录里。")
@@ -310,7 +310,7 @@ class ShareApp:
         if path is None:
             return Path(replay['rel_path']).name
         from .deck_links import matchup_labels
-        return matchup_labels(replay, path, self.replay_root.parent / 'cache')[1]
+        return matchup_labels(replay, path, self.replay_root.parent / 'cache', self.store._db)[1]
 
     def _directory_body(self, link: dict) -> str:
         from .page_ui import directory_body

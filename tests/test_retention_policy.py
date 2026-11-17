@@ -5,18 +5,26 @@ from retention_policy import RETENTION_SECONDS, next_cleanup_delay
 from bot.replay_window import REPLAY_WINDOW_SECONDS, replay_in_window
 from bot.watch_core import RETENTION_SECONDS as WATCH_RETENTION_SECONDS
 from test_bot import temporary_service
-from test_help_and_window import save_replay
+from bot.watch_core import ReplayWriter, _rank_cache
+
+
+def save_replay(service, player, body):
+    _rank_cache[player], _rank_cache['对手'] = 12, 88
+    writer = ReplayWriter(service.replay_root, [player])
+    writer.on_saved = service.on_replay_saved
+    writer.save(body, [player, '对手'])
+    return service.store.replays_for_player(player)[-1]
 
 
 class RetentionPolicyTests(unittest.TestCase):
-    def test_all_entry_points_share_fourteen_days(self):
-        self.assertEqual(RETENTION_SECONDS, 14 * 86400)
+    def test_all_entry_points_share_twenty_eight_days(self):
+        self.assertEqual(RETENTION_SECONDS, 28 * 86400)
         self.assertEqual(REPLAY_WINDOW_SECONDS, RETENTION_SECONDS)
         self.assertEqual(WATCH_RETENTION_SECONDS, RETENTION_SECONDS)
 
     def test_eight_day_and_last_minute_samples_remain_until_exact_boundary(self):
         row = {'saved_at': 100.0, 'recorded_at': 1.0}
-        for age in (8 * 86400, 13 * 86400 + 23 * 3600 + 59 * 60, RETENTION_SECONDS - .001):
+        for age in (8 * 86400, 27 * 86400 + 23 * 3600 + 59 * 60, RETENTION_SECONDS - .001):
             self.assertTrue(replay_in_window(row, 100 + age))
         self.assertFalse(replay_in_window(row, 100 + RETENTION_SECONDS))
         self.assertFalse(replay_in_window(row, 99))

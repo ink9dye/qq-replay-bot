@@ -211,12 +211,12 @@ def directory_body(app, link, title_provider, points_provider):
             f'<span class="pill">链接最晚有效至 {e(date(link["expires_at"]))}</span></header>'
             f'<div class="stats"><div class="stat"><strong>{len(groups)}</strong><span>场对战记录</span></div>'
             f'<div class="stat"><strong>{len(available)}</strong><span>份录像</span></div>'
-            '<div class="stat"><strong>14 天</strong><span>可查看范围</span></div></div>'
+            '<div class="stat"><strong>28 天</strong><span>可查看范围</span></div></div>'
             + profile_html + deck_html +
             f'<div class="section-heading"><h2>对战记录</h2><a class="button primary" href="/s/{token}/zip">打包下载全部录像</a></div>'
             + (''.join(matches) or empty) +
             f'<footer class="footer"><p>收录范围：{e(date(link["range_start"]))} 至 {e(date(link["created_at"]))}；只展示本链接生成时符合你订阅条件的录像。</p>'
-            '<p>录像和卡组保存满14天自动删除。每条分享链接最长有效5小时，上方时间为最晚到期时间。</p>'
+            '<p>录像和卡组保存满28天自动删除。每条分享链接最长有效5小时，上方时间为最晚到期时间。</p>'
             '<p>临时公网地址没有固定保活时长，实际可用至令牌到期、电脑休眠、隧道断线或地址变化中最先发生的时刻。若无法打开，请重新发送“录像 玩家名”取得当前链接。</p>'
             '<p>卡组类型为推测。竞技分数与排名仅在打开本玩家网页或点击刷新时查询，成功结果缓存60秒；失败时保留最近成功记录并标注更新时间。OURYGO链接内含卡组数据，取得后不会随录像页失效。</p></footer>'
             + CARD_MODAL + PAGE_SCRIPT)

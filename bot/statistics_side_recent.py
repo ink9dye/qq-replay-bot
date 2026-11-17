@@ -272,7 +272,7 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
         notes.append('标记“样本少”表示最近几场里完整可比较的换边局少于 %d 个。' %
                      max(1, int(min_side_games)))
     if not groups:
-        notes.append('当前构筑最近14天没有可用于 Side 的场次。')
+        notes.append('当前构筑最近28天没有可用于 Side 的场次。')
     person = detail.get('person') or {}
     selected = detail.get('selected') or {}
     return dict(
@@ -358,14 +358,14 @@ def format_text(plan: dict, name_for: Callable[[int], str],
     scope = plan.get('rank_scope') or {}
     scope_text = ('对手限前%d，' % scope['opponent_range']) if scope.get('opponent_range') else ''
     header = ['换备 · %s' % player, '当前构筑：%s' % deck,
-              '口径：当前构筑最近14天，%s按对手场次取前%d；每个对手取最近%d场，只用有完整卡表的第2/3局，'
+              '口径：当前构筑最近28天，%s按对手场次取前%d；每个对手取最近%d场，只用有完整卡表的第2/3局，'
               '先攻/后攻按该局该玩家自己的座位；每方向最多列前%d张，完整明细见网页构筑页。' % (
                   scope_text,
                   plan.get('top_decks') or MAX_TOP_DECKS,
                   plan.get('recent_matches') or RECENT_MATCHES,
                   max_cards)]
     if not opponents:
-        return ['\n'.join(header + ['', '当前构筑最近14天没有足够的对手卡组数据。'])]
+        return ['\n'.join(header + ['', '当前构筑最近28天没有足够的对手卡组数据。'])]
     blocks = []
     for index, item in enumerate(opponents, 1):
         blocks.append(_deck_block(index, item, name_for, max_cards))

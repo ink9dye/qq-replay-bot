@@ -153,5 +153,5 @@ def render_report(report, token, identifier):
     if report.get('match_evidence'):
         parts.append('<section class="panel"><details><summary>公开整场记录证据（不等同于每小局结果）</summary><pre style="white-space:pre-wrap">'
             + e(json.dumps(report['match_evidence'], ensure_ascii=False, indent=2)) + '</pre></details></section>')
-    parts.append(f'<footer class="footer">录像指纹：{e(report.get("digest", ""))}。解析和胜负记录随对应录像在保存满14天后删除。</footer>')
+    parts.append(f'<footer class="footer">录像指纹：{e(report.get("digest", ""))}。解析和胜负记录随对应录像在保存满28天后删除。</footer>')
     return ''.join(parts)

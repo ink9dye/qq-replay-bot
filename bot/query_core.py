@@ -13,6 +13,8 @@ Forwarded 类头与非常见 Host，因此这里不发任何转发头。
 """
 from __future__ import annotations
 
+from retention_policy import RETENTION_SECONDS
+
 import json
 import re
 import unicodedata
@@ -414,7 +416,7 @@ class QueryCore:
 
     def _replay_items(self, player: str) -> dict:
         from .share import safe_replay_file
-        cutoff = time.time() - 14 * 86400
+        cutoff = time.time() - RETENTION_SECONDS
         rows = [row for row in (self.store.replays_for_player(player) or [])
                 if float(row.get("recorded_at") or 0) >= cutoff
                 and safe_replay_file(self.replay_root, row["rel_path"])][-1000:]
@@ -424,7 +426,7 @@ class QueryCore:
         return dict(ok=True, items=items, link=None)
 
     def replay_file(self, replay_id: int):
-        """认证下载端点用：返回 (Path, row) 或 None；限制 14 天和录像根目录。"""
+        """认证下载端点用：返回 (Path, row) 或 None；限制 28 天和录像根目录。"""
         if self.store is None or self.replay_root is None:
             return None
         try:
@@ -433,7 +435,7 @@ class QueryCore:
             return None
         if not row:
             return None
-        if float(row.get("recorded_at") or 0) < time.time() - 14 * 86400:
+        if float(row.get("recorded_at") or 0) < time.time() - RETENTION_SECONDS:
             return None
         from .share import safe_replay_file
         path = safe_replay_file(self.replay_root, row.get("rel_path") or "")

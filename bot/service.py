@@ -161,7 +161,7 @@ def join_rules(subscriptions: list[dict]) -> tuple[list[str], list[RankRule]]:
 
 
 def subscription_accepts(sub: dict, replay: dict) -> bool:
-    """录像在订阅同一玩家的用户间共享。只按玩家、对手排名条件判断，最近14天由调用方另行限制。"""
+    """录像在订阅同一玩家的用户间共享。只按玩家、对手排名条件判断，最近28天由调用方另行限制。"""
     if replay["focus_player"] != sub["player"]:
         return False
     if sub["rank_top"] is None:
@@ -937,7 +937,7 @@ class BotService:
         except sqlite3.Error:
             known = True
         note = ("" if known else
-                "\n注意：最近14天的收录里还没有这个名字（可能最近没有对局，或名字打错了）。"
+                "\n注意：最近28天的收录里还没有这个名字（可能最近没有对局，或名字打错了）。"
                 "打错了再发一次「绑定mc」即可改绑。")
         return (f"已绑定：{player}{note}\n"
                 "之后发送「历史」「当月历史」「构筑」「录像」不带名字，就默认查你自己。\n"
@@ -1109,7 +1109,7 @@ class BotService:
                         if replay_in_window(replay, now)
                         and safe_replay_file(self.replay_root, replay['rel_path'])]
         if not deck_ids:
-            return f"没有找到 {player} 最近14天的有效录像，暂时没有构筑图。"
+            return f"没有找到 {player} 最近28天的有效录像，暂时没有构筑图。"
         try:
             with phase('deck_share_link'):
                 link = self.share.create_link(
@@ -1127,7 +1127,7 @@ class BotService:
             with phase('deck_build_query'):
                 result = build_query(db, self.replay_root, now, player)
         if result is None:
-            return f"没有找到 {player} 的有效构筑（最近14天没有可用录像）。"
+            return f"没有找到 {player} 的有效构筑（最近28天没有可用录像）。"
         inferred = result.get('inferred_side') or {}
         include_inferred = bool(inferred.get('cards')) and not inferred.get('conflict')
         ydk_url = link['url'].rstrip('/') + '/build-ydk' + ('?inferred=1' if include_inferred else '') if link.get('url') else ''
@@ -1195,7 +1195,7 @@ class BotService:
         except (sqlite3.Error, OSError):
             return "换备统计暂时读取失败，请稍后再试。"
         if plan is None:
-            return f"没有找到 {player} 的有效构筑（最近14天没有可用录像）。"
+            return f"没有找到 {player} 的有效构筑（最近28天没有可用录像）。"
         from .statistics_card_names import index as name_index
         from .card_search import card_name
         names = name_index(self.data_dir)
@@ -1294,7 +1294,7 @@ class BotService:
             f"对手条件：{'全部' if sub and sub['rank_top'] is None else '前'+str(sub['rank_top'] if sub else 100)}（按收录时排名，排名未知不计入限排名范围）\n"
             f"最近使用卡组：{deck_label}\n"
             f"收录范围：{format_time(link['range_start'])} 至 {format_time(link['created_at'])} 已保存的录像\n"
-            f"共 {len(rows)} 个文件（仅提供最近14天保存的录像）。链接最晚到期：{format_time(link['expires_at'])}"
+            f"共 {len(rows)} 个文件（仅提供最近28天保存的录像）。链接最晚到期：{format_time(link['expires_at'])}"
             f"（最长 {self.link_hours:g} 小时，不保证公网地址持续在线。重新查询不会延长这一条）\n"
             f"{link['url']}\n"
             f"直接下载 ZIP：{link['url'].rstrip('/')}/zip\n"
@@ -1499,7 +1499,7 @@ class BotService:
                 if replay['id'] not in existing:
                     removed += 1
         if removed:
-            self.write_log(f"已清理 {removed} 个超过14天的旧录像/卡组")
+            self.write_log(f"已清理 {removed} 个超过28天的旧录像/卡组")
         self.sync_replay_facts()
         return removed
 

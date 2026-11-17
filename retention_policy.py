@@ -1,7 +1,7 @@
 """录像、卡组、解析和查询共用的保留期；分享令牌有效期另行管理。"""
 from pathlib import Path
 
-RETENTION_DAYS = 14
+RETENTION_DAYS = 28
 RETENTION_SECONDS = RETENTION_DAYS * 24 * 3600
 
 

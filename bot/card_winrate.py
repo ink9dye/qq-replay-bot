@@ -2,7 +2,7 @@
 """QQ「单卡胜率」：总体、先后攻、胜率 Top5 与饼图人数 Top5 对阵胜率。
 
 复用 top100.eligible_views 的资格与 card_statistics 的事实/对阵算法；本模块
-只做取卡名、只读连接、30 秒双方前100人口快照与结果小缓存，不新增统计口径。
+只做取卡名、只读连接、30 秒双方前200人口快照与结果小缓存，不新增统计口径。
 """
 from __future__ import annotations
 
@@ -58,23 +58,13 @@ def _stamp(db, now):
 
 
 def _matched_basis(db, replay_root, now):
-    """双方都在当前前100、且对手唯一的玩家视角；只算一次，30 秒内复用。"""
+    """双方都在当前前200、且对手唯一的玩家视角；只算一次，30 秒内复用。"""
     from .top100 import eligible_views
-    from .card_statistics import _opponent_rows
-    basis = eligible_views(db, Path(replay_root), float(now), False, 'default',
-                           annotate_series=False)
-    top100 = {row[0] for row in db.execute('SELECT player FROM stat_current_top100')}
-    opponents = _opponent_rows(db, {row['digest'] for row in basis['views']})
-    selected = []
-    for row in basis['views']:
-        if row['player'] not in top100:
-            continue
-        other = [item for item in opponents.get(row['digest'], ())
-                 if item['player'] != row['player']]
-        if len(other) != 1 or other[0]['player'] not in top100:
-            continue
-        selected.append(dict(row))
-    return selected
+    from .statistics_rank_scope import population_scope
+    with population_scope('200', '200'):
+        basis = eligible_views(db, Path(replay_root), float(now), False, 'default',
+                               annotate_series=False)
+    return [dict(row) for row in basis['views']]
 
 
 def _basis(db, replay_root, now):
@@ -125,14 +115,14 @@ def _compute(database, replay_root, now, code, limit=MATCHUP_LIMIT):
             row['copies'] = copies.get(row['build'], 0)
         opponents = _opponent_rows(db, {row['digest'] for row in selected})
         result = matchups(db, selected, facts, 'main', limit,
-                          MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES, opponents=opponents)
+                          MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES, opponents=opponents, prefiltered_population=True)
         popular = _popular_matchups(db, replay_root, now, selected, facts, opponents)
         # 按每个小局的玩家视角分桶；复用同一份事实和对手，不重查人口或录像。
         order = {}
         for label, value in (('first', 1), ('second', 0), ('unknown', None)):
             subset = [row for row in selected if row.get('first_player') == value]
             order[label] = matchups(db, subset, facts, 'main', limit=0,
-                                    opponents=opponents)['base']
+                                    opponents=opponents, prefiltered_population=True)['base']
     return dict(card=info['canonical_card'], matchups=result, order=order,
                 popular_matchups=popular)
 
@@ -159,7 +149,7 @@ def _popular_matchups(db, replay_root, now, selected, facts, opponents):
                   if any(other['player'] != row['player']
                          and other.get('deck_type') == deck['deck_type']
                          for other in opponents.get(row['digest'], ()))]
-        base = matchups(db, subset, facts, 'main', limit=0, opponents=opponents)['base']
+        base = matchups(db, subset, facts, 'main', limit=0, opponents=opponents, prefiltered_population=True)['base']
         rows.append(dict(deck, **base, low_sample=0 < base['games'] < MATCHUP_MIN_GAMES))
     return dict(rows=rows, limit=MATCHUP_LIMIT, selection='top100_pie_exact_deck_players')
 
@@ -198,12 +188,12 @@ def message(payload):
     name = payload.get('name') or ('#%d' % code)
     matchups = payload.get('matchups') or {}
     base = matchups.get('base') or {}
-    lines = ['前100单卡胜率：%s（%08d）' % (name, code)]
+    lines = ['前200单卡胜率：%s（%08d）' % (name, code)]
     if base.get('games'):
-        lines.append('总体使用后胜率 %.1f%%（%d胜/%d负/%d平，共%d局；双方当前前100）' % (
+        lines.append('总体使用后胜率 %.1f%%（%d胜/%d负/%d平，共%d局；双方当前前200）' % (
             base['rate'], base['wins'], base['losses'], base['draws'], base['games']))
     else:
-        lines.append('总体使用后胜率：暂无有效样本（双方当前前100）')
+        lines.append('总体使用后胜率：暂无有效样本（双方当前前200）')
     order = payload.get('order') or {}
     for key, label in (('first', '先攻'), ('second', '后攻')):
         bucket = order.get(key) or {}
@@ -234,7 +224,7 @@ def message(payload):
             lines.append('暂无已识别的具体卡组。')
     rows = matchups.get('rows') or []
     if rows:
-        lines.append('对前百卡组最高的%d个（使用后）：' % len(rows))
+        lines.append('对前百卡组胜率最高的%d个（使用后）：' % len(rows))
         for index, row in enumerate(rows, 1):
             mark = '（样本少）' if row.get('low_sample') else ''
             lines.append('%d. %s %.1f%%（%d胜/%d负/%d平，%d局）%s' % (
@@ -242,7 +232,7 @@ def message(payload):
                 row['draws'], row['games'], mark))
     else:
         lines.append('对前百卡组：暂无达到%d局的对手卡组。' % MATCHUP_FALLBACK_GAMES)
-    lines.append('口径：双方当前前100；主卡实际使用且胜负明确；平局计入分母；'
+    lines.append('口径：双方当前前200；主卡实际使用且胜负明确；平局计入分母；'
                  '先后攻按该小局；分组不足10局标样本少；'
                  '胜率最高榜每行至少%d局，不足时用%d局以上补足并标注。' % (
                      MATCHUP_MIN_GAMES, MATCHUP_FALLBACK_GAMES))

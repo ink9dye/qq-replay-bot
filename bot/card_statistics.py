@@ -116,8 +116,10 @@ def _opponent_rows(db, digests):
 
 def matchups(db, selected, facts, partition='main', limit=MATCHUP_LIMIT,
              min_games=MATCHUP_MIN_GAMES, fallback_games=MATCHUP_FALLBACK_GAMES,
-             opponents=None):
+             opponents=None, prefiltered_population=False):
     """单卡“使用后”对当前前100玩家卡组的胜率 Top N（只读，不写库）。
+
+    prefiltered_population 仅供已通过双方人口筛选的 QQ 前200视角使用。
 
     口径：
     - 我方与对手都必须是当前前100玩家；对手不在榜、对手卡组未知、对手不唯一的
@@ -128,7 +130,8 @@ def matchups(db, selected, facts, partition='main', limit=MATCHUP_LIMIT,
       并标记 low_sample，仍不足则有几行显示几行。
     """
     field = 'appeared' if partition == 'extra' else 'used'
-    top100 = {row[0] for row in db.execute('SELECT player FROM stat_current_top100')}
+    # QQ 前200入口已在 eligible_views 中验证双方人口；网页默认仍校验前100。
+    top100 = None if prefiltered_population else {row[0] for row in db.execute('SELECT player FROM stat_current_top100')}
     if opponents is None:
         opponents = _opponent_rows(db, {row['digest'] for row in selected})
     groups = {}
@@ -137,7 +140,7 @@ def matchups(db, selected, facts, partition='main', limit=MATCHUP_LIMIT,
     outside_scope = 0
     ambiguous = 0
     for row in selected:
-        if row['player'] not in top100:
+        if top100 is not None and row['player'] not in top100:
             continue
         if int(row.get('copies') or 0) <= 0:
             continue
@@ -154,7 +157,7 @@ def matchups(db, selected, facts, partition='main', limit=MATCHUP_LIMIT,
             ambiguous += 1
             continue
         opponent = other[0]
-        if opponent['player'] not in top100:
+        if top100 is not None and opponent['player'] not in top100:
             outside_scope += 1
             continue
         base['games'] += 1
@@ -192,7 +195,7 @@ def matchups(db, selected, facts, partition='main', limit=MATCHUP_LIMIT,
             used.add(row['deck_type'])
     notes = []
     if not base['games']:
-        notes.append('双方前100中没有“使用该卡且胜负明确”的小局。')
+        notes.append('双方前%d中没有“使用该卡且胜负明确”的小局。' % (200 if prefiltered_population else 100))
     elif not chosen:
         notes.append('没有达到 %d 局门槛的对手卡组。' % fallback_games)
     elif len(qualified) < limit:
@@ -209,7 +212,7 @@ def matchups(db, selected, facts, partition='main', limit=MATCHUP_LIMIT,
     return dict(
         version=1,
         unit='%s_small_game_perspective' % ('appeared' if partition == 'extra' else 'used'),
-        population=MATCHUP_POPULATION,
+        population='self_and_opponent_current_top200' if prefiltered_population else MATCHUP_POPULATION,
         partition=partition,
         limit=limit,
         min_games=min_games,
