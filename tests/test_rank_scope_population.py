@@ -10,6 +10,7 @@ import time
 import unittest
 
 from bot import statistics_rank_scope as scope
+from bot.statistics_match_identity import view_pairs
 
 
 class FilterRowsPopulationTest(unittest.TestCase):
@@ -42,6 +43,24 @@ class FilterRowsPopulationTest(unittest.TestCase):
         with scope.population_scope('100', '100'):
             kept = scope.filter_rows(self.db, rows, self.state, time.time())
         self.assertEqual(kept, [])
+
+    def test_inner_populations_can_use_the_same_pairs_without_rescanning(self):
+        self.db.executemany('INSERT INTO stat_views VALUES(?,?)', [
+            ('d2', '甲'), ('d2', '甲2'),
+            ('d3', '甲'), ('d3', '甲2'), ('d3', '乙'),
+        ])
+        self.state['members'].append(dict(player='甲2', rank=2))
+        statements = []
+        self.db.set_trace_callback(statements.append)
+        pairs = view_pairs(self.db, {'d1', 'd2', 'd3'})
+        for rank, expected in (('100', ['d2']), ('200', ['d1', 'd2'])):
+            rows = [dict(digest=digest, player='甲') for digest in ('d1', 'd2', 'd3')]
+            with self.subTest(rank=rank), scope.population_scope(rank, rank):
+                kept = scope.filter_rows(self.db, rows, self.state, time.time(), pairs=pairs)
+                self.assertEqual([row['digest'] for row in kept], expected)
+        self.assertEqual(len([sql for sql in statements
+                              if sql.startswith('SELECT digest,player FROM stat_views')]), 1)
+        self.assertIn('WHERE digest IN', statements[0])
 
     def test_no_scope_returns_rows_untouched(self):
         rows = [dict(digest='d1', player='乙')]

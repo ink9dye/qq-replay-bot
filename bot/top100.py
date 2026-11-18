@@ -220,13 +220,22 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
             alive={row['digest']: True for row in rows}
     if annotate_series:
         annotate(db,rows,series_catalog)
-    from .statistics_match_identity import inherit_first_game_types
+    from .statistics_match_identity import identity_context, inherit_first_game_types, view_pairs
+    # Rank filtering and match identity use the same actual opponent pairs.
+    pairs = None
+    if population_scope is not None:
+        with measure('eligible_pairs_ms'):
+            pairs = view_pairs(db, {row['digest'] for row in rows}) if rows else {}
     # Only eligible, source-present first games may supply a later game's identity.
-    inherit_first_game_types(db,[r for r in rows if alive[r['digest']]])
+    available = [row for row in rows if alive[row['digest']]]
+    with measure('eligible_identity_ms'):
+        context = identity_context(db, {row['digest'] for row in available}, pairs=pairs)
+        inherit_first_game_types(db, available, context=context)
     revision=db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
     if population_scope is not None:
         before_range=len(rows)
-        rows=filter_rows(db,rows,state,now)
+        with measure('eligible_rank_ms'):
+            rows=filter_rows(db,rows,state,now,pairs=pairs)
         diagnostics.update(population='selected_self_and_opponent_rank_ranges',before_rank_range_views=before_range,rank_range_excluded_views=before_range-len(rows))
     diagnostics.update(after_scope_and_internal_views=len(rows),missing_source_views=sum(not alive[r['digest']] for r in rows))
     # 没有局次信息的录像不进入任何统计：无法判断是第几局，就不能当主卡/换备基准。

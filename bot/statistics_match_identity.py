@@ -210,16 +210,34 @@ def identity_metadata(db, digests, captures=None):
     return result
 
 
-def identity_context(db, digests):
+def view_pairs(db, digests=None):
+    """Read actual players, including views filtered out of the current population."""
+    pairs = {}
+    # Single-player views use the existing (digest, player) index. Wide
+    # populations use a scan to avoid thousands of random index probes.
+    if digests is not None and len(digests) <= 400:
+        if not digests:
+            return pairs
+        marks = ','.join('?' for _ in digests)
+        rows = db.execute('SELECT digest,player FROM stat_views WHERE digest IN (%s)' % marks,
+                          tuple(digests))
+    else:
+        rows = db.execute('SELECT digest,player FROM stat_views')
+    for row in rows:
+        if digests is None or row['digest'] in digests:
+            pairs.setdefault(row['digest'], set()).add(row['player'])
+    return pairs
+
+
+def identity_context(db, digests, *, pairs=None):
     """一次请求内可复用的身份上下文：captures/metadata/pairs 都只按给定 digest 计算。"""
     wanted = {digest for digest in digests if digest}
     captures = capture_metadata(db, wanted) if wanted else {}
     metadata = identity_metadata(db, wanted, captures) if wanted else {}
-    pairs = {}
-    if wanted:
-        for row in db.execute('SELECT digest,player FROM stat_views'):
-            if row['digest'] in wanted:
-                pairs.setdefault(row['digest'], set()).add(row['player'])
+    if pairs is None:
+        pairs = view_pairs(db, wanted) if wanted else {}
+    else:
+        pairs = {digest: pairs[digest] for digest in wanted if digest in pairs}
     return dict(captures=captures, metadata=metadata, pairs=pairs, digests=wanted)
 
 

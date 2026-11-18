@@ -136,17 +136,17 @@ def ranks_for(players,now):
     return result
 
 
-def filter_rows(db,rows,state,now):
+def filter_rows(db,rows,state,now,*,pairs=None):
     scope=current()
     if scope is None:return rows
     known={r['player']:r['rank'] for r in state['members']}
-    opponents={}
-    for r in db.execute('SELECT digest,player FROM stat_views'):
-        opponents.setdefault(r['digest'],set()).add(r['player'])
+    if pairs is None:
+        from .statistics_match_identity import view_pairs
+        pairs = view_pairs(db)
     candidates=set()
     for row in rows:
         if scope['own']=='200':candidates.add(row['player'])
-        if scope['opponent']=='200':candidates.update(opponents.get(row['digest'],set())-{row['player']})
+        if scope['opponent']=='200':candidates.update(pairs.get(row['digest'],set())-{row['player']})
     candidates-=known.keys()
     data_dir=_data_dir(db)
     # 磁盘缓存的新鲜度按实际时钟算：查询的 now 可能是排队前的旧时刻。
@@ -177,7 +177,7 @@ def filter_rows(db,rows,state,now):
         return value is not None and 0<value<=200
     result=[]
     for row in rows:
-        other=opponents.get(row['digest'],set())-{row['player']}
+        other=pairs.get(row['digest'],set())-{row['player']}
         if not accept(row['player'],scope['own']):continue
         if scope['opponent']!='all' and (len(other)!=1 or not accept(next(iter(other)),scope['opponent'])):continue
         row['rank']=known.get(row['player'],extra.get(row['player']))
