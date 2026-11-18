@@ -23,6 +23,13 @@ def _meta_path(database) -> Path:
 
 
 def _parts_paths(database):
+    """机器人发送用的两张拆分图。JPEG 体积约为 PNG 的 1/5（3 Mbps 出口下发送快一个量级）。"""
+    root = Path(database).parent / 'cache' / 'deck-pie'
+    return root / 'latest-pie.jpg', root / 'latest-legend.jpg'
+
+
+def _legacy_parts_paths(database):
+    """旧版 PNG 拆分图：升级过渡期仍可读取，避免部署后第一次请求退回重算。"""
     root = Path(database).parent / 'cache' / 'deck-pie'
     return root / 'latest-pie.png', root / 'latest-legend.png'
 
@@ -196,15 +203,18 @@ def _parts(blob: bytes):
     pie = content(image.crop((0, 0, width, middle)), 1600, 1600, top_skip=96)
     canvas = Image.new('RGB', (1600, 1600), 'white')
     canvas.paste(pie, ((1600 - pie.width) // 2, (1600 - pie.height) // 2))
-    pie_buffer = io.BytesIO(); canvas.save(pie_buffer, format='PNG', optimize=True)
+    pie_buffer = io.BytesIO(); canvas.save(pie_buffer, format='JPEG', quality=85, optimize=True,
+                                           progressive=True)
 
     legend = content(image.crop((0, middle, width, height)), 1600)
-    legend_buffer = io.BytesIO(); legend.save(legend_buffer, format='PNG', optimize=True)
+    # 图例是小字，压缩比饼图保守一档，避免文字边缘发糊。
+    legend_buffer = io.BytesIO(); legend.save(legend_buffer, format='JPEG', quality=90, optimize=True,
+                                              progressive=True)
     return {'pie': pie_buffer.getvalue(), 'legend': legend_buffer.getvalue()}
 
 
 def _store_parts(database, blob) -> None:
-    """把整图拆成「饼图」「图例」两张 PNG 存盘，供机器人直接取用。"""
+    """把整图拆成「饼图」「图例」两张 JPEG 存盘，供机器人直接取用。"""
     try:
         parts = _parts(blob)
         pie_path, legend_path = _parts_paths(database)
@@ -215,9 +225,12 @@ def _store_parts(database, blob) -> None:
         pass
 
 
-def _load_parts(database, max_age: float = 600.0):
-    """读取网站保存的饼图/图例；过期或缺失返回 None。"""
-    pie_path, legend_path = _parts_paths(database)
+_JPEG_MAGIC = b'\xff\xd8\xff'
+_PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
+
+
+def _valid_parts(paths, max_age: float):
+    pie_path, legend_path = paths
     try:
         if not pie_path.is_file() or not legend_path.is_file():
             return None
@@ -228,9 +241,15 @@ def _load_parts(database, max_age: float = 600.0):
         legend = legend_path.read_bytes()
     except OSError:
         return None
-    if not (pie.startswith(b'\x89PNG\r\n\x1a\n') and legend.startswith(b'\x89PNG\r\n\x1a\n')):
+    if not (pie.startswith((_JPEG_MAGIC, _PNG_MAGIC)) and legend.startswith((_JPEG_MAGIC, _PNG_MAGIC))):
         return None
     return {'pie': pie, 'legend': legend}
+
+
+def _load_parts(database, max_age: float = 600.0):
+    """读取网站保存的饼图/图例；JPEG 优先，旧 PNG 兼容；过期或缺失返回 None。"""
+    return (_valid_parts(_parts_paths(database), max_age)
+            or _valid_parts(_legacy_parts_paths(database), max_age))
 
 
 def _refresh_from_site(database) -> bool:
