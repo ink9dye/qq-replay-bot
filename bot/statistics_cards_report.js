@@ -4,7 +4,13 @@
 const $ = (id) => document.getElementById(id);
 const SS = window.StatisticsSamples;
 const el = SS.el;
-const state = { request: 0, controller: null, result: null, groupsReady: false };
+const state = { request: 0, controller: null, result: null, candidateScope: null, candidateController: null };
+const deckPicks = {deck: new Set(), opdeck: new Set()};
+const deckBatches = Object.fromEntries(['deck', 'opdeck'].map(id => [id,
+  window.StatisticsAutocomplete.deckBatch(id, deckPicks[id], {
+    side: id === 'deck' ? 'deck' : 'opponent',
+    changed: () => { $('status').textContent = '条件已改，点查询生效。'; }
+  })]));
 
 function createPicker(ids) {
   const picker = { cards: new Map(), suggest: [], active: -1, version: 0, timer: 0 };
@@ -208,6 +214,8 @@ const HAND_TRAP_COMBO_PRESET = [
   [{ code: 10045474, name: '无限泡影' }, { code: 27204311, name: '原始生命态 尼比鲁' }],
   [{ code: 97268402, name: '效果遮蒙者' }, { code: 27204311, name: '原始生命态 尼比鲁' }],
 ];
+// 组合数量上限：前后端同一口径，超出由服务端再兜一层校验。
+const MAX_COMBO_DEFS = 99;
 const presetButton = $('handtrap-preset');
 if (presetButton) {
   presetButton.addEventListener('click', () => {
@@ -221,7 +229,7 @@ if (presetButton) {
     }
     renderComboDefs();
     $('combo-status').textContent = skipped
-      ? `单卡已加入；组合上限为4个，本次加入${added}个，另有${skipped}个未加入。`
+      ? `单卡已加入；组合上限为${MAX_COMBO_DEFS}个，本次加入${added}个，另有${skipped}个未加入。`
       : `手坑单卡及四组组合已加入，点“查询”查看。`;
   });
 }
@@ -303,8 +311,8 @@ $('combo-run').onclick = () => {
     $('combo-status').textContent = '组合至少需要 2 张卡。';
     return;
   }
-  if (comboDefs.length >= 4) {
-    $('combo-status').textContent = '最多设置 4 个组合。';
+  if (comboDefs.length >= MAX_COMBO_DEFS) {
+    $('combo-status').textContent = '最多设置 ' + MAX_COMBO_DEFS + ' 个组合。';
     return;
   }
   comboDefs.push({
@@ -321,7 +329,7 @@ function addComboCards(cards) {
   const codes = cards.map(card => card.code);
   const key = values => [...values].sort((a, b) => a - b).join(',');
   if (comboDefs.some(combo => key(combo.codes) === key(codes))) return false;
-  if (comboDefs.length >= 4) return null;
+  if (comboDefs.length >= MAX_COMBO_DEFS) return null;
   comboDefs.push({ codes: [...codes], cards: cards.map(card => ({ ...card })) });
   return true;
 }
@@ -339,8 +347,12 @@ function collect() {
   for (const combo of comboDefs) p.append('combo', combo.codes.join(','));
   const deck = $('deck').value.trim();
   const opdeck = $('opdeck').value.trim();
+  for (const name of deckPicks.deck) p.append('deck', JSON.stringify(name));
+  for (const name of deckPicks.opdeck) p.append('opponent', JSON.stringify(name));
   if (deck) p.append('deck', JSON.stringify(deck));
   if (opdeck) p.append('opponent', JSON.stringify(opdeck));
+  if (!deck && !opdeck && (deckPicks.deck.size || deckPicks.opdeck.size) &&
+      Object.values(deckBatches).every(batch => batch.exact())) p.set('deck_match', 'exact');
   p.append('seat', 'all');
   const phases = phaseValues();
   if (phases.length) { for (const phase of phases) p.append('phase', phase); }
@@ -378,24 +390,49 @@ function fillDatalist(id, names) {
 }
 
 async function loadGroups() {
-  if (state.groupsReady === 'loading') return;
-  state.groupsReady = 'loading';
-  for (const id of ['deck','opdeck']) {$(id).dataset.candidateLoading = '1';delete $(id).dataset.candidateError;}
+  const params = new URLSearchParams({candidates: '1', self_range: $('self_range').value,
+    opponent_range: $('opponent_range').value, page: 'cards'});
+  const scope = params.toString();
+  if (state.candidateScope === scope) return;
+  state.candidateScope = scope;
+  if (state.candidateController) state.candidateController.abort();
+  const controller = new AbortController();
+  state.candidateController = controller;
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(120000)]);
+  for (const id of ['deck', 'opdeck']) {
+    $(id).dataset.candidateLoading = '1';
+    delete $(id).dataset.candidateError;
+    fillDatalist(id + '-list', []);
+  }
   try {
-    const groups = await SS.api('groups');
-    fillDatalist('deck-list', (groups.deck_groups || []).map((x) => x.name).filter(Boolean));
-    fillDatalist('opdeck-list', (groups.deck_groups || []).map((x) => x.name).filter(Boolean));
-    state.groupsReady = true;
+    for (let delay = 5000; ; delay = Math.min(delay * 2, 15000)) {
+      const response = await fetch('/statistics/api/groups?' + scope,
+        {cache: 'no-store', credentials: 'same-origin', signal});
+      if (response.ok) {
+        const groups = await response.json();
+        signal.throwIfAborted();
+        if (groups.version !== 1) throw Error('Group suggestions unavailable');
+        fillDatalist('deck-list', groups.deck);
+        fillDatalist('opdeck-list', groups.opponent);
+        return;
+      }
+      const payload = response.status === 503 ? await response.json() : null;
+      if (payload?.code !== 'query_busy') throw Error('Group suggestions unavailable');
+      await waitForRetry(delay, signal);
+    }
   } catch (_) {
-    state.groupsReady = false;   // 可手输；重新聚焦时再试，不永久放弃候选
-    for (const id of ['deck','opdeck']) $(id).dataset.candidateError = '卡组候选暂不可用；可手动输入，重新点击输入框重试。';
+    if (state.candidateController !== controller) return;
+    state.candidateScope = null;
+    for (const id of ['deck', 'opdeck']) {
+      $(id).dataset.candidateError = '卡组候选暂不可用；可手动输入，重新点击输入框重试。';
+    }
   } finally {
-    for (const id of ['deck','opdeck']) $(id).dataset.candidateLoading = '0';
+    if (state.candidateController === controller) {
+      for (const id of ['deck', 'opdeck']) $(id).dataset.candidateLoading = '0';
+    }
   }
 }
-for (const id of ['deck','opdeck']) $(id).addEventListener('focus', () => {
-  if (!state.groupsReady) loadGroups();
-});
+for (const id of ['deck', 'opdeck']) $(id).addEventListener('focus', loadGroups);
 
 /* ---------- 结果渲染 ---------- */
 
@@ -696,6 +733,7 @@ function resetFields() {
   excludes.reset();
   $('deck').value = '';
   $('opdeck').value = '';
+  for (const batch of Object.values(deckBatches)) batch.reset();
   $('metric').value = 'opening';
   $('self_range').value = '200';
   $('opponent_range').value = '200';
@@ -727,14 +765,26 @@ async function restore() {
       if (Number.isInteger(value) && value > 0) picker.add({ code: value, name: '卡号 ' + value });
     }
   }
-  const deck = params.getAll('deck').map((v) => { try { return JSON.parse(v); } catch (_) { return v; } })[0];
-  const opdeck = params.getAll('opponent').map((v) => { try { return JSON.parse(v); } catch (_) { return v; } })[0];
-  if (deck) $('deck').value = deck;
-  if (opdeck) $('opdeck').value = opdeck;
+  for (const [id, key] of [['deck', 'deck'], ['opdeck', 'opponent']]) {
+    const values = params.getAll(key).map(v => { try { return JSON.parse(v); } catch (_) { return v; } });
+    // Single-value old links keep their original editable text behavior.
+    if (params.get('deck_match') === 'exact') deckBatches[id].restore(values);
+    else if (values.length === 1) $(id).value = values[0];
+    else { for (const name of values) deckPicks[id].add(name); deckBatches[id].render(); }
+  }
+  for (const raw of params.getAll('combo').slice(0, MAX_COMBO_DEFS)) {
+    const codes = [...new Set(raw.split(',').map(Number))];
+    if (codes.length >= 2 && codes.every(code => Number.isSafeInteger(code) && code > 0)) {
+      addComboCards(codes.map(code => ({code, name: '卡号 ' + code})));
+    }
+  }
+  renderComboDefs();
   const seat = params.get('seat');
   const phaseBox = (value) => [...document.querySelectorAll('input[name="phase"]')].find((box) => box.value === value);
   const phases = params.getAll('phase');
-  if (phases.length) {
+  if (params.get('phase_none') === '1') {
+    for (const box of document.querySelectorAll('input[name="phase"]')) box.checked = false;
+  } else if (phases.length) {
     for (const box of document.querySelectorAll('input[name="phase"]')) box.checked = false;
     for (const value of phases) { const box = phaseBox(value); if (box) box.checked = true; }
   } else if (seat === 'first' || seat === 'second') {
@@ -778,8 +828,6 @@ for (const id of ['deck', 'opdeck', 'metric', 'self_range', 'opponent_range', 't
   $(id).addEventListener('change', () => { $('status').textContent = '条件已改，点查询生效。'; });
 }
 
-(async () => {
-  restore();
-  loadGroups();
-})();
+// 卡组建议由输入框按需加载，避免打开页面时先算整份分组。
+restore();
 })();

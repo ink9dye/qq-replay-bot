@@ -183,16 +183,7 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
             with _ALIVE_LOCK:
                 cached_paths=_ALIVE_FILES['paths'] if now_mono-_ALIVE_FILES['at']<=_ALIVE_TTL else None
                 cached_alive=dict(_ALIVE_CACHE)
-            add_metric('source_index_cache_hits',int(cached_paths is not None))
-            add_metric('source_index_cache_misses',int(cached_paths is None))
-            with measure('eligible_source_index_ms'):
-                if cached_paths is None:
-                    cached_paths={}
-                    for file_row in db.execute('SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
-                        cached_paths.setdefault(file_row['digest'],[]).append(file_row['rel_path'])
-                    with _ALIVE_LOCK:
-                        _ALIVE_FILES.update(at=now_mono,paths=cached_paths)
-            file_paths=cached_paths
+            file_paths = cached_paths
             alive={}
             root_resolved=replay_root.resolve();dir_cache={}
             fresh={}
@@ -203,9 +194,21 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
                 if hit is not None and 0.0<=now_mono-hit[0]<=_alive_verdict_ttl(hit[1]):
                     source_hits+=1;alive[digest]=hit[1];continue
                 source_misses+=1
+                if source_misses == 1:
+                    add_metric('source_index_cache_hits', int(file_paths is not None))
+                    add_metric('source_index_cache_misses', int(file_paths is None))
+                    if file_paths is None:
+                        with measure('eligible_source_index_ms'):
+                            file_paths = {}
+                            for file_row in db.execute(
+                                    'SELECT f.digest,r.rel_path FROM stat_files f JOIN replays r ON r.id=f.replay_id'):
+                                file_paths.setdefault(file_row['digest'], []).append(file_row['rel_path'])
+                            with _ALIVE_LOCK:
+                                _ALIVE_FILES.update(at=now_mono, paths=file_paths)
                 ok=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
                        for rel_path in file_paths.get(digest,()))
                 alive[digest]=ok;fresh[digest]=(now_mono,ok)
+            add_metric('source_index_skipped', int(source_misses == 0))
             if fresh:
                 with _ALIVE_LOCK:
                     _ALIVE_CACHE.update(fresh)

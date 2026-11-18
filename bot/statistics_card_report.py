@@ -20,6 +20,7 @@ from .card_identity import facts as identity_facts, identity, reference as ident
 from .card_series import annotate, reference as series_reference
 from .statistics_card_names import index
 from .top100 import eligible_views
+from .web_perf_metrics import measure, timed
 
 WILSON = 1.959963984540054
 METRICS = ('carried', 'drawn', 'opening')
@@ -165,6 +166,7 @@ def _build_codes(db, build):
         'SELECT code FROM stat_build_cards WHERE build=? AND copies>0', (build,))]
 
 
+@timed('card_report_select_ms')
 def _selected_rows(db, replay_root, now, filters):
     """与 card_statistics.query 相同的资格与筛选顺序，只执行一次。"""
     f = filters or Filters()
@@ -250,6 +252,7 @@ def _merge_fact_rows(rows, partition):
     return result
 
 
+@timed('card_report_query_ms')
 def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshold='1',
           min_games=0, sort='people', partition='auto', limit=MAX_ROWS, exclude=(), phases=(), phase_none=False,
           combos=()):
@@ -440,9 +443,10 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
             facts=[tuple(row) for row in db.execute(fact_sql, args)])
     from .statistics_report_intermediate import raw_tables
     # fact_fields 里 digest 的位置就是分桶拆分用的列：单次读到的行据此拆回各桶。
-    raw = raw_tables(db, read_raw_tables, projection=(needed_codes, narrow_opening),
-                     chunk_loader=read_raw_tables if needed_codes is None else None,
-                     fact_digest_index=fact_fields.index('digest'))
+    with measure('card_report_raw_ms'):
+        raw = raw_tables(db, read_raw_tables, projection=(needed_codes, narrow_opening),
+                         chunk_loader=read_raw_tables if needed_codes is None else None,
+                         fact_digest_index=fact_fields.index('digest'))
     # 窄读只取 initial_count>0 的行，但旧口径里同一 (digest,player) 只要有一行
     # 是 NULL，合并结果就是“未知”并排除。摘要路径已在解码时顺手收集；回退路径
     # 仍查 NULL 部分索引（27 万行约 1.3 秒）。

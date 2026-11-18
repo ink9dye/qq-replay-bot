@@ -987,13 +987,20 @@ class StatisticsPortal:
             if len(key)>1 and key[0]!='deck-detail':key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
             from .statistics_roster_version import snapshot_version
             wait=4.0 if key[0]=='deck-detail' else 1.0
+            version = snapshot_version
             if key[0]=='deck-detail':
                 # 构筑页计算本身是亚秒级：不要排进全局 _query_compute_lock，
                 # 否则会被 roster/matrix 的长计算堵到 8 秒超时。
                 compute=lambda:self._query_reply(callback)
+            elif key[0] == 'card-report':
+                from .statistics_report_intermediate import response_version
+                version = response_version
+                # QueryRefresh owns this TTL, including the original disk save time.
+                # Re-reading a secondary cache here would restart that TTL.
+                compute=lambda:self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,True)
             else:
                 compute=lambda:self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
-            return self._refresh.get(key,compute,lambda:snapshot_version(self.database),ttl,background=background,wait=wait)
+            return self._refresh.get(key,compute,lambda:version(self.database),ttl,background=background,wait=wait)
         return self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
 
     def _cached_query_reply_sync(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):

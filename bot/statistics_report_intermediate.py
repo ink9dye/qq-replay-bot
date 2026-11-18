@@ -13,8 +13,6 @@ MAX_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 96
 MAX_RECORDS = 16000
 MAX_AGE = 900
-# card-report 结果缓存的时间桶：同一桶内同条件直接复用，最多容忍一个桶的旧数据。
-RESPONSE_BUCKET_SECONDS = 600
 MIN_FREE = 2 * 1024 * 1024 * 1024
 
 
@@ -210,15 +208,8 @@ def raw_tables(db, loader, projection=None, chunk_loader=None, fact_digest_index
     return value
 
 
-def response_identity(database, key):
-    """Exact data versions; freshness is measured from the completed cache write.
-
-    采集进程持续写 bot.sqlite3（实测 WAL 20 秒内必变），旧实现把库与 WAL 的
-    mtime_ns/size 直接写进缓存键，等于每 20 秒把所有 card-report 缓存作废，
-    一次 9 分钟的计算根本复用不到。这里改成：时间桶定新鲜度上限，只有真正
-    影响命名的配置文件和首局确认库仍按物理状态失效。
-    """
-    if not key or key[0]!='card-report':return None
+def response_version(database):
+    """Apply the card-report TTL to collection writes and invalidate on reference changes."""
     database=Path(database)
     state=[]
     for name in ('config.json','series-naming.json','card-series-reference.json','card-equivalence.json'):
@@ -230,12 +221,18 @@ def response_identity(database, key):
         for path in (database.parent/name,database.parent/(name+'-wal')):
             try:s=path.stat();state.append((path.name,s.st_mtime_ns,s.st_size))
             except FileNotFoundError:state.append((path.name,None,None))
+    return tuple(state)
+
+
+def response_identity(database, key):
+    """Key by query and reference version. The cache reader enforces the TTL."""
+    if not key or key[0] != 'card-report':
+        return None
     from urllib.parse import parse_qs
-    normalized=parse_qs(key[1],keep_blank_values=True)
-    # A query may take more than ten seconds. A wall-clock bucket here would
-    # prevent its successful result from ever being written. _get enforces TTL.
-    bucket=int(time.time()//RESPONSE_BUCKET_SECONDS)
-    encoded=json.dumps([4,str(database.resolve()),state,bucket,normalized],sort_keys=True).encode()
+    database = Path(database)
+    normalized = parse_qs(key[1], keep_blank_values=True)
+    encoded = json.dumps([5, str(database.resolve()), response_version(database), normalized],
+                         sort_keys=True).encode()
     return database.parent/'query-cache/card-report.sqlite3','response:'+hashlib.sha256(encoded).hexdigest()
 
 

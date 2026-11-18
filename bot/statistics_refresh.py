@@ -6,6 +6,9 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
+from uuid import uuid4
+
+from .web_perf_metrics import _current, request_metrics
 
 MAX_KEYS = 256
 MAX_BYTES = 64 * 1024 * 1024
@@ -36,7 +39,12 @@ class QueryRefresh:
             if not 0<=time.time()-item['saved']<=age_limit:return None
             result=item['result'];result[2]=result[2].encode('utf8')
             if result[0]!=200 or not isinstance(result[3],dict) or not isinstance(json.loads(result[2]),dict):return None
-            return dict(saved=item['saved'],stamp=None,result=tuple(result),size=len(result[2]))
+            stamp = item.get('stamp') if key[0] == 'card-report' else None
+            if isinstance(stamp, list) and all(isinstance(part, list) for part in stamp):
+                stamp = tuple(tuple(part) for part in stamp)
+            else:
+                stamp = None
+            return dict(saved=item['saved'],stamp=stamp,result=tuple(result),size=len(result[2]))
         except (OSError,ValueError,TypeError,KeyError,IndexError):return None
 
     def _remember(self,key,item):
@@ -52,6 +60,16 @@ class QueryRefresh:
         extra=dict(headers,**{'X-Statistics-State':state,'X-Statistics-Saved-At':str(item['saved'])})
         return status,kind,json.dumps(payload,ensure_ascii=False).encode('utf8'),extra
 
+    @staticmethod
+    def _observe(outcome, job_id=None):
+        metrics = _current.get()
+        if metrics is not None:
+            metrics['refresh_outcome'] = outcome
+            if job_id is None:
+                metrics.pop('refresh_id', None)
+            else:
+                metrics['refresh_id'] = job_id
+
     def get(self,key,compute,version,ttl,wait=1.0,background=False):
         candidate=key[0] in ('deck-candidates','card-table','group-list')
         maximum=7*86400 if key[0] in ('card-options','deck-options') else (ttl if candidate else MAX_AGE)
@@ -66,8 +84,10 @@ class QueryRefresh:
             age=now-item['saved'] if item else MAX_AGE+1
             if item and 0<=age<=ttl and (candidate or (stamp is not None and item['stamp']==stamp)):
                 self.items.move_to_end(key)
+                self._observe('result', item.get('job_id'))
                 return self._present(item,'fresh')
-            event=self.pending.get(key)
+            event, job_id = self.pending.get(key, (None, None))
+            outcome = 'pending' if event is not None else 'deferred'
             error=self.errors.get(key)
             # A WAL heartbeat must not trigger a full recompute every few seconds.
             # A result outside its exact version is always explicitly stale.
@@ -78,14 +98,26 @@ class QueryRefresh:
             retry_blocked=error and now-error[0]<COOLDOWN
             spare=not background or (not self.pending and self.jobs.empty())
             if event is None and (item is None or age>=minimum) and not retry_blocked and spare:
-                event=threading.Event()
+                event = threading.Event()
+                job_id = uuid4().hex
                 try:
-                    self.jobs.put_nowait((key,compute,version,event,time.monotonic()));self.pending[key]=event
-                except queue.Full:event=None
+                    self.jobs.put_nowait((key, compute, version, event, time.monotonic(), job_id))
+                    self.pending[key] = (event, job_id)
+                    outcome = 'pending'
+                except queue.Full:
+                    event, job_id = None, None
+                    outcome = 'queue_full'
             if item and 0<=age<=maximum:
                 self.items.move_to_end(key)
-                return self._present(item,'refreshing' if event else 'stale')
-            if retry_blocked:return error[1]
+                result_id = item.get('job_id')
+                # A worker publishes the payload before persisting it and waking waiters.
+                refreshing = event is not None and job_id != result_id
+                self._observe('refreshing' if refreshing else 'result',
+                              job_id if refreshing else result_id)
+                return self._present(item, 'refreshing' if refreshing else 'stale')
+            if retry_blocked:
+                self._observe(error[3], error[2])
+                return error[1]
         if event and not background:
             event.wait(wait)
             try:stamp=version()
@@ -94,9 +126,15 @@ class QueryRefresh:
                 item=self.items.get(key)
                 if item and 0<=time.time()-item['saved']<=maximum:
                     state='fresh' if key not in self.pending and stamp is not None and item['stamp']==stamp else 'stale'
+                    self._observe('result', item.get('job_id'))
                     return self._present(item,state,refreshing=key in self.pending)
                 error=self.errors.get(key)
-                if error:return error[1]
+                if error:
+                    self._observe(error[3], error[2])
+                    return error[1]
+                if event.is_set():
+                    outcome = 'no_result'
+        self._observe(outcome, job_id)
         return 503,'application/json; charset=utf-8',json.dumps(dict(
             error='正在准备统计结果，请稍候。',code='query_busy',retry_after=5),ensure_ascii=False).encode(),{'Retry-After':'5'}
 
@@ -105,7 +143,10 @@ class QueryRefresh:
             self.directory.mkdir(parents=True,exist_ok=True)
             result=list(item['result']);result[2]=result[2].decode('utf8')
             path=self._path(key);tmp=path.with_suffix('.tmp')
-            tmp.write_text(json.dumps(dict(saved=item['saved'],result=result),ensure_ascii=False),encoding='utf8')
+            document = dict(saved=item['saved'], result=result)
+            if key[0] == 'card-report':
+                document['stamp'] = item['stamp']
+            tmp.write_text(json.dumps(document,ensure_ascii=False),encoding='utf8')
             tmp.chmod(0o600)
             tmp.replace(path)
             paths=sorted(self.directory.glob('*.json'),key=lambda p:p.stat().st_mtime,reverse=True)
@@ -118,25 +159,33 @@ class QueryRefresh:
 
     def _worker(self):
         while True:
-            key,compute,version,event,enqueued=self.jobs.get();started=time.monotonic();status=500
-            from .web_perf_metrics import request_metrics
+            key, compute, version, event, enqueued, job_id = self.jobs.get()
+            started = time.monotonic()
+            status = 500
+            outcome = 'failed'
             context=request_metrics('refresh-worker');metrics=context.__enter__()
+            metrics['refresh_id'] = job_id
             metrics['queue_wait_ms']=round((started-enqueued)*1000,3)
             try:
                 stamp=version();result=compute();status=result[0]
                 if status==200 and len(result[2])<=MAX_BYTES//2 and isinstance(json.loads(result[2]),dict):
-                    item=dict(saved=time.time(),stamp=stamp,result=result,size=len(result[2]))
+                    outcome = 'result'
+                    item=dict(saved=time.time(),stamp=stamp,result=result,size=len(result[2]),job_id=job_id)
                     with self.lock:self._remember(key,item)
                     self._persist(key,item)
                 elif status!=200:
-                    with self.lock:self.errors[key]=(time.time(),result)
+                    outcome = 'lock_timeout' if metrics.get('lock_timeout') else 'failed'
+                    with self.lock:self.errors[key]=(time.time(),result,job_id,outcome)
+                else:
+                    outcome = 'no_result'
             except Exception as exc:
                 status=500
                 if isinstance(exc,ValueError):status=400
                 result=(status,'application/json; charset=utf-8',json.dumps(dict(
                     error=str(exc) if status==400 else '统计计算暂未完成，请稍后重试。'),ensure_ascii=False).encode(),{})
-                with self.lock:self.errors[key]=(time.time(),result)
+                with self.lock:self.errors[key]=(time.time(),result,job_id,outcome)
             finally:
+                metrics['refresh_outcome'] = outcome
                 with self.lock:
                     self.pending.pop(key,None)
                     self.durations[key]=time.monotonic()-started
