@@ -3,6 +3,7 @@ from pathlib import Path
 import time
 from .top100 import eligible_views
 from .statistics_match_identity import identity_metadata
+from .web_perf_metrics import measure
 
 RANK_MAX_AGE_SECONDS = 3600
 
@@ -38,32 +39,45 @@ def resolve_ranks(db, people, now):
                 person['rank'] = value
 
 
-def population(db, replay_root, now, player=None, allowed_digests=None, resolve_rank=True):
-    basis=eligible_views(db,replay_root,now,player=player,check_files=False)
+def population(db, replay_root, now, player=None, allowed_digests=None, resolve_rank=True,
+               *, include_details=True, latest_details_only=False):
+    # 官方名单/录像里的玩家名可能带首尾空格（如 rank 71 “chatLDS ”）；
+    # 统一在入口去掉边界空格，SQL 侧用 TRIM 兼容仍带空格的历史记录。
+    if player is not None:player=player.strip()
+    basis=eligible_views(db,replay_root,now,player=player,check_files=False,
+                         annotate_series=include_details and not latest_details_only,
+                         with_diagnostics=include_details and not latest_details_only)
     if allowed_digests is not None:basis['views']=[r for r in basis['views'] if r['digest'] in allowed_digests]
     from .statistics_population import latest_views
     # Naming uses trimmed display/lookup keys, while SQL and evidence keep the
     # original player spelling. Apply the same boundary normalization here.
     latest={name.strip():row for name,row in latest_views(basis).items()}
-    metadata=identity_metadata(db,{r['digest'] for r in latest.values()})
+    if include_details and latest_details_only and latest:
+        from .card_series import annotate, reference
+        with measure('build_series_ms'):
+            annotate(db, list(latest.values()), reference(db))
+    metadata=identity_metadata(db,{r['digest'] for r in latest.values()}) if include_details else {}
     people=[]
     for member in basis['roster']['members']:
         name=member['player'].strip()
         row=latest.get(name);person=dict(player=name,rank=member['rank'],points=member['points'],observed=False)
         if row:
+            person.update(observed=True,deck_type=row['deck_type'])
+        if row and include_details:
             meta=metadata.get(row['digest'])
-            person.update(observed=True,deck_type=row['deck_type'],classification_status=row['classification_status'],
+            person.update(classification_status=row['classification_status'],
                 label_source=row.get('label_source'),label_score=row.get('label_score'),
                 series=row['series'],series_status=row['series_status'],recorded_at=row['recorded_at'],expires_at=row['expires_at'],
                 observation_kind='confirmed_first_game' if meta and meta[1:]==(1,True) else 'post_side' if meta and meta[1]>1 else 'initial_status_unknown')
         people.append(person)
-    if player is not None:player=player.strip()
     if player is not None and player not in {p['player'] for p in people} and player in latest:
         row=latest[player];meta=metadata.get(row['digest'])
-        people.append(dict(player=player,rank=None,points=None,observed=True,deck_type=row['deck_type'],
-            classification_status=row['classification_status'],series=row['series'],series_status=row['series_status'],
-            recorded_at=row['recorded_at'],expires_at=row['expires_at'],
-            observation_kind='confirmed_first_game' if meta and meta[1:]==(1,True) else 'post_side' if meta and meta[1]>1 else 'initial_status_unknown'))
+        person=dict(player=player,rank=None,points=None,observed=True,deck_type=row['deck_type'])
+        if include_details:
+            person.update(classification_status=row['classification_status'],series=row['series'],series_status=row['series_status'],
+                recorded_at=row['recorded_at'],expires_at=row['expires_at'],
+                observation_kind='confirmed_first_game' if meta and meta[1:]==(1,True) else 'post_side' if meta and meta[1]>1 else 'initial_status_unknown')
+        people.append(person)
     if resolve_rank:
         resolve_ranks(db, people, now)
     return basis,latest,people
@@ -168,7 +182,8 @@ def query(db, replay_root, now, player=None):
     # 单玩家页只需要该玩家的视角；旧实现每次都算完整名册（100 人 + 名次核验），
     # 单页 2-18s。这里按需缩小，展示与资格规则不变。
     if player is not None:
-        basis,latest,people=population(db,replay_root,now,player=player,resolve_rank=False)
+        basis,latest,people=population(db,replay_root,now,player=player,resolve_rank=False,
+                                       latest_details_only=True)
     else:
         basis,latest,people=population(db,replay_root,now)
     if player is not None:
