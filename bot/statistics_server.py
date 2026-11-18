@@ -4,6 +4,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler
 from .share import ReplayHTTPServer
 from .statistics_portal import StatisticsPortal,owner_secret
+from .web_perf_metrics import request_metrics,measure
 
 
 
@@ -34,7 +35,7 @@ def _safe_path(path):
     return raw[:300]
 
 
-def _log_access(handler,portal,status,kind):
+def _log_access(handler,portal,status,kind,metrics=None):
     raw=str(handler.path or '').split('?',1)[0]
     if raw in ('/health','/favicon.ico'):
         return
@@ -44,6 +45,7 @@ def _log_access(handler,portal,status,kind):
                     kind=str(kind or '')[:80],country=(handler.headers.get('CF-IPCountry') or '')[:8],
                     ua=(handler.headers.get('User-Agent') or '')[:300],
                     ref=(handler.headers.get('Referer') or '')[:300])
+        if metrics is not None:record.update(metrics)
         log=portal.database.parent/'logs'/'web-access.jsonl'
         line=json.dumps(record,ensure_ascii=False,separators=(',',':'))+'\n'
         with _access_lock:
@@ -76,6 +78,19 @@ def make_handler(portal, share_app=None):
                     handle.write(time.strftime('%Y-%m-%dT%H:%M:%S')+'\t'+traceback.format_exc()+'\n')
             except OSError:pass
         def do_GET(self):
+            with request_metrics() as metrics:
+                started=time.perf_counter()
+                self._perf_status=500
+                self._perf_kind=''
+                self._perf_complete=False
+                try:
+                    return self._do_GET()
+                finally:
+                    if self.path.split('?',1)[0].startswith('/statistics/api/'):
+                        metrics['elapsed_ms']=round((time.perf_counter()-started)*1000,3)
+                        metrics['response_complete']=self._perf_complete
+                        _log_access(self,portal,self._perf_status,self._perf_kind,metrics)
+        def _do_GET(self):
             if share_app is not None and self.path.split('?',1)[0].startswith('/s/'):
                 return super().do_GET()
             try:
@@ -83,36 +98,67 @@ def make_handler(portal, share_app=None):
                     result=portal._reply(200,json.dumps(dict(service='qq-statistics-web',status='running',pid=os.getpid(),
                         read_only_queries=True,starts_watch=False,version=3,features=['roster','groups','investment','cards','matrix','local_card_library','current_player_investment','build_detail','inferred_side'])),'application/json; charset=utf-8')
                 elif self.path.split('?',1)[0].startswith('/statistics'):
-                    result=portal.route(self.path,self.headers,self.client_address[0])
+                    with measure('route_ms'):
+                        result=portal.route(self.path,self.headers,self.client_address[0])
                 else:result=portal._reply(404,'找不到此统计页面。')
             except Exception as exc:
                 self._log_error(exc)
                 result=portal._reply(500,'服务器内部错误，请稍后重试。')
             status,kind,body,headers=result
+            self._perf_status=status;self._perf_kind=kind
+            from .web_perf_metrics import _current
+            metrics=_current.get()
+            if metrics is not None:
+                state=headers.get('X-Statistics-State')
+                metrics['response_state']=state if state in ('precomputed','cached','stale','refreshing') else 'unknown'
             body,headers=self._compress(kind,body,headers)
             self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
             for key,value in headers.items():self.send_header(key,value)
             self.end_headers();self.wfile.write(body)
-            _log_access(self,portal,status,kind)
+            self._perf_complete=True
+            if not self.path.split('?',1)[0].startswith('/statistics/api/'):
+                _log_access(self,portal,status,kind)
         def log_message(self,*args):pass
         def do_POST(self):
+            with request_metrics() as metrics:
+                started=time.perf_counter()
+                self._perf_status=500
+                self._perf_kind=''
+                self._perf_complete=False
+                try:
+                    return self._do_POST()
+                finally:
+                    if self.path.split('?',1)[0].startswith('/statistics/api/'):
+                        metrics['elapsed_ms']=round((time.perf_counter()-started)*1000,3)
+                        metrics['response_complete']=self._perf_complete
+                        _log_access(self,portal,self._perf_status,self._perf_kind,metrics)
+        def _do_POST(self):
             self.close_connection=True
             try:
                 length=int(self.headers.get('Content-Length','0'))
                 if not 0<length<=65536:raise ValueError()
-                result=portal.post(self.path,self.headers,self.client_address[0],self.rfile.read(length))
+                with measure('route_ms'):
+                    result=portal.post(self.path,self.headers,self.client_address[0],self.rfile.read(length))
             except ValueError:result=portal._reply(400,'请求内容无效。')
             except Exception as exc:
                 self._log_error(exc)
                 try:result=portal._reply(500,'服务器内部错误，请稍后重试。')
                 except Exception:result=portal._reply(500,'服务器内部错误。')
             status,kind,body,headers=result
+            self._perf_status=status;self._perf_kind=kind
+            from .web_perf_metrics import _current
+            metrics=_current.get()
+            if metrics is not None:
+                state=headers.get('X-Statistics-State')
+                metrics['response_state']=state if state in ('precomputed','cached','stale','refreshing') else 'unknown'
             body,headers=self._compress(kind,body,headers)
             self.send_response(status)
             self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
             for key,value in headers.items():self.send_header(key,value)
             self.end_headers();self.wfile.write(body)
-            _log_access(self,portal,status,kind)
+            self._perf_complete=True
+            if not self.path.split('?',1)[0].startswith('/statistics/api/'):
+                _log_access(self,portal,status,kind)
     return Handler
 
 
