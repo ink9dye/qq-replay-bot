@@ -1,5 +1,8 @@
 # 文档索引（唯一导航入口）
 
+- [内战资格和网页构筑减负](wrapup/WRAPUP_INNER_PAIRS_BUILD_20261118.md)：对手配对复用、构筑单页提速、验证与回滚。
+
+
 - [卡报后台积压与重复计算修复](wrapup/WRAPUP_CARD_REPORT_QUEUE_20261118.md) — 生产部署、浏览器冒烟、待验项与回滚。
 
 
