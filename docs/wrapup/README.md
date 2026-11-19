@@ -1,5 +1,7 @@
 # 收尾文档
 
+- [QQ 与网页排位参与数统一](WRAPUP_RANK_PARTICIPATION_20261119.md) — 已部署，验证与回滚。
+
 - [前百内战与 QQ、网页复用核对](WRAPUP_INNER100_PARITY_20261119.md) — 已部署，附入口核对与回滚。
 
 - [QQ 与网页前 200 内战统一](WRAPUP_INNER_COUNT_20261119.md) — 共同资格、双计数、部署与回滚。
