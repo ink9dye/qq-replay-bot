@@ -1,5 +1,7 @@
 # 文档索引（唯一导航入口）
 
+- [QQ 与网页本地查卡复用](wrapup/WRAPUP_CARD_SEARCH_SHARED_20261119.md) — 已部署，测试与回滚。
+
 - [QQ 与网页排位参与数统一](wrapup/WRAPUP_RANK_PARTICIPATION_20261119.md) — 已部署，验证与回滚。
 
 - [前百内战与 QQ、网页复用核对](wrapup/WRAPUP_INNER100_PARITY_20261119.md) — 已部署，附入口核对与回滚。
