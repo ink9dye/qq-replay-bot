@@ -1,4 +1,3 @@
-import json
 import sqlite3
 import tempfile
 import unittest
@@ -7,7 +6,7 @@ from datetime import datetime,timezone,timedelta
 from pathlib import Path
 from unittest.mock import patch
 from bot.commands import parse_command
-from bot.game_counts import GameCounter,current_ranks
+from bot.game_counts import GameCounter
 
 class GameCountTests(unittest.TestCase):
     def setUp(self):
@@ -24,7 +23,7 @@ class GameCountTests(unittest.TestCase):
             db.executemany('INSERT INTO stat_builds VALUES(?,?)',[('b1','xxyy'),('b2','xxzz'),('b3','other')])
             db.executemany('INSERT INTO stat_views VALUES(?,?,?)',[('g1','A','b1'),('g1','B','b2'),('g2','A','b2'),('g3','C','b3')])
             db.commit()
-        self.counter=GameCounter(self.db,self.root,clock=lambda:self.now,rank_provider=lambda *a:({'A':1,'B':150,'C':300,'D':0},self.now))
+        self.counter=GameCounter(self.db,self.root,clock=lambda:self.now)
 
     def test_parse_total_deck_participation_and_internal(self):
         self.assertEqual(parse_command('统计对局'),dict(op='game_counts',keyword=''))
@@ -38,13 +37,6 @@ class GameCountTests(unittest.TestCase):
     def test_literal_substring_counts_game_once_even_when_both_decks_match(self):
         r=self.counter.query('xx');self.assertEqual((r['count'],r['today']),(2,1))
         self.assertEqual(self.counter.query('%')['count'],0)
-
-    def test_participation_keeps_its_rank_provider(self):
-        self.assertEqual(self.counter.query(limit=200)['count'],2)
-        self.counter.rank_provider=lambda *a:({'A':1},self.now)
-        self.counter._cache.clear()
-        r=self.counter.query(limit=200)
-        self.assertEqual((r['count'],r['unknown']),(2,1))
 
     def test_inner_counts_use_shared_views_and_first_ingest(self):
         from bot import statistics_rank_scope as scope
@@ -119,10 +111,27 @@ class GameCountTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'roster unavailable'):
                 self.counter.query(limit=100, internal=True)
 
-    def test_fresh_room_rank_samples_are_reused_but_expired_are_not(self):
-        p=self.root/'capture-status.json';p.write_text(json.dumps(dict(updated_at=self.now,rank_samples=[dict(player='A',rank=150,checked_at=self.now-20),dict(player='B',rank=180,checked_at=self.now-121)])),encoding='utf-8')
-        with closing(sqlite3.connect(self.db)) as db:ranks,_=current_ranks(db,self.root,self.now)
-        self.assertEqual(ranks,{'A':150})
+    def test_ranked_participation_matches_web_own_range_and_dedupes(self):
+        from bot.statistics_card_report import query
+        from bot.statistics_rank_scope import population_scope
+        from test_card_statistics import CardStatisticsTests, NOW
+
+        fixture = CardStatisticsTests()
+        self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
+        counter = GameCounter(fixture.store.path, fixture.root, clock=lambda: NOW)
+        for limit, ranks, expected in ((100, {}, (5, 5)), (200, {'乙': 200}, (5, 10)),
+                                       (200, {}, (5, 5))):
+            counter._cache.clear()
+            with self.subTest(limit=limit, ranks=ranks), \
+                 patch('bot.statistics_rank_scope.ranks_for', return_value=ranks), \
+                 patch('bot.statistics_rank_scope._stored_ranks', return_value={}):
+                result = counter.query(limit=limit)
+                with population_scope(str(limit), 'all'):
+                    report = query(fixture.store._db, fixture.replays, NOW, metric='opening')
+                self.assertEqual((report['selected_games'], report['selected_samples']), expected)
+                self.assertEqual((result['count'], result['views']), expected)
+                self.assertEqual(result['unknown'], 0)
 
     def test_count_command_uses_same_visibility_check_as_statistics(self):
         from test_bot import temporary_service
