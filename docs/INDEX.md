@@ -1,5 +1,7 @@
 # 文档索引（唯一导航入口）
 
+- [QQ 与网页前 200 内战统一](wrapup/WRAPUP_INNER_COUNT_20261119.md) — 共同资格、双计数、部署与回滚。
+
 - [QQ 卡片资料减负](wrapup/WRAPUP_QQ_PROFILE_REUSE_20261118.md) — 已部署，验证与回滚。
 
 - [卡组筛选统一与回归复查](wrapup/WRAPUP_DECK_FILTERS_20261119.md) — 已部署，验证、版本与回滚。
