@@ -441,7 +441,9 @@ function summary(data) {
   const base = data.base || {};
   const line = el('p', '本次结果：' + self, 'summary-line');
   const matched = Number.isInteger(data.selected_samples) ? data.selected_samples : (base.denominator || 0) + (base.unknown || 0);
-  const baseLine = el('p', '匹配 ' + matched + ' 个小局视角；胜率样本 ' + (base.denominator || 0) + '，胜率 ' + percent(base.rate) + (base.unknown ? '；胜负未知 ' + base.unknown + '（不计入胜率）' : ''), 'note');
+  const countLabel = Number.isInteger(data.selected_games)
+    ? data.selected_games + ' 个去重小局，' : '';
+  const baseLine = el('p', '匹配 ' + countLabel + matched + ' 个小局视角；胜率样本 ' + (base.denominator || 0) + '，胜率 ' + percent(base.rate) + (base.unknown ? '；胜负未知 ' + base.unknown + '（不计入胜率）' : ''), 'note');
   return [line, baseLine];
 }
 

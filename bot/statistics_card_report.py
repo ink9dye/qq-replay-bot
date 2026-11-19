@@ -14,6 +14,7 @@ import math
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from .game_counts import game_digests
 from .card_search import card_name
 from .card_statistics import Filters, win_rate, deck_matches, fraction
 from .card_identity import facts as identity_facts, identity, reference as identity_reference
@@ -675,6 +676,7 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
         series_reference=basis['series_reference'],
         candidate_samples=len(basis['views']),
         selected_samples=len(selected),
+        selected_games=len(game_digests(selected)),
         data_quality=dict(basis['diagnostics'], filter_exclusions=exclusions,
                           filter_exclusion_unit='first_failing_filter_per_perspective',
                           excluded_by_opening=excluded_by_opening),

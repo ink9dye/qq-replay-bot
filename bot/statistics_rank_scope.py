@@ -64,9 +64,12 @@ def stored_ranks(db,now,max_age=14*86400):
 
 
 @contextmanager
-def population_scope(own='100',opponent='all'):
+def population_scope(own='100',opponent='all',*,track_unresolved_games=False):
     if own not in ('100','200','all') or opponent not in ('100','200','all'):raise ValueError('invalid_side_range')
-    token=_CURRENT.set(dict(own=own,opponent=opponent,unknown=set(),pending=set()))
+    scope=dict(own=own,opponent=opponent,unknown=set(),pending=set())
+    if track_unresolved_games:
+        scope['unresolved_games']=set()
+    token=_CURRENT.set(scope)
     try:yield _CURRENT.get()
     finally:_CURRENT.reset(token)
 
@@ -174,12 +177,21 @@ def filter_rows(db,rows,state,now,*,pairs=None):
         if choice=='all':return True
         if choice=='100':return name in known
         value=known.get(name,extra.get(name))
-        return value is not None and 0<value<=200
+        return None if value is None else 0<value<=200
     result=[]
+    unresolved=scope.get('unresolved_games')
     for row in rows:
         other=pairs.get(row['digest'],set())-{row['player']}
-        if not accept(row['player'],scope['own']):continue
-        if scope['opponent']!='all' and (len(other)!=1 or not accept(next(iter(other)),scope['opponent'])):continue
+        own_ok=accept(row['player'],scope['own'])
+        if scope['opponent']=='all':
+            opponent_ok=True
+        else:
+            opponent_ok=len(other)==1 and accept(next(iter(other)),scope['opponent'])
+        if own_ok is not True or opponent_ok is not True:
+            if (unresolved is not None and own_ok is not False and opponent_ok is not False
+                    and (row.get('observed_game_no') or 0)>0):
+                unresolved.add(row['digest'])
+            continue
         row['rank']=known.get(row['player'],extra.get(row['player']))
         result.append(row)
     return result

@@ -1808,6 +1808,9 @@ class BotService:
             task.add_done_callback(self._price_quote_tasks.discard)
             return
         hint = SLOW_COMMAND_HINTS.get(parsed_command.get('op'))
+        if (parsed_command.get('op') == 'game_counts' and parsed_command.get('limit') == 200
+                and parsed_command.get('internal') and self._statistics_allowed(user_id, conversation)):
+            hint = "前200内战统计中，完成后把结果发到这里。"
         if not hint and (text.strip().isdigit() or text.strip().casefold() == 'next'):
             session_key = (conversation + ':' + str(user_id)) if conversation else str(user_id)
             if self.card_search.has_candidates(session_key, max_age=120):
@@ -2303,7 +2306,10 @@ class BotService:
     async def _slow_text_job(self, user_id, text, conversation, receiver, send, forward=None, self_id=None):
         """先回一句“正在…”，再在后台跑慢命令；结果（含合并转发卡片）单独发。"""
         try:
-            if (parse_command(text).get('op') in ('top100_deck', 'top100_pie', 'card_usage', 'card_flow', 'card_winrate',
+            command = parse_command(text)
+            ranked_inner = (command.get('op') == 'game_counts' and command.get('limit') == 200
+                            and command.get('internal'))
+            if (ranked_inner or command.get('op') in ('top100_deck', 'top100_pie', 'card_usage', 'card_flow', 'card_winrate',
                                                 'card_profile', 'card_select', 'card_next', 'game_winrate')
                     or text.strip().isdigit() or text.strip().casefold() == 'next'):
                 async with observed_lock(self._statistics_queue_lock()):

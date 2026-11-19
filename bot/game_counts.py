@@ -54,6 +54,27 @@ def membership(players,ranks,limit,internal):
     return None if not states or None in states else False
 
 
+def game_digests(views):
+    return {row['digest'] for row in views}
+
+
+def ranked_inner_counts(db, data_dir, now, midnight):
+    from .statistics_rank_scope import population_scope
+    from .top100 import eligible_views
+
+    db.row_factory = sqlite3.Row
+    with population_scope('200', '200', track_unresolved_games=True) as scope:
+        views = eligible_views(db, Path(data_dir) / 'replays', now,
+                               annotate_series=False, with_diagnostics=False)['views']
+    digests = game_digests(views)
+    today = sum(digest in digests and midnight <= received <= now
+                for digest, received in db.execute(
+                    BASE + 'SELECT digest,received_at FROM games',
+                    (now - RETENTION_SECONDS, now)))
+    return dict(count=len(digests), views=len(views), today=today,
+                unknown=len(scope['unresolved_games'] - digests))
+
+
 class GameCounter:
     def __init__(self,database,data_dir,clock=time.time,rank_provider=current_ranks):
         self.database=Path(database);self.data_dir=Path(data_dir);self.clock=clock
@@ -68,7 +89,8 @@ class GameCounter:
             if hit and 0<=now-hit[0]<30:return hit[1]
             with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=1)) as db:
                 db.execute('PRAGMA cache_size=-2048')
-                deadline=time.monotonic()+3
+                unified_inner = limit == 200 and internal
+                deadline=time.monotonic()+(60 if unified_inner else 3)
                 db.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
                 db.execute('BEGIN')
                 params=[now-RETENTION_SECONDS,now]
@@ -77,7 +99,9 @@ class GameCounter:
                     tail=' WHERE EXISTS (SELECT 1 FROM stat_views v JOIN stat_builds b ON b.fingerprint=v.build WHERE v.digest=games.digest AND instr(lower(COALESCE(b.deck_type,\'\')),lower(?))>0)'
                     params.append(keyword)
                 unknown=0;rank_at=None
-                if limit is None:
+                if unified_inner:
+                    result = ranked_inner_counts(db, self.data_dir, now, midnight)
+                elif limit is None:
                     count,today=db.execute(BASE+'SELECT COUNT(*),COALESCE(SUM(received_at>=? AND received_at<=?),0) FROM games'+tail,
                         params[:2]+[midnight,now]+params[2:]).fetchone()
                 else:
@@ -91,8 +115,9 @@ class GameCounter:
                         if match is None:unknown+=1
                         elif match:
                             count+=1;today+=int(midnight<=received<=now)
-                result=dict(count=count,today=today,unknown=unknown,rank_at=rank_at,at=now,
-                            keyword=keyword,limit=limit,internal=internal)
+                if not unified_inner:
+                    result=dict(count=count,today=today,unknown=unknown)
+                result.update(rank_at=rank_at,at=now,keyword=keyword,limit=limit,internal=internal)
             self._cache[key]=(now,result);self._cache.move_to_end(key)
             while len(self._cache)>16:self._cache.popitem(last=False)
             return result
@@ -109,7 +134,12 @@ def message(service,command):
     if r['limit']:title+=f"｜当前前{r['limit']}"+('内战（双方）' if r['internal'] else '参与（至少一方）')
     qualifier='已确认至少 ' if r['unknown'] else ''
     lines=[title,f"当前保留：{qualifier}{r['count']} 个小局",f"今天首次入库：{r['today']} 个小局（北京时间00:00起）"]
-    if r['limit']:
+    if 'views' in r:
+        lines.append(f"对应 {r['views']} 个玩家视角；一局两边都符合时计 2 个视角。")
+        if r['unknown']:
+            lines.append(f"另有 {r['unknown']} 个符合录像资格的小局因名次未知暂未计入。")
+        lines.append('与网页共用对局资格和名次判断；QQ 此处未筛卡组或先后攻。')
+    elif r['limit']:
         if r['unknown']:lines.append(f"另有 {r['unknown']} 个小局缺少新鲜名次，暂无法给出完整当前排名范围总数；今日数同样仅含已确认部分。")
         if r['rank_at']:lines.append('名次最早采样：'+datetime.fromtimestamp(r['rank_at'],TZ).strftime('%m-%d %H:%M:%S'))
         lines.append('复用房间玩家名次与当前榜单，不逐个联网补查历史玩家。')
