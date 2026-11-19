@@ -1,5 +1,7 @@
 # 文档索引（唯一导航入口）
 
+- [QQ 卡片资料减负](wrapup/WRAPUP_QQ_PROFILE_REUSE_20261118.md) — 已部署，验证与回滚。
+
 - [卡组筛选统一与回归复查](wrapup/WRAPUP_DECK_FILTERS_20261119.md) — 已部署，验证、版本与回滚。
 
 - [内战资格和网页构筑减负](wrapup/WRAPUP_INNER_PAIRS_BUILD_20261118.md)：对手配对复用、构筑单页提速、验证与回滚。
