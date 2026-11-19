@@ -1374,7 +1374,7 @@ class BotService:
             return 0
         now = time.monotonic()
         if now - self._known_replays_at > 5:
-            self._known_replays = {replay["rel_path"] for replay in self.store.all_replays()}
+            self._known_replays = self.store.replay_paths()
             self._known_replays_at = now
         known = self._known_replays
         indexed = 0
@@ -2067,11 +2067,25 @@ class BotService:
                     ('单卡胜率', 'card_winrate', self._card_winrate_reply))
         if purpose != 'card_profile':
             return next(handler(code) for _, op, handler in handlers if op == purpose)
+        from functools import cache
+        from .card_usage_pie import load_card_inputs
+
+        query_time = self.clock()
+
+        @cache
+        def load_inputs():
+            return load_card_inputs(self.store.path, self.data_dir, query_time, code,
+                                    usage=True, flow=True)
+
         sections = [{'text': f"卡片：{card_name(card)}（{int(code):08d}）\n卡片详情、使用量、单卡流向、单卡胜率。"},
                     {'text': '【卡片详情】\n' + str(reply), 'images': reply.image_urls}]
-        for title, _, handler in handlers:
+        for title, op, handler in handlers:
             try:
-                result = handler(code)
+                with phase('profile_' + op):
+                    if op == 'card_winrate':
+                        result = handler(code)
+                    else:
+                        result = handler(code, load_inputs=load_inputs)
                 for page in getattr(result, 'pages', None) or [result]:
                     sections.append({'text': f'【{title}】\n{page}',
                                      'images': list(getattr(result, 'image_urls', None) or [])})
@@ -2082,10 +2096,11 @@ class BotService:
         result.forward_cards = sections
         return result
 
-    def _card_flow_reply(self, card_name):
+    def _card_flow_reply(self, card_name, *, load_inputs=None):
         from .card_flow import render_flow
         try:
-            pages, data = render_flow(self.store.path, self.data_dir, self.clock(), card_name)
+            pages, data = render_flow(self.store.path, self.data_dir, self.clock(), card_name,
+                                load_inputs=load_inputs)
         except ValueError as exc:
             return f"单卡流向查询失败：{exc}"
         image_urls = ["base64://" + base64.b64encode(page).decode("ascii") for page in pages]
@@ -2114,10 +2129,11 @@ class BotService:
             return f"单卡胜率查询失败：{exc}"
         return TextPages(messages(payload))
 
-    def _card_usage_reply(self, card_name):
+    def _card_usage_reply(self, card_name, *, load_inputs=None):
         from .card_usage_pie import render
         try:
-            blob, data = render(self.store.path, self.data_dir, self.clock(), card_name)
+            blob, data = render(self.store.path, self.data_dir, self.clock(), card_name,
+                                load_inputs=load_inputs)
         except ValueError as exc:
             return f"使用量查询失败：{exc}"
         image_url = "base64://" + base64.b64encode(blob).decode("ascii")

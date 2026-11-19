@@ -163,8 +163,10 @@ def resolve_code(data_dir, code, db):
     return canonical, card_name(info)
 
 
-def collect(database, data_dir, now, card_name=None, *, code=None):
+def load_card_inputs(database, data_dir, now, card_name, *, usage, flow, code=None):
+    """Load a card's front-100 inputs in one read transaction."""
     from .statistics_dashboard import population
+
     replay_root = Path(database).parent / 'replays'
     with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
                                  uri=True, timeout=5)) as db:
@@ -173,37 +175,47 @@ def collect(database, data_dir, now, card_name=None, *, code=None):
         code, name = (resolve_card(data_dir, card_name, db) if code is None
                       else resolve_code(data_dir, code, db))
         codes = identity_codes(db, code)
-        # 代表构筑与「单卡流向」/网页/换备同一份：最近一场优先取首局
-        # （game_no=1）的主卡组。旧实现按 recorded_at 取最近一局，常常落到
-        # BO3 第 2/3 局的换备构筑，把 Side 换进来的卡算成主卡。
         basis, latest, people = population(db, replay_root, now)
-        sessions = _selected_sessions(basis['views'], latest)
-        builds = {row.get('build') for rows in sessions.values() for row in rows}
-        builds |= {(latest.get(person['player']) or {}).get('build') for person in people}
+        sessions = {}
+        if usage:
+            sessions['usage'] = _selected_sessions(basis['views'], latest)
+        if flow:
+            sessions['flow'] = _latest_sessions(basis['views'])
+        builds = {row.get('build') for group in sessions.values()
+                  for rows in group.values() for row in rows}
+        builds.update((latest.get(person['player']) or {}).get('build') for person in people)
         copies = _main_copies(db, builds, codes)
-        records = []
-        for person in people:
-            player = person['player']
-            row = latest.get(player) or {}
-            build = row.get('build')
-            games = sessions.get(player) or []
-            later = [r for r in games if (r.get('observed_game_no') or 0) > 1]
-            # population already selected the latest usable confirmed first game.
-            # Reuse it, including its duplicate-record resolution, for the denominator.
-            main_known = bool(row)
-            main = copies.get(build, 0)
-            side = side_out = 0
-            side_known = False
-            # 备牌没有直接记录（录像不含备牌表），只能看第 2/3 局相对第 1 局的净换入。
-            if main_known and later:
-                later_counts = [copies.get(r.get('build'), 0) for r in later]
-                side = max(0, max(later_counts) - main)
-                side_out = max(0, main - min(later_counts))
-                side_known = True
-            records.append(dict(player=player, rank=int(person.get('rank') or 999),
-                                main=main, side=side, side_out=side_out,
-                                main_known=main_known, known=side_known,
-                                total=main + side, build=build, has_build=bool(row)))
+    return code, name, latest, people, sessions, copies
+
+
+def collect(database, data_dir, now, card_name=None, *, code=None, load_inputs=None):
+    inputs = (load_inputs() if load_inputs is not None else
+              load_card_inputs(database, data_dir, now, card_name, usage=True, flow=False, code=code))
+    code, name, latest, people, all_sessions, copies = inputs
+    sessions = all_sessions['usage']
+    records = []
+    for person in people:
+        player = person['player']
+        row = latest.get(player) or {}
+        build = row.get('build')
+        games = sessions.get(player) or []
+        later = [r for r in games if (r.get('observed_game_no') or 0) > 1]
+        # population already selected the latest usable confirmed first game.
+        # Reuse it, including its duplicate-record resolution, for the denominator.
+        main_known = bool(row)
+        main = copies.get(build, 0)
+        side = side_out = 0
+        side_known = False
+        # 备牌没有直接记录（录像不含备牌表），只能看第 2/3 局相对第 1 局的净换入。
+        if main_known and later:
+            later_counts = [copies.get(r.get('build'), 0) for r in later]
+            side = max(0, max(later_counts) - main)
+            side_out = max(0, main - min(later_counts))
+            side_known = True
+        records.append(dict(player=player, rank=int(person.get('rank') or 999),
+                            main=main, side=side, side_out=side_out,
+                            main_known=main_known, known=side_known,
+                            total=main + side, build=build, has_build=bool(row)))
     records.sort(key=lambda item: item['rank'])
     # 没有确认首局的录像直接忽略（不进任何分母），只在文案里报人数。
     valid = [row for row in records if row['main_known']]
@@ -249,58 +261,61 @@ def _pie(ax, items, title, prop):
     ax.set_title(f'{title}\n{detail}', fontproperties=prop, fontsize=13, pad=10)
 
 
-def render(database, data_dir, now, card_name):
-    payload = collect(database, data_dir, now, card_name)
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    from matplotlib.font_manager import FontProperties
+def render(database, data_dir, now, card_name, *, load_inputs=None):
+    from .qq_diagnostics import phase
+    with phase('statistics_collect'):
+        payload = collect(database, data_dir, now, card_name, load_inputs=load_inputs)
+    with phase('image_render'):
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        from matplotlib.font_manager import FontProperties
 
-    font_candidates = (
-        Path('C:/Windows/Fonts/msyh.ttc'),
-        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
-        Path('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'),
-        Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'),
-    )
-    font_path = next((path for path in font_candidates if path.is_file()), None)
-    prop = FontProperties(fname=str(font_path)) if font_path else None
-    if prop is not None:
-        plt.rcParams['font.family'] = prop.get_name()
-    plt.rcParams['axes.unicode_minus'] = False
-    palette = ['#AAB5C4', '#4E79A7', '#59A14F', '#E15759', '#B07AA1']
-    unknown_color = '#D9DEE7'
-    unknown = payload['side_unknown']
+        font_candidates = (
+            Path('C:/Windows/Fonts/msyh.ttc'),
+            Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
+            Path('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'),
+            Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'),
+        )
+        font_path = next((path for path in font_candidates if path.is_file()), None)
+        prop = FontProperties(fname=str(font_path)) if font_path else None
+        if prop is not None:
+            plt.rcParams['font.family'] = prop.get_name()
+        plt.rcParams['axes.unicode_minus'] = False
+        palette = ['#AAB5C4', '#4E79A7', '#59A14F', '#E15759', '#B07AA1']
+        unknown_color = '#D9DEE7'
+        unknown = payload['side_unknown']
 
-    def items(dist):
-        return [(f'{key}张', dist[key], palette[key]) for key in (0, 1, 2, 3)]
+        def items(dist):
+            return [(f'{key}张', dist[key], palette[key]) for key in (0, 1, 2, 3)]
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6.4), dpi=100)
-    main_items = items(payload['main_dist'])
-    if payload['main_unknown']:
-        main_items = main_items + [('未知', payload['main_unknown'], unknown_color)]
-    _pie(axes[0], main_items, '主卡投入（确证首局，人数）', prop)
-    if payload['side_available']:
-        side_items = items(payload['side_dist'])
-        total_items = items(payload['total_dist'])
-        if unknown:
-            side_items = side_items + [('未知', unknown, unknown_color)]
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6.4), dpi=100)
+        main_items = items(payload['main_dist'])
         if payload['main_unknown']:
-            total_items = total_items + [('未知', payload['main_unknown'], unknown_color)]
-        _pie(axes[1], side_items, '备牌换入（证据，人数）', prop)
-        _pie(axes[2], total_items, '总投入（主卡+换入，人数）', prop)
-    else:
-        _pie(axes[1], [('无换备证据', payload['current'], unknown_color)],
-             '备牌换入（暂无证据）', prop)
-        _pie(axes[2], [('无换备证据', payload['current'], unknown_color)],
-             '总投入（暂无证据）', prop)
-    fig.suptitle(f"前100使用量 · {payload['name']}（{payload['code']:08d}） · "
-                 f"有效 {payload['current']}/{payload['total_players']} 人（排除 {payload['excluded']} 人）",
-                 fontproperties=prop, fontsize=20, y=0.99)
-    fig.text(0.5, 0.015,
-             '主卡=确证第 1 局；备牌=所选同场第 2/3 局相对第 1 局的净换入（录像无备牌表：未换入≠没带）；'
-             f'主卡未知 {payload["main_unknown"]} 人、备牌未知 {unknown} 人；总投入=主卡+换入（下界）。',
-             ha='center', fontproperties=prop, fontsize=10, color='#8A5A00')
-    output = io.BytesIO()
-    fig.savefig(output, format='png', dpi=100, bbox_inches='tight', facecolor='white')
-    plt.close(fig)
-    return output.getvalue(), payload
+            main_items = main_items + [('未知', payload['main_unknown'], unknown_color)]
+        _pie(axes[0], main_items, '主卡投入（确证首局，人数）', prop)
+        if payload['side_available']:
+            side_items = items(payload['side_dist'])
+            total_items = items(payload['total_dist'])
+            if unknown:
+                side_items = side_items + [('未知', unknown, unknown_color)]
+            if payload['main_unknown']:
+                total_items = total_items + [('未知', payload['main_unknown'], unknown_color)]
+            _pie(axes[1], side_items, '备牌换入（证据，人数）', prop)
+            _pie(axes[2], total_items, '总投入（主卡+换入，人数）', prop)
+        else:
+            _pie(axes[1], [('无换备证据', payload['current'], unknown_color)],
+                 '备牌换入（暂无证据）', prop)
+            _pie(axes[2], [('无换备证据', payload['current'], unknown_color)],
+                 '总投入（暂无证据）', prop)
+        fig.suptitle(f"前100使用量 · {payload['name']}（{payload['code']:08d}） · "
+                     f"有效 {payload['current']}/{payload['total_players']} 人（排除 {payload['excluded']} 人）",
+                     fontproperties=prop, fontsize=20, y=0.99)
+        fig.text(0.5, 0.015,
+                 '主卡=确证第 1 局；备牌=所选同场第 2/3 局相对第 1 局的净换入（录像无备牌表：未换入≠没带）；'
+                 f'主卡未知 {payload["main_unknown"]} 人、备牌未知 {unknown} 人；总投入=主卡+换入（下界）。',
+                 ha='center', fontproperties=prop, fontsize=10, color='#8A5A00')
+        output = io.BytesIO()
+        fig.savefig(output, format='png', dpi=100, bbox_inches='tight', facecolor='white')
+        plt.close(fig)
+        return output.getvalue(), payload

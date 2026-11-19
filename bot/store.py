@@ -549,6 +549,10 @@ class Store:
             rows = self._db.execute("SELECT * FROM replays ORDER BY recorded_at, id").fetchall()
         return [_replay_row(row) for row in rows]
 
+    def replay_paths(self) -> set[str]:
+        with self._lock:
+            return {row[0] for row in self._db.execute("SELECT rel_path FROM replays")}
+
     def legacy_replays(self) -> list[dict]:
         with self._lock:
             rows = self._db.execute(

@@ -3,54 +3,43 @@
 from __future__ import annotations
 
 import io
-import sqlite3
 import time
-from contextlib import closing
 from pathlib import Path
 
 BINS = ('one', 'two', 'three')
 BAR_MIN_PLAYERS = 3  # 少于 3 人的大类不画条形，改在图下方列出
 
 
-def collect_flow(database, data_dir, now, card_name=None, *, code=None):
-    from .card_usage_pie import _latest_sessions, _main_copies, identity_codes, resolve_card, resolve_code
-    from .statistics_dashboard import population
-    replay_root = Path(database).parent / 'replays'
-    with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro',
-                                 uri=True, timeout=5)) as db:
-        db.row_factory = sqlite3.Row
-        db.execute('BEGIN')
-        code, name = (resolve_card(data_dir, card_name, db) if code is None
-                      else resolve_code(data_dir, code, db))
-        codes = identity_codes(db, code)
-        basis, latest, people = population(db, replay_root, now)
-        sessions = _latest_sessions(basis['views'])
-        builds = {row.get('build') for rows in sessions.values() for row in rows}
-        builds |= {(latest.get(person['player']) or {}).get('build') for person in people}
-        copies = _main_copies(db, builds, codes)
-        records = []
-        for person in people:
-            player = person['player']
-            row = latest.get(player)
-            if not row or not row.get('build'):
-                # 没有可用首局的场次：按规则忽略，不进任何分母。
-                continue
-            build = row['build']
-            main = copies.get(build, 0)
-            games = sessions.get(player) or []
-            first = [r for r in games if r.get('observed_game_no') == 1
-                     and r.get('observed_identity_confirmed') is True]
-            later = [r for r in games if (r.get('observed_game_no') or 0) > 1]
-            side = 0
-            side_known = False
-            if first and later:
-                later_counts = [copies.get(r.get('build'), 0) for r in later]
-                side = max(0, max(later_counts) - main)
-                side_known = True
-            records.append(dict(player=player, rank=person.get('rank'),
-                                deck=person.get('deck_type') or '未分类',
-                                main=main, side=side, side_known=side_known,
-                                total=main + side))
+def collect_flow(database, data_dir, now, card_name=None, *, code=None, load_inputs=None):
+    from .card_usage_pie import load_card_inputs
+
+    inputs = (load_inputs() if load_inputs is not None else
+              load_card_inputs(database, data_dir, now, card_name, usage=False, flow=True, code=code))
+    code, name, latest, people, all_sessions, copies = inputs
+    sessions = all_sessions['flow']
+    records = []
+    for person in people:
+        player = person['player']
+        row = latest.get(player)
+        if not row or not row.get('build'):
+            # 没有可用首局的场次：按规则忽略，不进任何分母。
+            continue
+        build = row['build']
+        main = copies.get(build, 0)
+        games = sessions.get(player) or []
+        first = [r for r in games if r.get('observed_game_no') == 1
+                 and r.get('observed_identity_confirmed') is True]
+        later = [r for r in games if (r.get('observed_game_no') or 0) > 1]
+        side = 0
+        side_known = False
+        if first and later:
+            later_counts = [copies.get(r.get('build'), 0) for r in later]
+            side = max(0, max(later_counts) - main)
+            side_known = True
+        records.append(dict(player=player, rank=person.get('rank'),
+                            deck=person.get('deck_type') or '未分类',
+                            main=main, side=side, side_known=side_known,
+                            total=main + side))
     groups = {}
     for row in records:
         group = groups.setdefault(row['deck'], dict(
@@ -286,26 +275,29 @@ def _detail_image(payload, groups, fonts):
     return image
 
 
-def render_flow(database, data_dir, now, card_name):
+def render_flow(database, data_dir, now, card_name, *, load_inputs=None):
     """最多两张图：≥3 人卡组的条形图 + ≤2 人卡组的全量明细表。"""
     import io
 
-    payload = collect_flow(database, data_dir, now, card_name)
-    if not payload['shown']:
-        raise ValueError('暂无带卡数据')
-    fonts = _fonts()
-    chart = [item for item in payload['shown']
-             if item['total']['known'] >= BAR_MIN_PLAYERS]
-    chart.sort(key=lambda item: (-item['total']['rate'], -item['total']['used'], item['deck']))
-    detail = payload['small_groups']
-    pages = []
-    if chart:
-        pages.append(_chart_image(payload, chart, fonts))
-    if detail:
-        pages.append(_detail_image(payload, detail, fonts))
-    blobs = []
-    for page in pages:
-        output = io.BytesIO()
-        page.save(output, format='PNG')
-        blobs.append(output.getvalue())
-    return blobs, payload
+    from .qq_diagnostics import phase
+    with phase('statistics_collect'):
+        payload = collect_flow(database, data_dir, now, card_name, load_inputs=load_inputs)
+    with phase('image_render'):
+        if not payload['shown']:
+            raise ValueError('暂无带卡数据')
+        fonts = _fonts()
+        chart = [item for item in payload['shown']
+                 if item['total']['known'] >= BAR_MIN_PLAYERS]
+        chart.sort(key=lambda item: (-item['total']['rate'], -item['total']['used'], item['deck']))
+        detail = payload['small_groups']
+        pages = []
+        if chart:
+            pages.append(_chart_image(payload, chart, fonts))
+        if detail:
+            pages.append(_detail_image(payload, detail, fonts))
+        blobs = []
+        for page in pages:
+            output = io.BytesIO()
+            page.save(output, format='PNG')
+            blobs.append(output.getvalue())
+        return blobs, payload

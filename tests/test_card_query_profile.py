@@ -28,6 +28,9 @@ class CardQueryTests(unittest.TestCase):
         self.addCleanup(self.patcher.stop)
         self.service = BotService.__new__(BotService)
         self.service.card_search = self.search
+        self.service.store = Mock(path=Path(self.tmp.name) / 'bot.sqlite3')
+        self.service.data_dir = Path(self.tmp.name)
+        self.service.clock = lambda: self.now
         self.service.write_log = Mock()
         self.service._statistics_command_lock = None
         self.service._card_usage_reply = Mock(return_value=CardReply('使用量', 'base64://usage'))
@@ -95,7 +98,9 @@ class CardQueryTests(unittest.TestCase):
             self.service._card_query_reply('a', 'search', '测试', 'card_profile')
             reply = self.service._card_query_reply('a', 'select', '2')
         self.assertEqual(len(reply.forward_cards), 5)
-        self.service._card_usage_reply.assert_called_once_with('456')
+        self.assertEqual(self.service._card_usage_reply.call_args.args, ('456',))
+        self.assertIs(self.service._card_usage_reply.call_args.kwargs['load_inputs'],
+                      self.service._card_flow_reply.call_args.kwargs['load_inputs'])
 
     def test_numeric_resolution_does_not_change_selected_identity(self):
         with patch('bot.card_usage_pie._card_index', return_value={'123': card(123, '测试甲')}):
