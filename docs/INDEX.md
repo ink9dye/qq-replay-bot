@@ -1,5 +1,7 @@
 # 文档索引（唯一导航入口）
 
+- [卡片统计筛选与读库减负](wrapup/WRAPUP_CARD_REPORT_READ_SPEED_20261119.md) — 已部署，观测依据、同库对照和回滚。
+
 - [QQ 与网页本地查卡复用](wrapup/WRAPUP_CARD_SEARCH_SHARED_20261119.md) — 已部署，测试与回滚。
 
 - [QQ 与网页排位参与数统一](wrapup/WRAPUP_RANK_PARTICIPATION_20261119.md) — 已部署，验证与回滚。
