@@ -42,7 +42,7 @@ class RecordingArchiveTests(unittest.TestCase):
     def test_expiry_and_unknown_group_and_filename_safety(self):
         self.evidence()
         self.assertRaises(ValueError,archive,self.store._db,self.replays,C.NOW,'甲',match='not-a-group',clock=lambda:C.NOW)
-        self.assertRaises(ValueError,archive,self.store._db,self.replays,C.NOW,'甲',clock=lambda:C.NOW+14*86400)
+        self.assertRaises(ValueError,archive,self.store._db,self.replays,C.NOW,'甲',clock=lambda:C.NOW+28*86400)
         name=safe_filename('10/27 1 1 a\\b:*?.')
         self.assertTrue(name.endswith('.yrp'))
         self.assertFalse(any(c in name for c in '/\\:*?'))
@@ -50,9 +50,8 @@ class RecordingArchiveTests(unittest.TestCase):
     def test_missing_source_never_in_zip_or_renewed(self):
         self.evidence();before=self.store._db.execute('SELECT SUM(expires_at) FROM stat_games').fetchone()[0]
         (self.replays/self.rows[0]['rel_path']).unlink()
-        body,_,_=archive(self.store._db,self.replays,C.NOW,'甲',self.rows[3]['digest'],clock=lambda:C.NOW)
-        with zipfile.ZipFile(io.BytesIO(body))as package:
-            self.assertNotIn(self.rows[0]['digest'],{hashlib.sha256(package.read(n)).hexdigest()for n in package.namelist()})
+        with self.assertRaisesRegex(ValueError, 'source_missing'):
+            archive(self.store._db,self.replays,C.NOW,'甲',self.rows[3]['digest'],clock=lambda:C.NOW)
         self.assertEqual(before,self.store._db.execute('SELECT SUM(expires_at) FROM stat_games').fetchone()[0])
 
     def test_match_crossing_midnight_uses_first_observed_day(self):

@@ -24,17 +24,16 @@ class OverviewTests(unittest.TestCase):
         self.assertEqual(card['partitions']['side']['unknown_presence_players'],2)
         self.assertEqual(bulk['known_basis_players'],2)
 
-    def test_initial_missing_does_not_fall_back_to_latest_or_zero(self):
+    def test_initial_uses_confirmed_first_game(self):
         bulk=query(self.store._db,self.replays,C.NOW,'initial')
-        self.assertEqual((bulk['known_basis_players'],bulk['unknown_basis_players']),(0,2))
-        self.assertTrue(all(r['partitions']['total']['confirmed_players']==0 for r in bulk['rows']))
-        self.assertTrue(all(r['partitions']['total']['known_copy_players']==0 for r in bulk['rows']))
+        self.assertEqual((bulk['known_basis_players'],bulk['unknown_basis_players']),(2,0))
+        self.assertTrue(any(r['partitions']['main']['confirmed_players'] > 0 for r in bulk['rows']))
 
     def test_dropout_and_expiry_apply_before_person_selection(self):
         self.store.replace_top100(T.roster(['甲']),C.NOW)
         bulk=query(self.store._db,self.replays,C.NOW)
         self.assertEqual(bulk['covered_players'],1)
-        self.assertEqual(query(self.store._db,self.replays,C.NOW+14*86400)['rows'],[])
+        self.assertEqual(query(self.store._db,self.replays,C.NOW+28*86400)['rows'],[])
 
     def test_one_snapshot_per_overview_and_fresh_eligibility_on_next_request(self):
         from unittest.mock import patch
@@ -54,6 +53,6 @@ class OverviewTests(unittest.TestCase):
         self.store.set_fact_exclusion(self.rows[0]['digest'],'甲',reason='test')
         changed=query(self.store._db,self.replays,C.NOW)
         self.assertLess(changed['sample_baselines']['overall'],result['sample_baselines']['overall'])
-        expired=query(self.store._db,self.replays,C.NOW+14*86400)
+        expired=query(self.store._db,self.replays,C.NOW+28*86400)
         self.assertEqual(expired['sample_baselines']['overall'],0)
         self.assertEqual(expired['rows'],[])

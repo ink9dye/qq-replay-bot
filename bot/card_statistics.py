@@ -26,10 +26,14 @@ class Filters:
     start_at:float|None=None
     end_at:float|None=None
     deck_contains:bool=False
+    deck_no60:bool=False
+    opponent_no60:bool=False
 
 
-def deck_matches(name, terms, contains=False):
+def deck_matches(name, terms, contains=False, no60=False):
     """Exact choices remain supported; web text filters may match name fragments."""
+    if no60 and isinstance(name, str) and name.startswith("60"):
+        return False
     if not terms:
         return True
     if name in terms:
@@ -243,7 +247,7 @@ def query(db,replay_root,code,partition,now,filters=None,matchups_enabled=False,
                          annotate_series=bool(f.series))
     candidates=basis['views']
     others = {}
-    if f.opponent_types or f.opponent_series:
+    if f.opponent_types or f.opponent_series or f.opponent_no60:
         digests = sorted({row['digest'] for row in candidates})
         for start in range(0, len(digests), 400):
             chunk = digests[start:start + 400]
@@ -261,9 +265,9 @@ def query(db,replay_root,code,partition,now,filters=None,matchups_enabled=False,
     filter_exclusions={key:0 for key in ('deck_type','series','opponent_type','opponent_series','first_player','start_at','end_at')}
     for row in candidates:
         opponent=next((o for o in opponents.get(row['digest'],[]) if o['player']!=row['player']),{})
-        tests=(('deck_type',not deck_matches(row['deck_type'],f.deck_types,f.deck_contains)),
+        tests=(('deck_type',not deck_matches(row['deck_type'],f.deck_types,f.deck_contains,f.deck_no60)),
             ('series',f.series and not set(f.series).intersection(row.get('series',()))),
-            ('opponent_type',not deck_matches(opponent.get('deck_type'),f.opponent_types,f.deck_contains)),
+            ('opponent_type',not deck_matches(opponent.get('deck_type'),f.opponent_types,f.deck_contains,f.opponent_no60)),
             ('opponent_series',f.opponent_series and not set(f.opponent_series).intersection(opponent.get('series',[]))),
             ('first_player',f.first_player is not None and row['first_player']!=int(f.first_player)),
             ('start_at',f.start_at is not None and row['recorded_at']<f.start_at),

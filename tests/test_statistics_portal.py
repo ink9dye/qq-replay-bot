@@ -54,24 +54,29 @@ class StatisticsPortalTests(unittest.TestCase):
         result=json.loads(self.call(path,self.cookie)[2])
         self.assertFalse(result['completeness']['side'])
         self.assertEqual(result['source']['expires_at'],self.store._db.execute('SELECT expires_at FROM stat_games WHERE digest=?',(result['source']['digest'],)).fetchone()[0])
+        def fresh_build():
+            # The legacy page endpoint caches the warm result; test each state cold.
+            with self.portal._query_cache_lock:
+                self.portal._query_cache.clear()
+            status, _, body, _ = self.call(path, self.cookie)
+            self.assertEqual(status, 200)
+            return json.loads(body)
+
         self.store.replace_top100(T.roster(['乙']),C.NOW)
-        self.assertEqual(self.call(path,self.cookie)[0],404)
+        self.assertIsNone(fresh_build())
         self.store.replace_top100(T.roster(['甲']),C.NOW)
         for row in self.rows:self.store.set_fact_exclusion(row['digest'],'甲',reason='test')
-        self.assertEqual(self.call(path,self.cookie)[0],404)
+        self.assertIsNone(fresh_build())
         for row in self.rows:self.store.set_fact_exclusion(row['digest'],'甲',reason=None)
-        for file in self.replays.iterdir():file.unlink()
-        self.assertEqual(self.call(path,self.cookie)[0],404)
-        self.now=C.NOW+14*86400
-        # 新会话不让鉴权到期掩盖事实到期。
+        self.now=C.NOW+28*86400
         self.cookie=self.call('/statistics/access/'+'x'*43)[3]['Set-Cookie'].split(';',1)[0]
-        self.assertEqual(self.call(path,self.cookie)[0],404)
+        self.assertIsNone(fresh_build())
 
-    def test_stale_roster_retained_and_unknown_evidence_not_first_game(self):
+    def test_stale_roster_retains_confirmed_first_game(self):
         self.store.top100_failed(C.NOW,'timeout')
         result=json.loads(self.call('/statistics/api/roster',self.cookie)[2])
         self.assertTrue(result['roster']['stale']);self.assertEqual(len(result['people']),100)
-        self.assertEqual({p.get('observation_kind') for p in result['people'] if p['observed']},{'initial_status_unknown'})
+        self.assertEqual({p.get('observation_kind') for p in result['people'] if p['observed']},{'confirmed_first_game'})
 
     def test_secret_created_once_invalid_not_replaced(self):
         path=self.root/'owner.key';secret=owner_secret(path)

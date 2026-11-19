@@ -103,3 +103,6 @@ a.download{display:inline-flex;align-items:center;min-height:36px;padding:2px 4p
 .statistics-candidates>li small{color:var(--p10-muted,#65776b)}
 .statistics-candidates>li[aria-selected=true],.statistics-candidates>li[role=option]:hover{background:var(--p10-accent-soft,#edf3e8)}
 .statistics-candidates>.candidate-note{cursor:default;color:var(--p10-muted,#65776b)}
+
+.statistics-deck-actions{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.statistics-deck-actions button[aria-pressed="true"]{font-weight:700;outline:2px solid currentColor;outline-offset:-2px}

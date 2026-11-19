@@ -178,7 +178,7 @@ def _selected_rows(db, replay_root, now, filters):
                            annotate_series=bool(f.series), with_diagnostics=False)
     # 只有筛选对手卡组/系列时才需要对手上下文；默认查询不再全表取/注解所有视角。
     opponents = {}
-    if f.opponent_types or f.opponent_series:
+    if f.opponent_types or f.opponent_series or f.opponent_no60:
         digests = sorted({row['digest'] for row in basis['views']})
         others = {}
         for start in range(0, len(digests), 400):
@@ -197,9 +197,9 @@ def _selected_rows(db, replay_root, now, filters):
     exclusions = {key: 0 for key in ('deck_type', 'series', 'opponent_type', 'opponent_series', 'first_player', 'start_at', 'end_at')}
     for row in basis['views']:
         opponent = next((o for o in opponents.get(row['digest'], []) if o['player'] != row['player']), {})
-        tests = (('deck_type', not deck_matches(row['deck_type'],f.deck_types,f.deck_contains)),
+        tests = (('deck_type', not deck_matches(row['deck_type'],f.deck_types,f.deck_contains,f.deck_no60)),
                  ('series', f.series and not set(f.series).intersection(row['series'])),
-                 ('opponent_type', not deck_matches(opponent.get('deck_type'),f.opponent_types,f.deck_contains)),
+                 ('opponent_type', not deck_matches(opponent.get('deck_type'),f.opponent_types,f.deck_contains,f.opponent_no60)),
                  ('opponent_series', f.opponent_series and not set(f.opponent_series).intersection(opponent.get('series', []))),
                  ('first_player', f.first_player is not None and row['first_player'] != int(f.first_player)),
                  ('start_at', f.start_at is not None and row['recorded_at'] < f.start_at),
@@ -662,6 +662,8 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
         unit='player_small_game_perspective',
         filters=dict(deck=list(filters.deck_types) if filters else [],
                      opponent=list(filters.opponent_types) if filters else [],
+                     deck_no60=bool(filters and filters.deck_no60),
+                     opponent_no60=bool(filters and filters.opponent_no60),
                      series=list(filters.series) if filters else [],
                      opponent_series=list(filters.opponent_series) if filters else [],
                      seat='all' if not filters or filters.first_player is None else ('first' if filters.first_player else 'second'),

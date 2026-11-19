@@ -1,5 +1,6 @@
 """先选每位当前玩家最新有效小局构筑，再作类型筛选及按人投入分布。"""
 import json
+from .card_statistics import deck_matches
 from .top100 import eligible_views
 from .statistics_match_identity import capture_metadata, identity_metadata
 
@@ -18,7 +19,7 @@ def distributions(people,key):
     return result
 
 
-def query(db,replay_root,code,now,deck_types=(),series=()):
+def query(db,replay_root,code,now,deck_types=(),series=(),*,deck_contains=False,deck_no60=False):
     if type(code) is not int or code<=0:raise ValueError('invalid_card')
     from .card_identity import identity
     card_identity=identity(db,code);codes=card_identity['codes']
@@ -27,7 +28,7 @@ def query(db,replay_root,code,now,deck_types=(),series=()):
     rank_scope=current()
     from .statistics_population import latest_views
     latest=latest_views(basis)
-    selected=[r for r in latest.values() if (not deck_types or r['deck_type'] in deck_types)
+    selected=[r for r in latest.values() if deck_matches(r['deck_type'],deck_types,deck_contains,deck_no60)
               and (not series or set(series).intersection(r['series']))]
     placeholders=','.join('?' for _ in codes)
     copies={(r['build'],r['partition']):r['copies'] for r in db.execute(

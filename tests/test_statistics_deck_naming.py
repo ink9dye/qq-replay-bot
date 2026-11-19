@@ -66,7 +66,7 @@ class NamingListCacheTests(unittest.TestCase):
     def test_shared_latest_selection_keeps_unknown_first_game_over_named_side_game(self):
         replay_root = Path(self.tmp.name) / 'replays'
         first = dict(view(None), player='甲', digest='first', recorded_at=100,
-                     observed_session_id='same', observed_match_players=('甲','乙'), observed_game_no=1)
+                     observed_session_id='same', observed_match_players=('甲','乙'), observed_game_no=1, observed_identity_confirmed=True)
         side = dict(view('不该当主卡名'), player='甲', digest='side', recorded_at=200,
                     observed_session_id='same', observed_match_players=('甲','乙'), observed_game_no=2)
         with patch.object(naming, '_roster', return_value={'甲': {}}), \

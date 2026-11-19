@@ -210,7 +210,7 @@ def query(db, replay_root, now, player, digest=None, scope='build',allowed_diges
     return dict(generated_at=now, person=person_out,
                 roster={k: v for k, v in basis['roster'].items() if k != 'members'},
                 selected=dict(digest=selected['digest'], build=selected['build'], recorded_at=selected['recorded_at'],
-                              expires_at=selected['expires_at'], observation_kind=person['observation_kind'] if selected['digest'] == latest[player]['digest'] else 'historical_observation'),
+                              expires_at=selected['expires_at'], observation_kind=person['observation_kind'] if selected['digest'] == latest.get(player, {}).get('digest') else 'historical_observation'),
                 cards=selected_cards, completeness={p: bool(selected[p + '_complete']) for p in ('main', 'extra', 'side')},
                 side_order=side_order,
                 inferred_side=inferred, build_validation=validation, matches=matches, match_groups=match_groups, scope=scope, scope_win_rate=win_rate(matches),

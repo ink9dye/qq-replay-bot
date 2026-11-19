@@ -79,7 +79,7 @@ class PopulationAndDetailTests(unittest.TestCase):
         self.assertIsNone(detail(self.store._db,self.replays,C.NOW+14*86400,'甲'))
 
     def setUp(self):
-        C.CardStatisticsTests.setUp(self)
+        C.CardStatisticsTests.setUp(self, game_evidence=False)
         self.store.replace_top100(T.roster(['甲','乙']),C.NOW)
         self.portal=StatisticsPortal(self.store.path,self.replays,lambda:C.NOW,'x'*43)
         self.headers={'Host':'127.0.0.1:8788'}

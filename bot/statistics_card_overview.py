@@ -40,9 +40,9 @@ def choices(db,replay_root,now):
     return dict(rows=result)
 
 
-def query(db,replay_root,now,basis='observed',deck_types=()):
+def query(db,replay_root,now,basis='observed',deck_types=(),*,deck_contains=False,deck_no60=False):
     if basis not in ('observed','initial'):raise ValueError('invalid_basis')
-    seed=player_query(db,replay_root,1,now,deck_types)
+    seed=player_query(db,replay_root,1,now,deck_types,deck_contains=deck_contains,deck_no60=deck_no60)
     selected=[]
     for person in seed['people']:
         digest=person['digest'] if basis=='observed' else person['initial_source_digest']
@@ -56,7 +56,8 @@ def query(db,replay_root,now,basis='observed',deck_types=()):
         canonical=mapping.get(row['code'],(row['code'],None))[0]
         key=(row['build'],row['partition'],canonical);cards[key]=cards.get(key,0)+row['copies']
     from .statistics_recording_filters import card_sample_statistics
-    samples=card_sample_statistics(db,replay_root,now,deck_types,include_carried=True)
+    samples=card_sample_statistics(db,replay_root,now,deck_types,include_carried=True,
+                                   deck_contains=deck_contains,deck_no60=deck_no60)
     rankings=samples['draw_rankings']
     game_counts=samples['carried_game_counts']
     codes={key[2] for key in cards}|set(rankings)|set(samples['carried_rankings']);names=index(Path(db.execute('PRAGMA database_list').fetchone()[2]).parent)

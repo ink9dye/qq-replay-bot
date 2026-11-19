@@ -1,4 +1,5 @@
 import hashlib
+import json
 import struct
 import tempfile
 import unittest
@@ -25,7 +26,13 @@ class CardStatisticsTests(unittest.TestCase):
         self.assertEqual(result['candidate_samples'],3)
         self.assertEqual(result['candidate_samples'],result['metrics']['player_samples']+sum(quality['filter_exclusions'].values()))
 
-    def setUp(self):
+    def setUp(self, *, game_evidence=True):
+        from unittest.mock import patch
+        for target, value in (('bot.top100._ALIVE_CACHE', {}),
+                              ('bot.top100._ALIVE_FILES', {'at': 0.0, 'paths': None})):
+            guard = patch(target, value)
+            guard.start()
+            self.addCleanup(guard.stop)
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.replays=self.root/'replays';self.replays.mkdir()
         self.store=Store(self.root/'db.sqlite3');self.addCleanup(self.store.close)
@@ -50,6 +57,13 @@ class CardStatisticsTests(unittest.TestCase):
                          dict(name='乙',main=opponent,extra=[8],used_cards=[],drawn_cards=[],extra_appearances=[],
                               draw_record_complete=complete,initial_draws_accounted=complete)])
             self.store.import_replay_facts(row,path,report,NOW)
+            if game_evidence:
+                db = self.store._db
+                payload = json.loads(db.execute(
+                    'SELECT payload_json FROM stat_evidence WHERE digest=?', (digest,)).fetchone()[0])
+                payload['capture'] = dict(session_id=f'fixture-{digest}', game_no=1, captured_from_start=True)
+                db.execute('UPDATE stat_evidence SET payload_json=? WHERE digest=?', (json.dumps(payload), digest))
+                db.commit()
             detail=self.store.fact_details(digest,self.replays,NOW)
             self.store.classify_build(detail['views'][0]['build'],'甲类型' if i!=4 else None,['X','Y'] if i!=4 else [],'manual')
             self.store.classify_build(detail['views'][1]['build'],'对手C' if i==3 else '对手B',['Z'],'manual')

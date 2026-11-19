@@ -106,90 +106,99 @@
       new MutationObserver(control.render).observe(input, {attributes:true, attributeFilter:['data-candidate-loading','data-candidate-error']});
     }
   }
-  // Add explicit batch confirmation without changing the existing text picker.
-  function deckBatch(id, picks, options = {}) {
+  function deckFilter(id, submit, options = {}) {
     const input = document.getElementById(id);
-    const row = document.createElement('span'), tools = document.createElement('span'), confirm = document.createElement('button');
-    const clear = document.createElement('button'), hint = document.createElement('small');
-    const chips = options.chips || document.createElement('span');
-    row.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:0';
-    tools.style.cssText = 'display:flex;flex-shrink:0;gap:4px';
+    const source = document.getElementById(input.getAttribute('list'));
+    const tools = document.createElement('span');
+    const confirm = document.createElement('button');
+    const no60 = document.createElement('button');
+    tools.className = 'statistics-deck-actions';
+    confirm.type = no60.type = 'button';
+    confirm.textContent = '确定';
+    no60.title = '排除名称以 60 开头的卡组';
+    const excluded = () => no60.getAttribute('aria-pressed') === 'true';
+    const setExcluded = value => {
+      no60.setAttribute('aria-pressed', String(value));
+      no60.textContent = value ? '清除60 · 已开启' : '清除60';
+    };
+    setExcluded(false);
+    const control = attach(input, {
+      label: '卡组候选',
+      freeText: true,
+      items: () => {
+        const names = options.names ? options.names() : [...source.options].map(o => o.value);
+        return names.filter(name => name && (!excluded() || !name.startsWith('60')))
+          .map(name => ({value: name, label: name}));
+      },
+      choose: item => {
+        input.value = item.value;
+        if (options.choose) options.choose(item.value);
+      }
+    });
+    input.removeAttribute('list');
+    if (source) new MutationObserver(control.render).observe(source, {subtree:true, childList:true, attributes:true});
+    new MutationObserver(control.render).observe(input, {
+      attributes:true, attributeFilter:['data-candidate-loading','data-candidate-error']
+    });
+    input.parentElement.after(tools);
+    tools.append(confirm, no60);
+    confirm.onclick = submit;
+    no60.onclick = () => { setExcluded(!excluded()); control.close(); submit(); };
+    input.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      submit();
+    });
+    return {
+      tools, excluded, setExcluded,
+      term: () => input.value.trim(),
+      reset: () => { input.value = ''; setExcluded(false); control.close(); },
+      append(params, key, encode = value => value) {
+        const term = input.value.trim();
+        if (term) params.append(key, encode(term));
+        if (excluded()) params.set(key + '_no60', '1');
+      }
+    };
+  }
+
+  function deckBatch(id, picks, submit, chips = document.createElement('span')) {
+    const input = document.getElementById(id);
     chips.classList.add('chips');
-    chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:6px';
     chips.setAttribute('aria-live', 'polite');
-    hint.setAttribute('role', 'status');
-    hint.style.cssText = 'display:block;font-size:12px;font-weight:normal;overflow-wrap:anywhere';
-    confirm.type = clear.type = 'button';
-    confirm.id = id + '-confirm'; clear.id = id + '-clear';
-    confirm.textContent = '确定'; clear.textContent = '清空';
-    confirm.title = '将当前双方排名范围内匹配的完整卡组名全部加入筛选';
-    tools.append(confirm, clear);
-    input.before(row); row.append(input, tools);
-    row.after(chips, hint);
-    let version = 0;
-    const confirmed = new Set();
-    const changed = () => { if (options.changed) options.changed(); };
-    const render = options.render || (() => {
+    let exact = true;
+    function render() {
       chips.replaceChildren();
       for (const name of picks) {
         const chip = document.createElement('span'), remove = document.createElement('button');
         chip.className = 'chip';
-        chip.append(document.createTextNode(name + ' '));
-        remove.type = 'button'; remove.textContent = '×';
+        chip.append(document.createTextNode((name ?? '卡组未识别') + ' '));
+        remove.type = 'button';
+        remove.textContent = '×';
         remove.setAttribute('aria-label', '移除 ' + name);
-        remove.onclick = () => { picks.delete(name); render(); changed(); };
-        chip.append(remove); chips.append(chip);
+        remove.onclick = () => { picks.delete(name); render(); submit(); };
+        chip.append(remove);
+        chips.append(chip);
       }
-    });
-    function invalidate() { version++; confirm.disabled = false; input.dataset.batchPending = '0'; }
-    function reset() { invalidate(); picks.clear(); confirmed.clear(); input.value = ''; hint.textContent = ''; render(); }
-    for (const button of [confirm, clear]) {
-      // Keep the old recording blur handler from adding the unexpanded fragment.
-      button.addEventListener('pointerdown', event => event.preventDefault());
     }
-    confirm.onclick = async () => {
-      const token = ++version, term = input.value.trim();
-      const ranges = ['self_range', 'opponent_range'].map(key => document.getElementById(key).value);
-      confirm.disabled = true; input.dataset.batchPending = '1'; hint.textContent = '正在查找匹配卡组…';
-      const query = new URLSearchParams({candidates:'1', q:term, self_range:ranges[0],
-        opponent_range:ranges[1], page:options.page || 'cards'});
-      try {
-        const result = await window.StatisticsSamples.api('groups?' + query);
-        if (token !== version || input.value.trim() !== term) return;
-        if (result.version !== 1) throw Error('统计服务尚未加载卡组批量选择，请稍后刷新。');
-        const names = result[options.side || 'deck'];
-        if (!Array.isArray(names)) throw Error('卡组候选格式无效，请重试。');
-        // 名次未核验只影响“哪些对局计入统计”，不再阻断加入候选：候选名单与筛选都按同一范围排除这些人。
-        const partial = result.complete === false ?
-          ' 范围内部分玩家排名未核验，这些对局不计入筛选结果，可稍后再试。' : '';
-        if (!names.length) { hint.textContent = '当前双方排名范围内没有匹配卡组。' + partial; return; }
-        const fresh = names.filter(name => !picks.has(name)), room = 100 - picks.size;
-        if (room <= 0) throw Error('最多选择100个卡组，请先移除已有选择再添加。');
-        const added = fresh.slice(0, room);
-        for (const name of added) { picks.add(name); confirmed.add(name); }
-        input.value = ''; render(); input.blur(); changed();
-        hint.textContent = '已加入匹配的 ' + added.length + ' 个卡组，当前共选 ' + picks.size + ' 个；点查询或应用筛选生效。' +
-          (fresh.length > added.length ? ' 已达100个上限，另有 ' + (fresh.length - added.length) +
-            ' 个匹配卡组未加入，可缩小关键词或先移除部分选择。' : '');
-        if(result._query_refresh)hint.textContent+=' 候选更新于 '+new Date(result._query_refresh.saved_at*1000).toLocaleTimeString('zh-CN')+'；录像按实际筛选。';
-        hint.textContent += partial;
-      } catch (error) {
-        if (token === version) hint.textContent = error.message || '卡组查询失败，请重试。';
-      } finally {
-        if (token === version) { confirm.disabled = false; input.dataset.batchPending = '0'; }
-      }
+    const filter = deckFilter(id, submit, {choose: name => {
+      if (picks.size >= 100 && !picks.has(name)) return;
+      picks.add(name);
+      input.value = '';
+      render();
+    }});
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.textContent = '清空';
+    filter.tools.append(clear);
+    filter.tools.after(chips);
+    function reset() { filter.reset(); picks.clear(); exact = true; render(); }
+    clear.onclick = () => { reset(); submit(); };
+    return {...filter, reset,
+      exact: () => !filter.term() && (!picks.size || exact),
+      restore: (names, exactMatch) => { exact = exactMatch; for (const name of names) picks.add(name); render(); }
     };
-    clear.onclick = () => { reset(); changed(); };
-    input.addEventListener('input', () => { invalidate(); hint.textContent = ''; });
-    for (const key of ['self_range', 'opponent_range']) {
-      document.getElementById(key).addEventListener('change', () => {
-        invalidate(); hint.textContent = '范围已改；可点确定重新加入匹配卡组，已有选择保留。';
-      });
-    }
-    return {reset, render, exact: () => [...picks].every(name => confirmed.has(name)),
-      restore: names => { for (const name of names) { picks.add(name); confirmed.add(name); } render(); }};
   }
-  window.StatisticsAutocomplete = {attach, enhance, deckBatch};
+  window.StatisticsAutocomplete = {attach, enhance, deckFilter, deckBatch};
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', enhance);
   else enhance();
 })();

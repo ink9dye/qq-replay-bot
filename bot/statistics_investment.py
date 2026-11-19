@@ -22,10 +22,11 @@ def summary(values, population):
                 anomalous_copy_players=sum(complete and copies > 3 for copies, complete in values))
 
 
-def query(db, replay_root, code, now, deck_types=(), series=(), basis='observed'):
+def query(db, replay_root, code, now, deck_types=(), series=(), basis='observed', *, deck_contains=False, deck_no60=False):
     if basis not in ('observed', 'initial'):
         raise ValueError('invalid_basis')
-    seed = player_query(db, replay_root, code, now, deck_types, series)
+    seed = player_query(db, replay_root, code, now, deck_types, series,
+                        deck_contains=deck_contains, deck_no60=deck_no60)
     metadata = card_details(Path(db.execute('PRAGMA database_list').fetchone()[2]).parent, code)
     base = metadata['base_partition'] or 'main'
     codes = seed['card_identity']['codes']

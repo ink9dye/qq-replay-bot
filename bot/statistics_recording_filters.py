@@ -12,14 +12,15 @@ def _chunks(values, size=400):
         yield values[start:start + size]
 
 
-def snapshot(db,root,now,include_opponents=False,annotate_series=True,with_facts=True,row_filter=None):
+def snapshot(db,root,now,include_opponents=False,annotate_series=True,with_facts=True,row_filter=None,reuse_context=False):
     """Shared eligible-view snapshot.
 
     with_facts=False 时跳过全部卡牌事实（stat_card_facts）与卡表聚合：只有带卡片
     条件的查询需要它们，录像筛选默认页不需要。口径不变，只是少读两张表。
     """
     with measure('recordings_eligible_ms'):
-        basis=eligible_views(db,root,now,annotate_series=False)
+        options={'reuse_context':True} if reuse_context else {}
+        basis=eligible_views(db,root,now,annotate_series=False,**options)
     rows=basis['views']
     if row_filter is not None:
         rows=[row for row in rows if row_filter(row)]
@@ -185,15 +186,16 @@ def sample_baselines(db,root,now):
     return _sample_baselines(snapshot(db,root,now))
 
 
-def card_sample_statistics(db,root,now,deck_types=(),include_carried=False):
+def card_sample_statistics(db,root,now,deck_types=(),include_carried=False,*,deck_contains=False,deck_no60=False):
     """Share one eligible-fact snapshot within this request only; never cache it.
 
     Each later request recomputes expiry, roster, exclusions and source existence.
     """
     context=snapshot(db,root,now)
     deck_choices=sorted({row['deck_type'] for row in context[1] if row['deck_type']})
-    if deck_types:
-        context=(context[0],[row for row in context[1] if row['deck_type'] in deck_types],*context[2:])
+    if deck_types or deck_no60:
+        context=(context[0],[row for row in context[1]
+            if deck_matches(row['deck_type'],deck_types,deck_contains,deck_no60)],*context[2:])
     result=dict(draw_rankings=_draw_rankings(context),
                 carried_game_counts=_carried_game_counts(db,context),
                 sample_baselines=_sample_baselines(context))
@@ -280,7 +282,7 @@ def _query(db,root,now,args,limit=2000,ranges=None):
                 and (not early_firsts or str(row['first_player']) in early_firsts))
     needs_facts=any(args.get(key) for key in ('card','opponent_card','not_card','opponent_not_card'))
     basis,rows,draws,used,carried,canonical=snapshot(db,root,now,include_opponents=True,
-        annotate_series=bool(args.get('series')or args.get('opponent_series')),with_facts=False,row_filter=row_filter)
+        annotate_series=bool(args.get('series')or args.get('opponent_series')),with_facts=False,row_filter=row_filter,reuse_context=True)
     from .statistics_recording_names import decorate
     # 复用同一次快照的身份信息与存活判定，避免逐行重复读证据表和重复 stat。
     with measure('recordings_naming_ms'):
@@ -328,6 +330,11 @@ def _query(db,root,now,args,limit=2000,ranges=None):
     deck_values=_list_arg(args,'deck',label='我方卡组')
     opponent_values=_list_arg(args,'opponent',label='对手卡组')
     contains=args.get('deck_match',['contains'])[0]!='exact'
+    deck_no60=args.get('deck_no60',['0'])[0]=='1'
+    opponent_no60=args.get('opponent_no60',['0'])[0]=='1'
+    rows=[row for row in rows
+          if deck_matches(row['deck_type'] or '__unknown__',deck_values,contains,deck_no60)
+          and deck_matches(row['opponent_deck_type'] or '__unknown__',opponent_values,contains,opponent_no60)]
     series=_list_arg(args,'series',label='我方系列')
     opponent_series=_list_arg(args,'opponent_series',label='对手系列')
     start=_time_arg(args,'start');end=_time_arg(args,'end')
@@ -355,9 +362,7 @@ def _query(db,root,now,args,limit=2000,ranges=None):
     none_keys=('deck','opponent','card','opponent_card','not_card','opponent_not_card','first','outcome')
     all_carried={};facts_present=set()
     if conditions:
-        wanted={row['digest'] for row in rows
-                if deck_matches(row['deck_type'] or '__unknown__',deck_values,contains)
-                and deck_matches(row['opponent_deck_type'] or '__unknown__',opponent_values,contains)}
+        wanted={row['digest'] for row in rows}
         subjects={key:row for key,row in basis['_opponent_views'].items() if key[0] in wanted}
         draws,used,carried,all_carried,facts_present=_selected_facts(db,subjects,canonical,set().union(*(c[1] for c in conditions)))
         basis['_all_carried']=all_carried;basis['_facts_present']=facts_present
@@ -392,8 +397,6 @@ def _query(db,root,now,args,limit=2000,ranges=None):
             if opponent_series:
                 other=basis['_opponent_views'].get((row['digest'],row['opponent']))
                 if other is None or not (set(other.get('series')or ())& set(opponent_series)):continue
-            if not deck_matches(row['deck_type']or '__unknown__',deck_values,contains):continue
-            if not deck_matches(row['opponent_deck_type']or '__unknown__',opponent_values,contains):continue
             if values('first')and str(row['first_player'])not in values('first'):continue
             if values('outcome')and row['outcome']not in values('outcome'):continue
             # P16：卡片条件失败时区分"证据不足"与"确实不满足"（每行只记第一个原因）。

@@ -4,13 +4,10 @@
 const $ = (id) => document.getElementById(id);
 const SS = window.StatisticsSamples;
 const el = SS.el;
-const state = { request: 0, controller: null, result: null, candidateScope: null, candidateController: null };
+const state = { request: 0, controller: null, result: null, groupsReady: false };
 const deckPicks = {deck: new Set(), opdeck: new Set()};
 const deckBatches = Object.fromEntries(['deck', 'opdeck'].map(id => [id,
-  window.StatisticsAutocomplete.deckBatch(id, deckPicks[id], {
-    side: id === 'deck' ? 'deck' : 'opponent',
-    changed: () => { $('status').textContent = '条件已改，点查询生效。'; }
-  })]));
+  window.StatisticsAutocomplete.deckBatch(id, deckPicks[id], run)]));
 
 function createPicker(ids) {
   const picker = { cards: new Map(), suggest: [], active: -1, version: 0, timer: 0 };
@@ -345,13 +342,11 @@ function collect() {
   for (const code of targets.codes()) p.append('code', String(code));
   for (const code of excludes.codes()) p.append('exclude', String(code));
   for (const combo of comboDefs) p.append('combo', combo.codes.join(','));
-  const deck = $('deck').value.trim();
-  const opdeck = $('opdeck').value.trim();
-  for (const name of deckPicks.deck) p.append('deck', JSON.stringify(name));
-  for (const name of deckPicks.opdeck) p.append('opponent', JSON.stringify(name));
-  if (deck) p.append('deck', JSON.stringify(deck));
-  if (opdeck) p.append('opponent', JSON.stringify(opdeck));
-  if (!deck && !opdeck && (deckPicks.deck.size || deckPicks.opdeck.size) &&
+  for (const [id, key] of [['deck', 'deck'], ['opdeck', 'opponent']]) {
+    for (const name of deckPicks[id]) p.append(key, JSON.stringify(name));
+    deckBatches[id].append(p, key, JSON.stringify);
+  }
+  if (Object.values(deckPicks).some(picks => picks.size) &&
       Object.values(deckBatches).every(batch => batch.exact())) p.set('deck_match', 'exact');
   p.append('seat', 'all');
   const phases = phaseValues();
@@ -390,49 +385,35 @@ function fillDatalist(id, names) {
 }
 
 async function loadGroups() {
-  const params = new URLSearchParams({candidates: '1', self_range: $('self_range').value,
-    opponent_range: $('opponent_range').value, page: 'cards'});
-  const scope = params.toString();
-  if (state.candidateScope === scope) return;
-  state.candidateScope = scope;
-  if (state.candidateController) state.candidateController.abort();
-  const controller = new AbortController();
-  state.candidateController = controller;
-  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(120000)]);
-  for (const id of ['deck', 'opdeck']) {
-    $(id).dataset.candidateLoading = '1';
-    delete $(id).dataset.candidateError;
-    fillDatalist(id + '-list', []);
-  }
+  if (state.groupsReady === 'loading') return;
+  state.groupsReady = 'loading';
+  for (const id of ['deck','opdeck']) {$(id).dataset.candidateLoading = '1';delete $(id).dataset.candidateError;}
   try {
+    const signal = AbortSignal.timeout(120000);
+    let groups;
     for (let delay = 5000; ; delay = Math.min(delay * 2, 15000)) {
-      const response = await fetch('/statistics/api/groups?' + scope,
-        {cache: 'no-store', credentials: 'same-origin', signal});
+      const response = await fetch('/statistics/api/groups', {cache: 'no-store', credentials: 'same-origin', signal});
       if (response.ok) {
-        const groups = await response.json();
-        signal.throwIfAborted();
-        if (groups.version !== 1) throw Error('Group suggestions unavailable');
-        fillDatalist('deck-list', groups.deck);
-        fillDatalist('opdeck-list', groups.opponent);
-        return;
+        groups = await response.json();
+        break;
       }
       const payload = response.status === 503 ? await response.json() : null;
       if (payload?.code !== 'query_busy') throw Error('Group suggestions unavailable');
       await waitForRetry(delay, signal);
     }
+    fillDatalist('deck-list', (groups.deck_groups || []).map((x) => x.name).filter(Boolean));
+    fillDatalist('opdeck-list', (groups.deck_groups || []).map((x) => x.name).filter(Boolean));
+    state.groupsReady = true;
   } catch (_) {
-    if (state.candidateController !== controller) return;
-    state.candidateScope = null;
-    for (const id of ['deck', 'opdeck']) {
-      $(id).dataset.candidateError = '卡组候选暂不可用；可手动输入，重新点击输入框重试。';
-    }
+    state.groupsReady = false;   // 可手输；重新聚焦时再试，不永久放弃候选
+    for (const id of ['deck','opdeck']) $(id).dataset.candidateError = '卡组候选暂不可用；可手动输入，重新点击输入框重试。';
   } finally {
-    if (state.candidateController === controller) {
-      for (const id of ['deck', 'opdeck']) $(id).dataset.candidateLoading = '0';
-    }
+    for (const id of ['deck','opdeck']) $(id).dataset.candidateLoading = '0';
   }
 }
-for (const id of ['deck', 'opdeck']) $(id).addEventListener('focus', loadGroups);
+for (const id of ['deck','opdeck']) $(id).addEventListener('focus', () => {
+  if (!state.groupsReady) loadGroups();
+});
 
 /* ---------- 结果渲染 ---------- */
 
@@ -443,6 +424,8 @@ function percent(value, digits = 1) {
 function summary(data) {
   const f = data.filters || {};
   const parts = [];
+  if (f.deck_no60) parts.push('我方排除60卡组');
+  if (f.opponent_no60) parts.push('对手排除60卡组');
   if (f.deck && f.deck.length) parts.push('我方卡组 ' + f.deck.join('、'));
   if (f.opponent && f.opponent.length) parts.push('对手卡组 ' + f.opponent.join('、'));
   const phaseLabels = { main_first: '主卡局先攻', main_second: '主卡局后攻',
@@ -575,7 +558,12 @@ function render(data) {
         self_range: scope.self_range || '100', opponent_range: scope.opponent_range || 'all',
       });
       const decks = (data.filters && data.filters.deck) || [];
-      if (decks.length === 1) params.set('deck', decks[0]);
+      if (decks.length === 1 && decks[0]) params.set('deck', decks[0]);
+      const opponents = (data.filters && data.filters.opponent) || [];
+      if (opponents.length === 1 && opponents[0]) params.set('opponent', opponents[0]);
+      for (const key of ['deck_no60', 'opponent_no60']) {
+        if (data.filters?.[key]) params.set(key, '1');
+      }
       link.href = '/statistics/cards?' + params.toString();
       nameCell.append(link);
     }
@@ -767,24 +755,15 @@ async function restore() {
   }
   for (const [id, key] of [['deck', 'deck'], ['opdeck', 'opponent']]) {
     const values = params.getAll(key).map(v => { try { return JSON.parse(v); } catch (_) { return v; } });
-    // Single-value old links keep their original editable text behavior.
-    if (params.get('deck_match') === 'exact') deckBatches[id].restore(values);
-    else if (values.length === 1) $(id).value = values[0];
-    else { for (const name of values) deckPicks[id].add(name); deckBatches[id].render(); }
+    const exact = params.get('deck_match') === 'exact';
+    if (!exact && values.length === 1 && typeof values[0] === 'string') $(id).value = values[0];
+    else deckBatches[id].restore(values, exact);
+    deckBatches[id].setExcluded(params.get(key + '_no60') === '1');
   }
-  for (const raw of params.getAll('combo').slice(0, MAX_COMBO_DEFS)) {
-    const codes = [...new Set(raw.split(',').map(Number))];
-    if (codes.length >= 2 && codes.every(code => Number.isSafeInteger(code) && code > 0)) {
-      addComboCards(codes.map(code => ({code, name: '卡号 ' + code})));
-    }
-  }
-  renderComboDefs();
   const seat = params.get('seat');
   const phaseBox = (value) => [...document.querySelectorAll('input[name="phase"]')].find((box) => box.value === value);
   const phases = params.getAll('phase');
-  if (params.get('phase_none') === '1') {
-    for (const box of document.querySelectorAll('input[name="phase"]')) box.checked = false;
-  } else if (phases.length) {
+  if (phases.length) {
     for (const box of document.querySelectorAll('input[name="phase"]')) box.checked = false;
     for (const value of phases) { const box = phaseBox(value); if (box) box.checked = true; }
   } else if (seat === 'first' || seat === 'second') {

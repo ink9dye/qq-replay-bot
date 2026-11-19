@@ -83,7 +83,8 @@ def card_report_precomputed_scope(args):
     if scope not in CARD_REPORT_PRECOMPUTED_SCOPES:
         return None
     defaults = dict(metric='opening', threshold='1', min='0', sort='rate',
-                    partition='auto', limit='500', seat='all', internal='0', deck_match='contains')
+                    partition='auto', limit='500', seat='all', internal='0', deck_match='contains',
+                    deck_no60='0', opponent_no60='0')
     for key, expected in defaults.items():
         value = args.get(key, [expected])[0]
         if value != expected:
@@ -93,6 +94,12 @@ def card_report_precomputed_scope(args):
         return None
     return scope
 
+
+
+def _deck_filter_options(args, default='exact'):
+    return dict(deck_contains=args.get('deck_match',[default])[0] != 'exact',
+                deck_no60=args.get('deck_no60',['0'])[0] == '1',
+                opponent_no60=args.get('opponent_no60',['0'])[0] == '1')
 
 
 def _trim_heap():
@@ -332,7 +339,8 @@ class StatisticsPortal:
                         db.row_factory=sqlite3.Row;db.execute('BEGIN')
                         result=detail(db,self.database.parent,now,player,self.replay_root,stats=snapshot)
                 else:
-                    result=list_rows(None,now,scope,query,self.replay_root,deck_query=deck_query,stats=snapshot)
+                    result=list_rows(None,now,scope,query,self.replay_root,deck_query=deck_query,stats=snapshot,
+                                     deck_no60=args.get('deck_no60',['0'])[0]=='1')
             except LookupError:return self._reply(404,'没有找到这个玩家的有效构筑或名单记录。')
             except ValueError as exc:return self._reply(400,json.dumps({'error':str(exc)},ensure_ascii=False),'application/json; charset=utf-8')
             except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')
@@ -464,7 +472,9 @@ class StatisticsPortal:
                 if len(decks)>100 or any(v is not None and (not isinstance(v,str) or not v.strip() or len(v)>128) for v in decks):raise ValueError()
             except (ValueError,TypeError):
                 return self._reply(400,json.dumps({'error':'卡组条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
-            return self._cached_query_reply(('card-table',parsed.query),lambda db:scoped_query(ranges,lambda:overview(db,self.replay_root,float(self.clock()),basis,decks)))
+            return self._cached_query_reply(('card-table',parsed.query),lambda db:scoped_query(ranges,lambda:overview(db,self.replay_root,float(self.clock()),basis,decks,
+                        deck_contains=args.get('deck_match',['exact'])[0]=='contains',
+                        deck_no60=args.get('deck_no60',['0'])[0]=='1')))
         if parts==['statistics','api','card-options']:
             from .statistics_card_overview import choices
             return self._cached_query_reply(('card-options',),lambda db:choices(db,self.replay_root,float(self.clock())))
@@ -493,7 +503,7 @@ class StatisticsPortal:
                     raise ValueError()
             except (ValueError,TypeError):
                 return self._reply(400,json.dumps({'error':'额外卡筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
-            filters=Filters(decks,opponents,(),(),None if seat=='all' else seat=='first',internal,deck_contains=args.get('deck_match',['contains'])[0]!='exact')
+            filters=Filters(decks,opponents,(),(),None if seat=='all' else seat=='first',internal,**_deck_filter_options(args, 'contains'))
             try:
                 return self._cached_query_reply(('cards-extra',parsed.query),lambda db:scoped_query(ranges,lambda:extra_report(
                     db,self.replay_root,float(self.clock()),filters=filters,phases=phases,phase_none=phase_none,sort=sort)))
@@ -514,7 +524,7 @@ class StatisticsPortal:
                 combo=args.get('combo',[])
             except (ValueError,TypeError):
                 return self._reply(400,json.dumps({'error':'组合筛选条件无效。'},ensure_ascii=False),'application/json; charset=utf-8')
-            filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1',deck_contains=args.get('deck_match',['contains'])[0]!='exact')
+            filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1',**_deck_filter_options(args, 'contains'))
             try:
                 return self._cached_query_reply(('card-combo',parsed.query),lambda db:scoped_query(ranges,lambda:combo_report(
                     db,self.replay_root,float(self.clock()),combo,filters=filters,
@@ -538,7 +548,7 @@ class StatisticsPortal:
             precomputed=self._precomputed_card_report(args)
             if precomputed is not None:
                 return precomputed
-            filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1',deck_contains=args.get('deck_match',['contains'])[0]!='exact')
+            filters=Filters(*(tuple(v) for v in values),None if seat=='all' else seat=='first',args.get('internal',['0'])[0]=='1',**_deck_filter_options(args, 'contains'))
             try:
                 return self._cached_query_reply(('card-report',parsed.query),lambda db:scoped_query(ranges,lambda:card_report(
                     db,self.replay_root,float(self.clock()),codes=codes,filters=filters,
@@ -571,7 +581,7 @@ class StatisticsPortal:
                 values=[[json.loads(v) for v in args.get(k,[])] for k in ('deck','opponent','series','opponent_series')]
                 if any(len(v)>100 or any(s is not None and (not isinstance(s,str) or len(s)>128) for s in v) for v in values):raise ValueError()
             except ValueError:return self._reply(400,'卡号或筛选条件无效。')
-            filters=Filters(*(tuple(v) for v in values),None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1')
+            filters=Filters(*(tuple(v) for v in values),None if order=='all' else order=='first',args.get('internal',['0'])[0]=='1',**_deck_filter_options(args))
             full_request=(args.get('full',['0'])[0]=='1'
                           or 'Python-urllib' not in (headers.get('User-Agent') or ''))
             def run(db):
@@ -580,7 +590,8 @@ class StatisticsPortal:
                 result=card_query(db,self.replay_root,code,partition,snapshot_now,filters,
                                   matchups_enabled=want_matchups=='1')
                 if full_request:
-                    result['investment']=player_investment(db,self.replay_root,code,snapshot_now,filters.deck_types,filters.series,basis=investment_basis)
+                    result['investment']=player_investment(db,self.replay_root,code,snapshot_now,filters.deck_types,filters.series,basis=investment_basis,
+                        deck_contains=filters.deck_contains, deck_no60=filters.deck_no60)
                 digests=sorted({s['digest'] for s in result['samples']})
                 times={}
                 for start in range(0,len(digests),400):
@@ -828,7 +839,9 @@ class StatisticsPortal:
             try:
                 with closing(open_readonly(self.database, timeout=3)) as db:
                     db.row_factory=sqlite3.Row;db.execute('BEGIN')
-                    result=investment(db,self.replay_root,code,float(self.clock()),deck,series)
+                    result=investment(db,self.replay_root,code,float(self.clock()),deck,series,
+                        deck_contains=args.get('deck_match',['exact'])[0]=='contains',
+                        deck_no60=args.get('deck_no60',['0'])[0]=='1')
                 return self._reply(200,json.dumps(result,ensure_ascii=False),'application/json; charset=utf-8')
             except (sqlite3.Error,OSError):return self._reply(503,'统计暂时不可用，请稍后刷新。')
         if parts==['statistics','api','player-search']:
@@ -987,20 +1000,13 @@ class StatisticsPortal:
             if len(key)>1 and key[0]!='deck-detail':key=(key[0],urlencode(sorted(parse_qs(key[1],keep_blank_values=True).items()),doseq=True))
             from .statistics_roster_version import snapshot_version
             wait=4.0 if key[0]=='deck-detail' else 1.0
-            version = snapshot_version
             if key[0]=='deck-detail':
                 # 构筑页计算本身是亚秒级：不要排进全局 _query_compute_lock，
                 # 否则会被 roster/matrix 的长计算堵到 8 秒超时。
                 compute=lambda:self._query_reply(callback)
-            elif key[0] == 'card-report':
-                from .statistics_report_intermediate import response_version
-                version = response_version
-                # QueryRefresh owns this TTL, including the original disk save time.
-                # Re-reading a secondary cache here would restart that TTL.
-                compute=lambda:self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,True)
             else:
                 compute=lambda:self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
-            return self._refresh.get(key,compute,lambda:version(self.database),ttl,background=background,wait=wait)
+            return self._refresh.get(key,compute,lambda:snapshot_version(self.database),ttl,background=background,wait=wait)
         return self._cached_query_reply_sync(key,callback,ttl,stamp_seconds,force)
 
     def _cached_query_reply_sync(self,key,callback,ttl=10.0,stamp_seconds=30,force=False):

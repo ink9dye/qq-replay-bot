@@ -31,7 +31,7 @@ class RecordingFilterTests(unittest.TestCase):
         self.assertEqual(counts[9],4)  # extra included in carrying, not draw ranking
         self.store.set_fact_exclusion(self.rows[0]['digest'],'甲',reason='test')
         self.assertEqual(carried_game_counts(self.store._db,self.replays,C.NOW)[1],3)
-        self.assertEqual(carried_game_counts(self.store._db,self.replays,C.NOW+14*86400),{})
+        self.assertEqual(carried_game_counts(self.store._db,self.replays,C.NOW+28*86400),{})
 
     def test_draw_and_not_draw_require_different_completeness(self):
         db=self.store._db
@@ -80,5 +80,5 @@ class RecordingFilterTests(unittest.TestCase):
     def test_expired_excluded_and_invalid_card(self):
         self.store.set_fact_exclusion(self.rows[0]['digest'],'甲',reason='test')
         self.assertEqual(query(self.store._db,self.replays,C.NOW,{'card':['1'],'mode':['drawn']})['total'],2)
-        self.assertEqual(query(self.store._db,self.replays,C.NOW+14*86400,{})['total'],0)
+        self.assertEqual(query(self.store._db,self.replays,C.NOW+28*86400,{})['total'],0)
         self.assertRaises(ValueError,query,self.store._db,self.replays,C.NOW,{'card':['bad']})

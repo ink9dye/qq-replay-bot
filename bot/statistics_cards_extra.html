@@ -23,7 +23,7 @@ td .sub{display:block;color:#7b8d80;font-size:12px;margin-top:2px}.wrap{overflow
 .note{color:#65776b;line-height:1.7;font-size:13px}@media(max-width:640px){main{padding:14px}.panel{padding:12px}th,td{padding:7px 5px;font-size:12.5px}.seat{grid-column:1/-1}}
 </style>
 <link rel="stylesheet" href="/statistics/assets/statistics_nav.css">
-<link rel="stylesheet" href="/statistics/assets/statistics_theme.css">
+<link rel="stylesheet" href="/statistics/assets/statistics_theme.css?v=20261119deck">
 <script src="/statistics/assets/statistics_busy.js?v=20261102b"></script></head>
 <body>
 <nav class="main-nav" aria-label="主要功能"><a href="/statistics">玩家排名</a><a href="/statistics/cards-report">卡片统计</a><a href="/statistics/cards-extra" aria-current="page">额外卡</a><a href="/statistics/matrix">卡组胜率</a><a href="/statistics/recordings">录像筛选</a><a href="/statistics/deck-naming">卡组命名</a></nav>
@@ -54,9 +54,12 @@ td .sub{display:block;color:#7b8d80;font-size:12px;margin-top:2px}.wrap{overflow
 <p id="empty" class="note" hidden>当前条件下没有额外卡数据。</p>
 </section>
 </main>
-<script src="/statistics/assets/statistics_autocomplete.js?v=20261104a"></script><script src="/statistics/assets/statistics_samples.js"></script>
+<script src="/statistics/assets/statistics_autocomplete.js?v=20261119deck"></script><script src="/statistics/assets/statistics_samples.js"></script>
 <script>
 const SS=window.StatisticsSamples,$=id=>document.getElementById(id),el=SS.el;
+const decks = {deck: StatisticsAutocomplete.deckFilter('deck', run),
+  opponent: StatisticsAutocomplete.deckFilter('opdeck', run)};
+let request = 0;
 const phases=[...document.querySelectorAll('input[name="phase"]')];
 function pct(value){return value===null||value===undefined?'—':Number(value).toFixed(1)+'%'}
 function syncPhases(){/* no hidden select; API reads checked directly */}
@@ -64,13 +67,14 @@ $('phaseAll').onclick=()=>{for(const box of phases)box.checked=true};
 $('phaseNone').onclick=()=>{for(const box of phases)box.checked=false};
 async function run(){
   const q=new URLSearchParams({self_range:$('selfRange').value,opponent_range:$('opponentRange').value,seat:$('first').value,sort:$('sort').value});
-  if($('deck').value.trim())q.set('deck',JSON.stringify($('deck').value.trim()));
-  if($('opdeck').value.trim())q.set('opponent',JSON.stringify($('opdeck').value.trim()));
+  const id = ++request;
+  for (const [key, filter] of Object.entries(decks)) filter.append(q, key, JSON.stringify);
   const selected=phases.filter(box=>box.checked).map(box=>box.value);
   if(selected.length)for(const value of selected)q.append('phase',value);else q.set('phase_none','1');
   $('status').textContent='读取额外卡统计中…';$('run').disabled=true;
   try{
     const r=await SS.api('cards-extra?'+q);
+    if (id !== request) return;
     $('status').textContent=`选中 ${r.base.games} 个小局视角 / ${r.base.players} 名玩家 · ${r.total} 张额外卡`;
     const body=$('rows');body.replaceChildren();
     for(const row of r.rows){
@@ -86,8 +90,8 @@ async function run(){
       tr.append(record);body.append(tr);
     }
     $('empty').hidden=r.rows.length>0;
-  }catch(error){$('status').textContent=error.message}
-  finally{$('run').disabled=false}
+  }catch(error){if(id === request)$('status').textContent=error.message}
+  finally{if(id === request)$('run').disabled=false}
 }
 function fillDeckList(listId, names){const list=$(listId);list.replaceChildren();for(const name of names){if(!name)continue;const option=el('option');option.value=name;list.append(option)}}
 let deckChoicesLoading=false;

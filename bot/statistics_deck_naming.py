@@ -188,7 +188,7 @@ def snapshot(db, data_dir, now, replay_root=None):
 _LIST_CACHE = {}
 
 
-def list_rows(db, now, scope='100', query='', replay_root=None, deck_query='', stats=None):
+def list_rows(db, now, scope='100', query='', replay_root=None, deck_query='', stats=None, *, deck_no60=False):
     """scope=100/200/all/unnamed；query/玩家名、deck_query/卡组名非空时跨全部已知玩家搜索。
 
     stats 为 snapshot() 的结果时只做筛选与排序（毫秒级）；不传则保持原来的同步计算。
@@ -213,7 +213,7 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query='', s
         except Exception:
             revision = 0
         # 改名/重算会 +revision，新对局会改 -wal：两者都进缓存键，避免改名后 5 分钟看不到。
-        cache_key = (scope, query, deck_query, str(replay_root), stamp, revision)
+        cache_key = (scope, query, deck_query, deck_no60, str(replay_root), stamp, revision)
         cached = _LIST_CACHE.get(cache_key)
         if cached is not None and _time.monotonic() - cached[0] <= 300:
             return cached[1]
@@ -232,6 +232,9 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query='', s
             views = stats['all_views']
         rank_source = stats.get('outside_ranks') or {}
     names = set(roster) | set(views)
+    if deck_no60:
+        from .card_statistics import deck_matches
+        names = {name for name in names if deck_matches((views.get(name) or {}).get('deck_type'), (), no60=True)}
     searched = bool(query or deck_query)
     if deck_query:
         lowered_deck = deck_query.lower()
@@ -246,7 +249,7 @@ def list_rows(db, now, scope='100', query='', replay_root=None, deck_query='', s
         lowered = query.lower()
         names = {name for name in names if lowered in name.lower()}
     elif scope == '100':
-        names = set(roster)
+        names &= set(roster)
     elif scope == 'unnamed':
         # 所有对局里出现过、有“有效构筑”但还没有卡组名的玩家（不限于前100），按排名排序。
         if replay_root is None:
