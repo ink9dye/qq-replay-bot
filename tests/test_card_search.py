@@ -1,9 +1,10 @@
 import asyncio
+import base64
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from bot.card_search import CardReply, CardSearch
 from bot.commands import parse_command
@@ -78,7 +79,16 @@ class CardTests(unittest.TestCase):
         self.calls = []
         self.result = {'result': [card('闪刀姬' + str(i), i + 1) for i in range(8)], 'next': 8}
         self.now = 100
-        self.search = CardSearch(Path(self.temp.name), self.fetch, lambda: self.now)
+        self.search = CardSearch(Path(self.temp.name), self.fetch, lambda: self.now,
+                                 release_fetch=lambda _: '')
+        for target, value in (('bot.card_search._IMAGE_BYTES', {}),
+                              ('bot.card_search._IMAGE_REQUESTS', {})):
+            guard = patch(target, value)
+            guard.start()
+            self.addCleanup(guard.stop)
+        image = patch('bot.card_search._card_image_blob', return_value=b'fixture image')
+        self.image_blob = image.start()
+        self.addCleanup(image.stop)
 
     def fetch(self, path):
         self.calls.append(path)
@@ -101,7 +111,8 @@ class CardTests(unittest.TestCase):
         reply = self.search.handle('a', 'search', '青眼白龙')
         self.assertIsInstance(reply, CardReply)
         self.assertIn('效果文本', reply)
-        self.assertTrue(reply.image_url.endswith('/89631139.jpg'))
+        self.image_blob.assert_called_once_with(89631139, self.search.data_dir)
+        self.assertEqual(reply.image_url, 'base64://' + base64.b64encode(b'fixture image').decode())
         self.assertNotIn('候选', reply)
 
     def test_builtin_and_custom_alias_reload_and_cache(self):
@@ -116,8 +127,18 @@ class CardTests(unittest.TestCase):
         self.assertIn('JSON', self.search.handle('a', 'search', '灰'))
 
     def test_network_error_empty_result_and_malformed_response(self):
-        self.search.fetch = lambda path: (_ for _ in ()).throw(OSError('offline'))
-        self.assertIn('稍后重试', self.search.handle('a', 'search', '白龙'))
+        def offline(_):
+            raise OSError('offline')
+
+        self.search.fetch = offline
+        local_cards = {'89631139': dict(id=89631139, cn_name='青眼白龙', description='本地效果')}
+        with patch('bot.card_search.time.sleep'), \
+             patch('bot.statistics_local_cards.local_index', return_value=local_cards):
+            reply = self.search.handle('a', 'search', '青眼 白龙')
+            self.assertIsInstance(reply, CardReply)
+            self.assertEqual(reply.selected_card['id'], 89631139)
+            self.assertIn('本地效果', reply)
+            self.assertIn('本地卡库也没有找到', self.search.handle('a', 'search', '黑龙'))
         self.search.fetch = self.fetch
         self.result = {'result': [], 'next': 0}
         self.assertIn('没有找到', self.search.handle('a', 'search', '不存在'))
