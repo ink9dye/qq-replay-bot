@@ -167,6 +167,44 @@ def _build_codes(db, build):
         'SELECT code FROM stat_build_cards WHERE build=? AND copies>0', (build,))]
 
 
+def _report_opponents(db, views, catalog, filters):
+    digests = {row['digest'] for row in views}
+    opponents = {}
+    if not (filters.series or filters.opponent_series):
+        eligible = {(row['digest'], row['player']): row for row in views}
+        for row in views:
+            digest = row['digest']
+            if digest in opponents:
+                continue
+            pair = row.get('observed_match_players', ())
+            if len(pair) != 2:
+                continue
+            first, second = (eligible.get((digest, player)) for player in pair)
+            if (first is not None and second is not None
+                    and 'observed_deck_type' in first and 'observed_deck_type' in second):
+                # The opponent filter uses the observed build label, before
+                # same-match first-game classification is inherited.
+                opponents[digest] = [
+                    {'player': item['player'], 'deck_type': item['observed_deck_type']}
+                    for item in (first, second)]
+        digests.difference_update(opponents)
+    missing = sorted(digests)
+    others = {}
+    for start in range(0, len(missing), 400):
+        chunk = missing[start:start + 400]
+        marks = ','.join('?' for _ in chunk)
+        for row in db.execute(
+                'SELECT v.digest,v.player,v.build,b.deck_type,b.classification_source,b.series_status,'
+                'b.main_complete,b.extra_complete FROM stat_views v JOIN stat_builds b '
+                'ON b.fingerprint=v.build WHERE v.digest IN (%s)' % marks, chunk):
+            others[(row['digest'], row['player'])] = dict(row)
+    if filters.opponent_series:
+        annotate(db, list(others.values()), catalog)
+    for row in others.values():
+        opponents.setdefault(row['digest'], []).append(row)
+    return opponents
+
+
 @timed('card_report_select_ms')
 def _selected_rows(db, replay_root, now, filters):
     """与 card_statistics.query 相同的资格与筛选顺序，只执行一次。"""
@@ -177,23 +215,10 @@ def _selected_rows(db, replay_root, now, filters):
     # 卡报不展示资格诊断：跳过两条全表 COUNT（空闲约 1.6 秒，I/O 紧张时放大数十倍）。
     basis = eligible_views(db, replay_root, now, f.internal_only, f.scope, catalog,
                            annotate_series=bool(f.series), with_diagnostics=False)
-    # 只有筛选对手卡组/系列时才需要对手上下文；默认查询不再全表取/注解所有视角。
     opponents = {}
     if f.opponent_types or f.opponent_series or f.opponent_no60:
-        digests = sorted({row['digest'] for row in basis['views']})
-        others = {}
-        for start in range(0, len(digests), 400):
-            chunk = digests[start:start + 400]
-            marks = ','.join('?' for _ in chunk)
-            for r in db.execute(
-                    'SELECT v.digest,v.player,v.build,b.deck_type,b.classification_source,b.series_status,'
-                    'b.main_complete,b.extra_complete FROM stat_views v JOIN stat_builds b '
-                    'ON b.fingerprint=v.build WHERE v.digest IN (%s)' % marks, chunk):
-                others[(r['digest'], r['player'])] = dict(r)
-        if f.opponent_series:
-            annotate(db, list(others.values()), catalog)
-        for row in others.values():
-            opponents.setdefault(row['digest'], []).append(row)
+        with measure('card_report_opponents_ms'):
+            opponents = _report_opponents(db, basis['views'], catalog, f)
     selected = []
     exclusions = {key: 0 for key in ('deck_type', 'series', 'opponent_type', 'opponent_series', 'first_player', 'start_at', 'end_at')}
     for row in basis['views']:
@@ -322,7 +347,7 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     db.execute('DROP TABLE IF EXISTS temp._report_builds')
     db.execute('CREATE TEMP TABLE _report_builds(build TEXT PRIMARY KEY)')
     db.executemany('INSERT OR IGNORE INTO _report_builds(build) VALUES(?)',
-                   [(row['build'],) for row in selected])
+                   ((build,) for build in dict.fromkeys(row['build'] for row in selected)))
     if codes or combos:
         targets = codes
     else:
@@ -340,6 +365,8 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     # opening 指标只关心“这张卡在不在起手”，且只有 >0 的行会被使用；组合需要 0 值
     # 参与分母判定，不能过滤。命中部分索引 stat_card_facts_opening 时只需 4 列。
     narrow_opening = metric == 'opening' and not combos
+    needs_facts = metric != 'carried' or bool(combos)
+    wanted_codes = set(needed_codes) if needed_codes is not None else None
     # 只带本报告真正消费的列：原先多取 appeared/draw_count/use_count/appearance_count
     # 四列，93 万行要为此多转换一次、缓存也多占三成。
     fact_fields = (('code','digest','player','partition','initial_count') if narrow_opening else
@@ -350,7 +377,7 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     view_keys = [(row['digest'], row['player']) for row in selected]
     view_index = {key: position for position, key in enumerate(view_keys)}
     summary_unset = {}
-    summary_used = [False]
+    summary_selected_count = 0
 
     def _chunks(items, size=300):
         for start in range(0, len(items), size):
@@ -358,7 +385,9 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
 
     def _summary_tables(selected_table, builds_table):
         """从 BLOB 摘要读；任何覆盖缺口都整体回退原表，避免混用两套口径。"""
-        from .statistics_card_summary import load_builds, load_views
+        from .statistics_card_summary import decode_view, load_builds
+
+        nonlocal summary_selected_count
         builds = [r[0] for r in db.execute('SELECT build FROM ' + builds_table)]
         copies = []
         seen_builds = set()
@@ -372,23 +401,31 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
             copies.extend(tuple(row) for row in db.execute(
                 'SELECT build,partition,code,SUM(copies) copies FROM stat_build_cards '
                 'WHERE build IN (%s) GROUP BY build,partition,code' % marks, chunk))
-        keys = [(r[0], r[1]) for r in db.execute('SELECT digest,player FROM ' + selected_table)]
+        if not needs_facts:
+            return copies, []
         facts = []
         seen_views = set()
-        for chunk in _chunks(keys):
-            for digest, player, part, code, drawn, used, uad, initial in load_views(db, chunk):
-                seen_views.add((digest, player))
-                if initial is None:
-                    position = view_index.get((digest, player))
-                    if position is not None:
-                        summary_unset.setdefault((code, part), set()).add(position)
+        # Drive by the selected primary keys in one pass instead of issuing a
+        # composite IN query for every batch of views.
+        for digest, player, data in db.execute(
+                'SELECT s.digest,s.player,v.data FROM ' + selected_table + ' s '
+                'CROSS JOIN stat_view_card_sets v ON v.digest=s.digest AND v.player=s.player'):
+            key = digest, player
+            for part, code, drawn, used, uad, initial in decode_view(data):
+                seen_views.add(key)
+                if wanted_codes is not None and code not in wanted_codes:
+                    continue
                 if narrow_opening:
-                    if initial is None or initial <= 0:
-                        continue
-                    facts.append((code, digest, player, part, 1))
+                    if initial is None:
+                        position = view_index.get(key)
+                        if position is not None:
+                            summary_unset.setdefault((code, part), set()).add(position)
+                    elif initial > 0:
+                        facts.append((code, digest, player, part, 1))
                 else:
                     facts.append((code, digest, player, part, drawn, used, uad, initial))
-        missing_views = set(keys) - seen_views
+        keys = {(row[0], row[1]) for row in db.execute('SELECT digest,player FROM ' + selected_table)}
+        missing_views = keys - seen_views
         for chunk in _chunks(list(missing_views), 300):
             marks = ','.join('(?,?)' for _ in chunk)
             args = [value for key in chunk for value in key]
@@ -413,9 +450,7 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
                     position = view_index.get((digest, player))
                     if position is not None:
                         summary_unset.setdefault((code, part), set()).add(position)
-        if needed_codes is not None:
-            wanted = set(needed_codes)
-            facts = [row for row in facts if row[0] in wanted]
+        summary_selected_count += len(keys)
         return copies, facts
 
     def read_raw_tables(selected_table="_report_selected", builds_table="_report_builds"):
@@ -424,7 +459,6 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
         except Exception:
             got = None
         if got is not None:
-            summary_used[0] = True
             return dict(copies=got[0], facts=got[1])
         projection = (' AND code IN (' + ','.join('?' for _ in needed_codes) + ')') if needed_codes else ''
         args = needed_codes or ()
@@ -441,17 +475,17 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
             'SELECT build,partition,code,SUM(copies) copies FROM stat_build_cards '
             'WHERE build IN (SELECT build FROM ' + builds_table + ')' + projection +
             ' GROUP BY build,partition,code', args)],
-            facts=[tuple(row) for row in db.execute(fact_sql, args)])
+            facts=[tuple(row) for row in db.execute(fact_sql, args)] if needs_facts else [])
     from .statistics_report_intermediate import raw_tables
     # fact_fields 里 digest 的位置就是分桶拆分用的列：单次读到的行据此拆回各桶。
     with measure('card_report_raw_ms'):
-        raw = raw_tables(db, read_raw_tables, projection=(needed_codes, narrow_opening),
+        raw = raw_tables(db, read_raw_tables, projection=(needed_codes, narrow_opening, needs_facts),
                          chunk_loader=read_raw_tables if needed_codes is None else None,
                          fact_digest_index=fact_fields.index('digest'))
     # 窄读只取 initial_count>0 的行，但旧口径里同一 (digest,player) 只要有一行
     # 是 NULL，合并结果就是“未知”并排除。摘要路径已在解码时顺手收集；回退路径
     # 仍查 NULL 部分索引（27 万行约 1.3 秒）。
-    if summary_used[0]:
+    if summary_selected_count == len(view_index):
         unset_by_code_part = summary_unset
     else:
         unset_by_code_part = {}
@@ -476,7 +510,6 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
         facts_by_code.setdefault(key, []).append(fact)
     del raw
     view_by_key = {(row['digest'], row['player']): row for row in selected}
-    fact_cache = {}
     rows = []
     for code in targets:
         ident = idents[code]

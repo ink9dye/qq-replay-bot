@@ -90,7 +90,7 @@ def _load_bucket(db, loader, rows):
     return loader('_report_chunk_selected','_report_chunk_builds')
 
 
-def _chunked_tables(db, loader, fact_digest_index=None):
+def _chunked_tables(db, loader, fact_digest_index=None, *, projection=None):
     # Stable digest buckets survive new uploads without invalidating every shard.
     # Cache stores raw facts only; current eligibility was already recalculated.
     # 未命中的桶合并成一次取数：逐桶查询会为每个桶各扫一遍 stat_card_facts，
@@ -110,7 +110,7 @@ def _chunked_tables(db, loader, fact_digest_index=None):
         db.execute('INSERT OR IGNORE INTO _report_chunk_builds SELECT v.build FROM stat_views v '
                    'JOIN _report_chunk_selected s ON s.digest=v.digest AND s.player=v.player '
                    'WHERE v.build IN (SELECT build FROM _report_builds)')
-        try:identity=_identity(db, ['wide-bucket',bucket], '_report_chunk_selected', '_report_chunk_builds')
+        try:identity=_identity(db, ['wide-bucket',bucket,projection], '_report_chunk_selected', '_report_chunk_builds')
         except (sqlite3.Error,OSError,ValueError,TypeError):identity=None
         value=None
         if identity:
@@ -191,7 +191,7 @@ def raw_tables(db, loader, projection=None, chunk_loader=None, fact_digest_index
     if chunk_loader is not None:
         count=db.execute('SELECT COUNT(*) FROM _report_selected').fetchone()[0]
         if count>300:
-            return _chunked_tables(db,chunk_loader,fact_digest_index)
+            return _chunked_tables(db,chunk_loader,fact_digest_index,projection=projection)
 
     identity=None
     try:
@@ -231,7 +231,7 @@ def response_identity(database, key):
     from urllib.parse import parse_qs
     database = Path(database)
     normalized = parse_qs(key[1], keep_blank_values=True)
-    encoded = json.dumps([5, str(database.resolve()), response_version(database), normalized],
+    encoded = json.dumps([6, str(database.resolve()), response_version(database), normalized],
                          sort_keys=True).encode()
     return database.parent/'query-cache/card-report.sqlite3','response:'+hashlib.sha256(encoded).hexdigest()
 
