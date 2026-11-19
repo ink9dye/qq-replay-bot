@@ -329,17 +329,14 @@ class CardSearch:
 
     def _local_search(self, query, user):
         """百鸽不可用时，用本地 YGOPro 中文卡库兜底。"""
+        from .statistics_card_names import matching_cards
         from .statistics_local_cards import local_index
         value = self._alias((query or "").strip())
         tokens = [normalize(part) for part in re.split(r"\s+", value) if normalize(part)]
         if not tokens:
             return "请输入要查的卡名。"
-        rows = []
-        for info in local_index(self.data_dir).values():
-            name = str(info.get("cn_name") or "")
-            target = normalize(name)
-            if target and all(token in target for token in tokens):
-                rows.append(info)
+        rows = list(matching_cards(local_index(self.data_dir).values(), tokens,
+                                   lambda info: (info.get("cn_name") or "",)))
         if not rows:
             return "百鸽查卡接口暂时连不上，本地卡库也没有找到这张卡。"
         rows.sort(key=lambda item: (normalize(item.get("cn_name") or "") != normalize(value),

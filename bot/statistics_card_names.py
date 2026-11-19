@@ -62,6 +62,24 @@ def index(data_dir):
     return result
 
 
+def matching_cards(cards, terms, names):
+    """Yield cards with a name containing every normalized search term."""
+    if not terms:
+        return
+    for info in cards:
+        for name in names(info):
+            target = normalize(name)
+            if all(term in target for term in terms):
+                yield info
+                break
+
+
+def _search_names(info):
+    for key in ('cn_name', 'sc_name', 'md_name', 'jp_name', 'en_name', 'nwbbs_n', 'cnocg_n'):
+        yield info.get(key, '')
+    yield (info.get('text') or {}).get('name', '')
+
+
 def search(data_dir,term,limit=20):
     cards=index(data_dir);term=term.strip();needle=normalize(term)
     if term.isdigit() and 0<int(term)<=4294967295:
@@ -71,11 +89,8 @@ def search(data_dir,term,limit=20):
         minimum=min((int(other) for other,value in cards.items() if card_name(value)==name),default=code)
         return [dict(code=minimum,name=name)]
     found={}
-    for code,info in cards.items():
-        values=[info.get(k,'') for k in ('cn_name','sc_name','md_name','jp_name','en_name','nwbbs_n','cnocg_n')]
-        values.append((info.get('text') or {}).get('name',''))
-        if needle and any(needle in normalize(value) for value in values):
-            name=card_name(info);code=int(code)
-            if name not in found or code<found[name]:
-                found[name]=code
+    for info in matching_cards(cards.values(), (needle,) if needle else (), _search_names):
+        name=card_name(info);code=int(info['id'])
+        if name not in found or code<found[name]:
+            found[name]=code
     return [dict(code=code,name=name) for name,code in sorted(found.items(),key=lambda item:item[1])[:limit]]
