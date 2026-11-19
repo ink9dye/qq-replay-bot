@@ -60,7 +60,7 @@ class GameCountTests(unittest.TestCase):
         def eligible(db, replay_root, now, **options):
             self.assertEqual(replay_root, self.root / 'replays')
             self.assertFalse(options['with_diagnostics'])
-            return {'views': scope.filter_rows(db, views, roster, now, pairs=pairs)}
+            return {'roster': roster, 'views': scope.filter_rows(db, views, roster, now, pairs=pairs)}
 
         with patch('bot.top100.eligible_views', side_effect=eligible) as load, \
              patch.object(scope, '_stored_ranks', return_value={}), \
@@ -94,6 +94,30 @@ class GameCountTests(unittest.TestCase):
                 report = query(fixture.store._db, fixture.replays, NOW, metric='opening')
         self.assertEqual((report['selected_games'], report['selected_samples']), (5, 10))
         self.assertEqual((result['count'], result['views']), (5, 10))
+
+    def test_top100_uses_official_roster_and_agrees_with_card_report(self):
+        from bot.statistics_card_report import query
+        from bot.statistics_rank_scope import population_scope
+        from test_card_statistics import CardStatisticsTests, NOW
+        from test_top100 import roster
+
+        fixture = CardStatisticsTests()
+        self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
+        fixture.store.replace_top100(roster(['甲', '乙']), NOW)
+        counter = GameCounter(fixture.store.path, fixture.root, clock=lambda: NOW)
+        with patch('bot.statistics_rank_scope.ranks_for', side_effect=AssertionError('rank lookup')):
+            result = counter.query(limit=100, internal=True)
+            with population_scope('100', '100'):
+                report = query(fixture.store._db, fixture.replays, NOW, metric='opening')
+        self.assertEqual((report['selected_games'], report['selected_samples']), (5, 10))
+        self.assertEqual((result['count'], result['views']), (5, 10))
+        self.assertEqual(result['unknown'], 0)
+
+    def test_top100_without_roster_does_not_report_zero(self):
+        with patch('bot.top100.eligible_views', return_value={'roster': {'available': False}, 'views': []}):
+            with self.assertRaisesRegex(ValueError, 'roster unavailable'):
+                self.counter.query(limit=100, internal=True)
 
     def test_fresh_room_rank_samples_are_reused_but_expired_are_not(self):
         p=self.root/'capture-status.json';p.write_text(json.dumps(dict(updated_at=self.now,rank_samples=[dict(player='A',rank=150,checked_at=self.now-20),dict(player='B',rank=180,checked_at=self.now-121)])),encoding='utf-8')

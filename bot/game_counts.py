@@ -58,21 +58,27 @@ def game_digests(views):
     return {row['digest'] for row in views}
 
 
-def ranked_inner_counts(db, data_dir, now, midnight):
+def ranked_inner_counts(db, data_dir, now, midnight, limit):
     from .statistics_rank_scope import population_scope
     from .top100 import eligible_views
 
     db.row_factory = sqlite3.Row
-    with population_scope('200', '200', track_unresolved_games=True) as scope:
-        views = eligible_views(db, Path(data_dir) / 'replays', now,
-                               annotate_series=False, with_diagnostics=False)['views']
+    rank_range = str(limit)
+    with population_scope(rank_range, rank_range, track_unresolved_games=limit == 200) as scope:
+        basis = eligible_views(db, Path(data_dir) / 'replays', now,
+                               annotate_series=False, with_diagnostics=False)
+    roster = basis['roster']
+    if limit == 100 and not roster['available']:
+        raise ValueError('top100 roster unavailable')
+    views = basis['views']
     digests = game_digests(views)
     today = sum(digest in digests and midnight <= received <= now
                 for digest, received in db.execute(
                     BASE + 'SELECT digest,received_at FROM games',
                     (now - RETENTION_SECONDS, now)))
     return dict(count=len(digests), views=len(views), today=today,
-                unknown=len(scope['unresolved_games'] - digests))
+                unknown=len(scope['unresolved_games'] - digests) if limit == 200 else 0,
+                roster_stale=limit == 100 and roster['stale'])
 
 
 class GameCounter:
@@ -89,7 +95,7 @@ class GameCounter:
             if hit and 0<=now-hit[0]<30:return hit[1]
             with closing(sqlite3.connect(self.database.resolve().as_uri()+'?mode=ro',uri=True,timeout=1)) as db:
                 db.execute('PRAGMA cache_size=-2048')
-                unified_inner = limit == 200 and internal
+                unified_inner = limit in (100, 200) and internal
                 deadline=time.monotonic()+(60 if unified_inner else 3)
                 db.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
                 db.execute('BEGIN')
@@ -100,7 +106,7 @@ class GameCounter:
                     params.append(keyword)
                 unknown=0;rank_at=None
                 if unified_inner:
-                    result = ranked_inner_counts(db, self.data_dir, now, midnight)
+                    result = ranked_inner_counts(db, self.data_dir, now, midnight, limit)
                 elif limit is None:
                     count,today=db.execute(BASE+'SELECT COUNT(*),COALESCE(SUM(received_at>=? AND received_at<=?),0) FROM games'+tail,
                         params[:2]+[midnight,now]+params[2:]).fetchone()
@@ -138,6 +144,8 @@ def message(service,command):
         lines.append(f"对应 {r['views']} 个玩家视角；一局两边都符合时计 2 个视角。")
         if r['unknown']:
             lines.append(f"另有 {r['unknown']} 个符合录像资格的小局因名次未知暂未计入。")
+        if r['roster_stale']:
+            lines.append('前100榜单快照可能已过期，当前按最近一次有效榜单统计。')
         lines.append('与网页共用对局资格和名次判断；QQ 此处未筛卡组或先后攻。')
     elif r['limit']:
         if r['unknown']:lines.append(f"另有 {r['unknown']} 个小局缺少新鲜名次，暂无法给出完整当前排名范围总数；今日数同样仅含已确认部分。")
