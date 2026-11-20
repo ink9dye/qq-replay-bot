@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 MAX_TOP_DECKS = 6
@@ -207,10 +208,39 @@ def _session_row(group: dict) -> dict:
     )
 
 
+def _latest_side_pair(groups):
+    latest = {}
+    seat_unknown = 0
+    for group in groups:
+        for game, change in _side_changes(group):
+            seat = _seat(game)
+            if seat is None:
+                seat_unknown += 1
+                continue
+            stamp = game.get('recorded_at')
+            if stamp is None:
+                continue
+            key = (stamp, game['game_no'], game.get('digest') or '')
+            if seat not in latest or key > latest[seat][0]:
+                latest[seat] = (key, game, change)
+    result = {}
+    for seat in ('first', 'second'):
+        bucket = _new_bucket()
+        chosen = latest.get(seat)
+        evidence = None
+        if chosen is not None:
+            _, game, change = chosen
+            bucket['side_games'] = 1
+            _add_changes(bucket, game.get('session_id') or game.get('digest') or '', change)
+            evidence = {name: game.get(name) for name in ('digest', 'recorded_at', 'game_no')}
+        result[seat] = dict(_finalize(bucket), evidence=evidence)
+    return result, seat_unknown
+
+
 def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
                recent: int = RECENT_MATCHES,
                min_side_games: int = MIN_SIDE_GAMES,
-               rank_scope: dict | None = None) -> dict:
+               rank_scope: dict | None = None, *, latest_side_only: bool = False) -> dict:
     """从 build_detail.query 的结果生成换备计划（纯函数，便于测试）。"""
     top = max(1, min(int(top), 12))
     recent = max(1, min(int(recent), 10))
@@ -229,6 +259,12 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
 
     opponents = []
     for label in labels:
+        if latest_side_only:
+            pair, seat_unknown = _latest_side_pair(by_label[label])
+            opponents.append(dict(deck=label, matches=counts[label],
+                                  side_games=pair['first']['side_games'] + pair['second']['side_games'],
+                                  seat_unknown_games=seat_unknown, **pair))
+            continue
         recent_groups = by_label[label][:recent]
         buckets = {'first': _new_bucket(), 'second': _new_bucket()}
         sessions = []
@@ -260,6 +296,8 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
 
     notes = ['只统计当前构筑（主卡相同）的场次；每个对手取最近 %d 场。' % recent,
              '先攻/后攻按该换边局（第2/3局）该玩家自己的实际座位；同一场多局同一张卡取最大张数。']
+    if latest_side_only:
+        notes = ['当前构筑对每个具体对手卡组，先攻与后攻各取最近一局可比较的 Side。']
     if rank_scope:
         notes.insert(0, '只看对手前 %d（当前榜单／14天内名次快照）：纳入 %d 场；另有 %d 场对手名次在前 %d 之外、'
                         '%d 场名次未核验，均不计入。' % (
@@ -268,7 +306,7 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
                             rank_scope.get('unverified_matches', 0)))
     if any(item['seat_unknown_games'] for item in opponents):
         notes.append('该玩家座位未知（first_player 缺失）的换边局不计入先/后攻，单独计数。')
-    if any(item['sample_low'] for item in opponents):
+    if not latest_side_only and any(item['sample_low'] for item in opponents):
         notes.append('标记“样本少”表示最近几场里完整可比较的换边局少于 %d 个。' %
                      max(1, int(min_side_games)))
     if not groups:
@@ -277,6 +315,7 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
     selected = detail.get('selected') or {}
     return dict(
         version=1,
+        **({'latest_side_only': True} if latest_side_only else {}),
         player=person.get('player'),
         deck=person.get('deck_type'),
         selected=dict(digest=selected.get('digest'),
@@ -294,8 +333,8 @@ def build_plan(detail: dict, top: int = MAX_TOP_DECKS,
 
 def query(db, replay_root, now, player, digest=None, top: int = MAX_TOP_DECKS,
           recent: int = RECENT_MATCHES, min_side_games: int = MIN_SIDE_GAMES,
-          opponent_range: int | None = OPPONENT_RANK_LIMIT):
-    """默认只看对手前 200 的「每个卡组最近 5 场」（网页与 QQ 一致）。
+          opponent_range: int | None = OPPONENT_RANK_LIMIT, *, latest_side_only: bool = False):
+    """默认返回对手前 200 的最近五场汇总，也可按座位各取最新一局。
 
     opponent_range=None 可关闭过滤（每个卡组最近 5 场，不再看对手名次）。
     """
@@ -309,7 +348,7 @@ def query(db, replay_root, now, player, digest=None, top: int = MAX_TOP_DECKS,
                                            _rank_map(db, now), int(opponent_range))
         detail = dict(detail, match_groups=groups)
     return build_plan(detail, top=top, recent=recent, min_side_games=min_side_games,
-                      rank_scope=rank_scope)
+                      rank_scope=rank_scope, latest_side_only=latest_side_only)
 
 
 def _card_text(cards: list[dict], name_for: Callable[[int], str],
@@ -348,6 +387,22 @@ def _deck_block(index: int, item: dict, name_for: Callable[[int], str],
     return lines
 
 
+def _latest_deck_block(index, item, name_for):
+    lines = ['%d. %s（%d场）' % (index, item['deck'], item['matches'])]
+    tz = timezone(timedelta(hours=8))
+    for label, key in (('先攻', 'first'), ('后攻', 'second')):
+        side = item[key]
+        evidence = side['evidence']
+        if evidence is None:
+            lines.append('   %s：暂无可用录像' % label)
+            continue
+        date = datetime.fromtimestamp(evidence['recorded_at'], tz).strftime('%m-%d %H:%M')
+        lines.append('   %s（%s，第%d局）' % (label, date, evidence['game_no']))
+        lines.append('   换入：%s' % _card_text(side['added'], name_for, len(side['added'])))
+        lines.append('   换出：%s' % _card_text(side['removed'], name_for, len(side['removed'])))
+    return lines
+
+
 def format_text(plan: dict, name_for: Callable[[int], str],
                 max_cards: int = MAX_CARDS_PER_DIRECTION,
                 decks_per_page: int = DECKS_PER_PAGE) -> list[str]:
@@ -364,11 +419,18 @@ def format_text(plan: dict, name_for: Callable[[int], str],
                   plan.get('top_decks') or MAX_TOP_DECKS,
                   plan.get('recent_matches') or RECENT_MATCHES,
                   max_cards)]
+    latest_side_only = plan.get('latest_side_only', False)
+    if latest_side_only:
+        header[2] = ('当前构筑最近28天，%s按对手场次取前%d；每个卡组先攻、后攻各取最近一局有效 Side，与该场首局比较。'
+                     % (scope_text, plan.get('top_decks') or MAX_TOP_DECKS))
     if not opponents:
         return ['\n'.join(header + ['', '当前构筑最近28天没有足够的对手卡组数据。'])]
     blocks = []
     for index, item in enumerate(opponents, 1):
-        blocks.append(_deck_block(index, item, name_for, max_cards))
+        if latest_side_only:
+            blocks.append(_latest_deck_block(index, item, name_for))
+        else:
+            blocks.append(_deck_block(index, item, name_for, max_cards))
     per_page = max(1, int(decks_per_page))
     chunks = [blocks[i:i + per_page] for i in range(0, len(blocks), per_page)]
     pages = []

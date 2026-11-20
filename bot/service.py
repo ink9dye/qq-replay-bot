@@ -1184,14 +1184,14 @@ class BotService:
         return reply
 
     def _side_plan_text(self, player: str):
-        """换备：当前构筑、对手场次前6、每个对手最近5场，先/后攻分列。"""
+        """换备：每个具体对手卡组按先后攻各取最近一局有效 Side。"""
         from .statistics_side_recent import query as side_plan_query, format_text
         try:
             with closing(sqlite3.connect(self.store.path.resolve().as_uri() + '?mode=ro',
                                          uri=True, timeout=5)) as db:
                 db.row_factory = sqlite3.Row
                 db.execute('BEGIN')
-                plan = side_plan_query(db, self.replay_root, float(self.clock()), player)
+                plan = side_plan_query(db, self.replay_root, float(self.clock()), player, latest_side_only=True)
         except (sqlite3.Error, OSError):
             return "换备统计暂时读取失败，请稍后再试。"
         if plan is None:
