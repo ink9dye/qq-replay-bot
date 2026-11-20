@@ -18,6 +18,11 @@ def group_event(text, user_id=10001, message_id=1, group_id=90000, mention=35286
     }
 
 
+async def wait_for_group_reply(service, event):
+    await service.on_qq_event(event)
+    await asyncio.gather(*list(service._slow_tasks))
+
+
 class GroupQQ(FakeQQ):
     def __init__(self):
         super().__init__()
@@ -63,10 +68,10 @@ class GroupTests(unittest.TestCase):
             self.assertIsNone(service.store.get_subscription('90000', '亚翁'))
             self.assertEqual(service.qq.group_sent[0][0], '90000')
             self.assertIn('已订阅', service.qq.group_sent[0][1])
-            asyncio.run(service.on_qq_event(group_event('录像 亚翁', message_id=2)))
+            asyncio.run(wait_for_group_reply(service, group_event('录像 亚翁', message_id=2)))
             self.assertIn('/s/', service.qq.group_sent[-1][1])
             self.assertTrue(all('/s/' not in text and '亚翁' not in text for _, _, text in service.qq.notices))
-            asyncio.run(service.on_qq_event(group_event('录像 亚翁', user_id=10002, message_id=3)))
+            asyncio.run(wait_for_group_reply(service, group_event('录像 亚翁', user_id=10002, message_id=3)))
             self.assertEqual(service.qq.group_sent[-1][0], '90000')
             self.assertIn('默认仅查看该玩家对手排名前100', service.qq.group_sent[-1][1])
             self.assertEqual(service.qq.sent, [])
@@ -80,7 +85,7 @@ class GroupTests(unittest.TestCase):
             service.qq.group_fail = True
             asyncio.run(service.on_qq_event(group_event('订阅 亚翁 全部 推送')))
             self.assertIsNotNone(service.store.get_subscription('10001', '亚翁'))
-            asyncio.run(service.on_qq_event(group_event('录像 亚翁', message_id=2)))
+            asyncio.run(wait_for_group_reply(service, group_event('录像 亚翁', message_id=2)))
             self.assertIn('/s/', service.qq.group_sent[-1][1])
             self.assertEqual(service.qq.sent, [])
             self.assertEqual(service.qq.notices, [])

@@ -282,31 +282,48 @@ class OneBotClient:
         return True
 
     @observe('reply_total')
-    async def queued_send(self, kind, receiver, body, callback):
+    async def queued_send(self, kind, receiver, body, callback, *, pace_calls=False):
         timing = request_timing.get()
+        dice = command_operation.get() == 'roll_dice'
         actual = False
+        destination = (kind, str(receiver))
         if self.suspended or not self.connected:
             self.diagnostics.record('reply_skipped', reason='not_connected', kind=kind)
             if timing is not None:
                 timing.sent(False, False)
             return False
-        async def guarded():
+        def mark_first_attempt():
             nonlocal actual
+            if actual:
+                return
             # Includes throttle/lock/serialization before this callback, not the API wait.
             from .qq_diagnostics import _phase_record, parent_span
             _phase_record('phase_complete', phase='send_wait', span=uuid.uuid4().hex[:12],
                           parent_span=parent_span.get(), outcome='ok',
                           elapsed_ms=round((time.monotonic() - queued_at) * 1000, 3))
+            actual = True
+
+        async def send_call(action, params, **kwargs):
+            await self.outbound.reserve_send(destination, dice=dice)
+            if self.suspended or not self.connected:
+                raise ConnectionError("NapCat 尚未连接或发送已暂停")
+            mark_first_attempt()
+            return await self.call(action, params, **kwargs)
+
+        async def guarded():
             if self.suspended or not self.connected:
                 return False
-            actual = True
+            if pace_calls:
+                return await callback(send_call)
+            mark_first_attempt()
             return await callback()
         self.diagnostics.record('reply_queued', kind=kind, queued=self.outbound.waiting)
         queued_at = time.monotonic()
         try:
             with phase('outbound_submit'):
-                result = await self.outbound.submit((kind, str(receiver)), body, guarded,
-                                                    request=trace_id.get())
+                result = await self.outbound.submit(
+                    destination, body, guarded, request=trace_id.get(),
+                    dice=dice, pace_first=not pace_calls)
         except BaseException:
             if timing is not None:
                 timing.sent(False, actual)
@@ -605,13 +622,15 @@ class OneBotClient:
                 token = trace_id.set(data['_local_diagnostic_trace'])
                 try:
                     self.diagnostics.record('message_received', kind=data.get('message_type', 'unknown'),
-                                            dispatching=len(self._dispatch_tasks), pending=len(self._pending))
+                                            dispatching=len(self._dispatch_tasks), pending=len(self._pending),
+                                            source_age_ms=self._message_age_ms(data, time.time()))
                 finally:
                     trace_id.reset(token)
                 self.last_message_at = time.time()
                 if self.connected:
                     self.publish_state('online')
             if self.state_dir and not self.connected:
+                self._record_dispatch_drop(data, 'not_connected')
                 continue
             echo = data.get("echo")
             if echo is not None and str(echo) in self._pending:
@@ -620,11 +639,39 @@ class OneBotClient:
                     future.set_result(data)
                 continue
             if len(self._dispatch_tasks) >= 64:
-                self.diagnostics.record('event_dropped', reason='dispatch_capacity', dispatching=len(self._dispatch_tasks))
+                self._record_dispatch_drop(data, 'dispatch_capacity')
                 continue
             task = asyncio.create_task(self._dispatch(data))
             self._dispatch_tasks.add(task)
             task.add_done_callback(self._dispatch_tasks.discard)
+
+    @staticmethod
+    def _message_age_ms(event, received_at):
+        sent_at = event.get('time')
+        if type(sent_at) in (int, float) and 0 < sent_at <= received_at:
+            return round((received_at - sent_at) * 1000, 3)
+        return None
+
+    def _command_text(self, event):
+        if event.get('message_type') == 'group':
+            if self.accept_group_messages:
+                return group_command_text(event, self.allow_unmentioned_commands, self.group_extra_accept)
+        elif event.get('message_type') == 'private':
+            return event_text(event)
+        return None
+
+    def _record_dispatch_drop(self, event, reason):
+        if event.get('post_type') != 'message':
+            return
+        from .commands import parse_command
+        text = self._command_text(event)
+        operation = parse_command(text).get('op') if text else None
+        token = trace_id.set(event.get('_local_diagnostic_trace'))
+        try:
+            self.diagnostics.record('event_dropped', reason=reason, operation=operation,
+                                    kind=event.get('message_type'), dispatching=len(self._dispatch_tasks))
+        finally:
+            trace_id.reset(token)
 
     async def _dispatch(self, event: dict) -> None:
         token = trace_id.set(event.get('_local_diagnostic_trace') or uuid.uuid4().hex[:12])
@@ -650,27 +697,31 @@ class OneBotClient:
             if not self.accept_group_messages:
                 self.diagnostics.record('message_ignored', reason='group_disabled', kind=kind)
                 return
-            if group_command_text(event, self.allow_unmentioned_commands, self.group_extra_accept) is None:
-                self.diagnostics.record('message_ignored', reason='not_command', kind=kind)
-                return
         elif kind != "private":
             self.diagnostics.record('message_ignored', reason='unsupported_kind')
             return
         if event.get("self_id") is not None and str(event.get("self_id")) == str(event.get("user_id")):
             self.diagnostics.record('message_ignored', reason='self_message', kind=kind)
             return
+        text = self._command_text(event)
+        if text is None:
+            self.diagnostics.record('message_ignored', reason='not_command', kind=kind)
+            return
+        from .commands import parse_command
+        operation = parse_command(text).get('op', 'unknown')
         message_id = event.get("message_id")
         key = None if message_id is None else f"{kind}:{event.get('group_id') or event.get('user_id')}:{message_id}"
         if self._remember(key):
-            self.diagnostics.record('message_ignored', reason='duplicate_event', kind=kind)
+            self.diagnostics.record('message_ignored', reason='duplicate_event', kind=kind, operation=operation)
             return
-        text = group_command_text(event, self.allow_unmentioned_commands, self.group_extra_accept) if kind == 'group' else event_text(event)
-        if not self.request_guard.accept(f'{kind}:{event.get("group_id") or event.get("user_id")}', event.get('user_id'), text or ''):
-            self.diagnostics.record('message_ignored', reason='command_rate_limit', kind=kind)
-            return
-        from .commands import parse_command
+        # OneBot 消息 ID 已去重。两条不同的骰子消息各自入队，仍使用发送侧限频。
+        if operation != 'roll_dice' or key is None:
+            if not self.request_guard.accept(f'{kind}:{event.get("group_id") or event.get("user_id")}',
+                                             event.get('user_id'), text):
+                self.diagnostics.record('message_ignored', reason='command_rate_limit',
+                                        kind=kind, operation=operation)
+                return
         self.handled_commands += 1
-        operation = parse_command(text or '').get('op', 'unknown')
         command_operation.set(operation)
         timing = request_timing.get()
         if timing is not None:
@@ -681,7 +732,7 @@ class OneBotClient:
                 outcome='ok', span=uuid.uuid4().hex[:12],
                 elapsed_ms=round((time.monotonic()-event['_local_received_mono'])*1000, 3))
         started = time.monotonic()
-        self.diagnostics.record('command_start', operation=parse_command(text or '').get('op', 'unknown'), kind=kind)
+        self.diagnostics.record('command_start', operation=operation, kind=kind)
         try:
             with phase('foreground'):
                 await self.on_event(event)
@@ -732,13 +783,15 @@ class OneBotClient:
 
     async def send_private(self, user_id, text: str, retries: int = 3) -> bool:
         return await self.queued_send('private', user_id, [str(text), getattr(text, 'image_url', None)],
-            lambda: self._send_message("send_private_msg", "user_id", user_id, text, retries))
+            lambda send: self._send_message("send_private_msg", "user_id", user_id, text, retries, send),
+            pace_calls=True)
 
     async def send_group(self, group_id, text: str, retries: int = 3) -> bool:
         return await self.queued_send('group', group_id, [str(text), getattr(text, 'image_url', None)],
-            lambda: self._send_message("send_group_msg", "group_id", group_id, text, retries))
+            lambda send: self._send_message("send_group_msg", "group_id", group_id, text, retries, send),
+            pace_calls=True)
 
-    async def _send_message(self, action, destination, receiver, text, retries):
+    async def _send_message(self, action, destination, receiver, text, retries, send):
         params = {
             destination: int(receiver) if str(receiver).isdigit() else str(receiver),
             "message": text,
@@ -750,7 +803,7 @@ class OneBotClient:
             try:
                 segments = [{"type": "text", "data": {"text": str(text)}}]
                 segments.extend({"type": "image", "data": {"file": url}} for url in image_urls)
-                response = await self.call(action, {
+                response = await send(action, {
                     destination: params[destination],
                     "message": segments,
                 })
@@ -768,12 +821,11 @@ class OneBotClient:
                 fallback = ('\n图片发送失败，请稍后重试。' if image_urls and image_urls[0].startswith('base64://')
                             else "\n卡图：" + image_url)
             params["message"] = str(text) + fallback
-            await self.pause(max(self.outbound.interval, self.outbound.destination_interval))
         for attempt in range(retries):
             if self.suspended:
                 return False
             try:
-                result = await self.call(action, params)
+                result = await send(action, params)
                 if int(result.get("retcode", -1)) == 0:
                     return True
             except (AccountAttention, asyncio.TimeoutError, ConnectionError):
@@ -781,18 +833,21 @@ class OneBotClient:
             except Exception:
                 pass
             if attempt + 1 < retries:
-                await self.pause(max(0.2 * (attempt + 1), self.outbound.interval, self.outbound.destination_interval))
+                await self.pause(0.2 * (attempt + 1))
         return False
 
     async def send_private_forward(self, user_id, cards: list[str], self_id=None) -> bool:
         return await self.queued_send('private', user_id, cards,
-            lambda: self._send_forward("send_private_forward_msg", "user_id", user_id, cards, self_id))
+            lambda send: self._send_forward("send_private_forward_msg", "user_id", user_id, cards, self_id, send),
+            pace_calls=True)
 
     async def send_group_forward(self, group_id, cards: list[str], self_id=None) -> bool:
         return await self.queued_send('group', group_id, cards,
-            lambda: self._send_forward("send_group_forward_msg", "group_id", group_id, cards, self_id))
+            lambda send: self._send_forward("send_group_forward_msg", "group_id", group_id, cards, self_id, send),
+            pace_calls=True)
 
-    async def _send_forward(self, action, destination, receiver, cards, self_id):
+    async def _send_forward(self, action, destination, receiver, cards, self_id, send=None):
+        send = send or self.call
         try:
             if not str(self_id or '').isdigit():
                 info = await self.call('get_login_info', {})
@@ -822,7 +877,7 @@ class OneBotClient:
             has_images = any(isinstance(card, dict) and card.get('images') for card in cards)
             for with_images in ((True, False) if has_images else (False,)):
                 try:
-                    result = await self.call(action, {
+                    result = await send(action, {
                         destination: int(receiver),
                         'messages': [{'type': 'node', 'data': {
                             'name': '录像订阅助手', 'uin': str(self_id),
@@ -845,12 +900,12 @@ class OneBotClient:
 
     async def send_group_notice(self, group_id, user_id, text: str) -> bool:
         return await self.queued_send('group', group_id, [str(user_id), text],
-            lambda: self._send_group_notice(group_id, user_id, text))
+            lambda send: self._send_group_notice(group_id, user_id, text, send), pace_calls=True)
 
-    async def _send_group_notice(self, group_id, user_id, text: str) -> bool:
+    async def _send_group_notice(self, group_id, user_id, text: str, send) -> bool:
         """发送带有用户提及的群内提示。"""
         try:
-            response = await self.call("send_group_msg", {
+            response = await send("send_group_msg", {
                 "group_id": int(group_id),
                 "message": [
                     {"type": "at", "data": {"qq": str(user_id)}},

@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from typing import Optional
 
 from .help import HELP
+from .player_history import CST
 
 _LANGUAGE_ALIASES = {
     "日文": "日文", "日语": "日文", "日版": "日文",
@@ -51,8 +53,11 @@ PRICE_HELP = ("卡价预定（到价私聊）\n"
               "说明：到价后只私聊预定人，不发群。")
 
 
-def parse_command(text: str) -> dict:
-    tokens = tokenize(text.strip())
+def parse_command(text: str, *, now: Optional[datetime] = None) -> dict:
+    text = text.strip()
+    if text in ("骰子", "掷骰子"):
+        return {"op": "roll_dice"}
+    tokens = tokenize(text)
     if not tokens:
         return {"op": "empty"}
     head, rest = tokens[0], tokens[1:]
@@ -75,13 +80,21 @@ def parse_command(text: str) -> dict:
         return {"op": "error", "message": "直接发送“观战设备”即可。"} if rest else {"op": "watch_devices"}
     if head in ("令牌分发", "观战令牌", "接口令牌", "端口令牌"):
         return {"op": "watch_token", "args": list(rest)}
-    if head in ("历史", "当月历史"):
+    month = re.fullmatch(r"([1-9]|1[0-2])月历史", head)
+    if head in ("历史", "当月历史") or month:
         player = " ".join(rest).strip()
         if len(player) > 100:
             return {"op": "error", "message": f"格式：{head} [玩家名]，玩家名最多100字。"}
         # 不写玩家名时留空，由 service 按 QQ 绑定解析；未绑定会提示先绑定。
         command = {"op": "player_history", "player": player or None}
-        if head == "当月历史":
+        if month:
+            current = (now or datetime.now(CST)).astimezone(CST)
+            current_start = current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            previous_start = (current_start - timedelta(days=1)).replace(day=1)
+            if int(month[1]) != previous_start.month:
+                return {"op": "error", "message": f"上月请发「{previous_start.month}月历史」，本月请发「当月历史」。"}
+            command["month_start"] = previous_start
+        elif head == "当月历史":
             command["monthly"] = True
         return command
     if head == "构筑":

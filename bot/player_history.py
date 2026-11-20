@@ -356,23 +356,29 @@ class PlayerHistory:
         finally:
             self.lock.release()
 
-    def handle_monthly(self, player):
-        """北京时间当月：场次、胜率、当前分数/排名与积分走势图。"""
+    def handle_monthly(self, player, *, month_start=None):
+        """按北京时间查询当月或指定的上月，复用月度统计与积分图。"""
+        historical = month_start is not None
+        label = f'{month_start.month}月历史' if historical else '当月历史'
         if not player or len(player) > 100:
-            return '格式：当月历史 玩家名，例如：当月历史 花无十日红。'
+            return f'格式：{label} 玩家名，例如：{label} 花无十日红。'
         if not self.lock.acquire(timeout=1):
-            return '当月历史查询正在处理中，请稍后再试。'
+            return f'{label}查询正在处理中，请稍后再试。'
         started = time.monotonic()
         key = None
         errors = {}
         try:
             now = self.now().astimezone(CST)
-            key = ('monthly', player, now.year, now.month)
+            start = month_start if historical else now.replace(
+                day=1, hour=0, minute=0, second=0, microsecond=0)
+            if historical:
+                # 取目标月的最后一刻，排除北京时间下月零点及之后的对局。
+                now = (start + timedelta(days=32)).replace(day=1) - timedelta(microseconds=1)
+            key = ('last_month' if historical else 'monthly', player, start.year, start.month)
             cached = self.cache.get(key)
             if cached and time.monotonic() - cached[0] < 300:
                 self.cache.move_to_end(key)
                 return cached[1]
-            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             deadline = time.monotonic() + 40
 
             def request(endpoint, params, budget=12, retries=1):
@@ -390,43 +396,52 @@ class PlayerHistory:
                             errors[endpoint] = '/'.join(seen)
                             raise
 
-            # 资料与历史并行取；历史要翻到月初，不能只看最近一页。
-            from concurrent.futures import ThreadPoolExecutor
-            pool = ThreadPoolExecutor(max_workers=2)
-            try:
-                user_future = pool.submit(request, 'user', {'username': player}, 5, 1)
-                rows, complete = self._month_rows(player, start, request)
+            user = {}
+            if historical:
+                # 接口按时间倒序分页，需先跨过本月对局。玩家资料只提供当前排名。
+                rows, complete = self._month_rows(
+                    player, start, request, max_pages=2 * self.MONTH_MAX_PAGES)
+            else:
+                from concurrent.futures import ThreadPoolExecutor
+                pool = ThreadPoolExecutor(max_workers=2)
                 try:
-                    user = user_future.result()
-                except Exception:
-                    user = {}
-            finally:
-                pool.shutdown(wait=False, cancel_futures=True)
+                    user_future = pool.submit(request, 'user', {'username': player}, 5, 1)
+                    rows, complete = self._month_rows(player, start, request)
+                    try:
+                        user = user_future.result()
+                    except Exception:
+                        user = {}
+                finally:
+                    pool.shutdown(wait=False, cancel_futures=True)
             if not isinstance(user, dict):
                 user = {}
             if not any(field in user for field in ('athletic_all', 'athletic_win', 'arena_rank', 'pt')):
                 user = {}
             if not complete:
-                self._log('当月历史未能完整取得：玩家=%s，失败腿=%s' % (
-                    player, self._errors_text(errors)))
-                return ('该玩家当月对局过多或接口异常，未能完整取得历史；'
+                self._log('%s未能完整取得：玩家=%s，失败腿=%s' % (
+                    label, player, self._errors_text(errors)))
+                period = '目标月份及之后的' if historical else '当月'
+                return (f'该玩家{period}对局过多或接口异常，未能完整取得历史；'
                         '为避免错误胜率，本次不返回场次统计，请稍后重试。')
             stats = monthly_stats(player, rows, now)
             rank = int(user.get('arena_rank') or 0)
             score = stats['points'][-1] if stats['points'] else None
-            if score is None:
+            if score is None and not historical:
                 try:
                     score = number(user.get('pt'))
                 except (TypeError, ValueError):
                     score = None
             rate = f'{stats["rate"]:.2f}%' if stats['count'] else '暂无'
+            score_label = '最后一场结算分' if historical else '当前分数'
             if score is None:
-                score_line = '当前分数：暂未取到'
+                score_line = f'{score_label}：暂未取到'
             elif float(score).is_integer():
-                score_line = f'当前分数：{score:.0f}'
+                score_line = f'{score_label}：{score:.0f}'
             else:
-                score_line = f'当前分数：{score:.2f}'
-            if rank > 0:
+                score_line = f'{score_label}：{score:.2f}'
+            if historical:
+                rank_line = '历史排名：暂未取到'
+            elif rank > 0:
                 rank_line = f'当前排名：{rank}'
             elif user:
                 rank_line = '当前排名：未上榜'
@@ -442,15 +457,16 @@ class PlayerHistory:
                 except Exception:
                     reply = text + '\n积分走势图生成失败，统计结果仍可查看。'
             else:
-                reply = text + '\n本月暂无竞技记录，无法绘制走势图。'
+                period = f'{now.month}月' if historical else '本月'
+                reply = text + f'\n{period}暂无竞技记录，无法绘制走势图。'
             self.cache[key] = (time.monotonic(), reply)
             self.cache.move_to_end(key)
             while len(self.cache) > 16:
                 self.cache.popitem(last=False)
             self._remember_good(key, reply)
             if errors:
-                self._log('当月历史部分降级：玩家=%s，耗时 %.1f 秒，失败腿=%s' % (
-                    player, time.monotonic() - started, self._errors_text(errors)))
+                self._log('%s部分降级：玩家=%s，耗时 %.1f 秒，失败腿=%s' % (
+                    label, player, time.monotonic() - started, self._errors_text(errors)))
             return reply
         except Exception as exc:
             elapsed = time.monotonic() - started
@@ -461,19 +477,19 @@ class PlayerHistory:
                 reply = self._with_note(
                     cached_reply,
                     f'\n（以上为 {minutes} 分钟前的缓存；刚才萌卡接口失败或超时，本次查询 {elapsed:.0f} 秒）')
-                self._log('当月历史查询失败，已返回缓存：玩家=%s，耗时 %.1f 秒，失败腿=%s，缓存 %d 分钟' % (
-                    player, elapsed, self._errors_text(errors), minutes))
+                self._log('%s查询失败，已返回缓存：玩家=%s，耗时 %.1f 秒，失败腿=%s，缓存 %d 分钟' % (
+                    label, player, elapsed, self._errors_text(errors), minutes))
                 return reply
-            self._log('当月历史查询失败：玩家=%s，耗时 %.1f 秒，失败腿=%s，异常=%s' % (
-                player, elapsed, self._errors_text(errors), type(exc).__name__))
+            self._log('%s查询失败：玩家=%s，耗时 %.1f 秒，失败腿=%s，异常=%s' % (
+                label, player, elapsed, self._errors_text(errors), type(exc).__name__))
             return '萌卡历史查询失败或超时，请稍后重试。'
         finally:
             self.lock.release()
 
-    def _month_rows(self, player, start, request):
+    def _month_rows(self, player, start, request, *, max_pages=None):
         """翻页到月初：返回（原始行，是否完整）。接口忽略 from_date，只能按页取。"""
         rows, seen, complete = [], set(), False
-        for page in range(1, self.MONTH_MAX_PAGES + 1):
+        for page in range(1, (self.MONTH_MAX_PAGES if max_pages is None else max_pages) + 1):
             payload = request('history', {'username': player, 'type': 1,
                                           'page_num': self.PAGE_SIZE, 'page': page})
             batch = payload.get('data')

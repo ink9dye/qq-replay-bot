@@ -20,7 +20,11 @@ command_operation = contextvars.ContextVar('qq_command_operation', default='unkn
 parent_span = contextvars.ContextVar('qq_parent_span', default=None)
 request_timing = contextvars.ContextVar('qq_request_timing', default=None)
 reply_role = contextvars.ContextVar('qq_reply_role', default='foreground')
-_NUMBER_FIELDS = {'elapsed_ms', 'retcode', 'failures', 'retry_seconds', 'pending', 'dispatching', 'queued', 'message_count', 'command_count', 'reply_index', 'replies_ok', 'replies_failed', 'first_feedback_ms', 'last_reply_ms', 'last_result_ms'}
+_NUMBER_FIELDS = {
+    'elapsed_ms', 'retcode', 'failures', 'retry_seconds', 'pending', 'dispatching', 'queued',
+    'message_count', 'command_count', 'reply_index', 'replies_ok', 'replies_failed',
+    'first_feedback_ms', 'last_reply_ms', 'last_result_ms', 'source_age_ms',
+}
 _BOOL_FIELDS = {'success', 'delivery_uncertain', 'group_enabled', 'unmentioned_enabled', 'actual_send', 'background'}
 _WORD_FIELDS = {'action', 'operation', 'reason', 'state', 'kind', 'error_type', 'phase', 'outcome', 'role'}
 

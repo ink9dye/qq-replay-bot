@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import time
+from weakref import WeakValueDictionary
 from collections import OrderedDict
 from pathlib import Path
 
@@ -49,11 +50,32 @@ class OutboundGate:
         self.limit = max(1, int(limit))
         self.clock, self.pause = clock or time.monotonic, pause or asyncio.sleep
         self.lock = asyncio.Lock()
+        # 默认全局间隔为 1 秒，单次 OneBot 确认超时为 8 秒。
+        self.dice_slots = asyncio.Semaphore(8)
+        self.reply_locks = WeakValueDictionary()
+        self.pacing_lock = asyncio.Lock()
         self.waiting = 0
         self.last_sent = None
         self.destinations, self.successes = OrderedDict(), OrderedDict()
 
-    async def submit(self, destination, payload, send, request=None):
+    async def reserve_send(self, destination, *, dice=False):
+        while True:
+            async with self.pacing_lock:
+                now = self.clock()
+                wait = self.last_sent + self.interval - now if self.last_sent is not None else 0
+                if not dice:
+                    wait = max(wait, self.destinations.get(destination, -1e12)
+                               + self.destination_interval - now)
+                if wait <= 0:
+                    self.last_sent = now
+                    self.destinations[destination] = now
+                    self.destinations.move_to_end(destination)
+                    while len(self.destinations) > 2000:
+                        self.destinations.popitem(last=False)
+                    return
+            await self.pause(wait)
+
+    async def submit(self, destination, payload, send, request=None, *, dice=False, pace_first=True):
         """request 标识一次用户请求：同一请求的相同结果只发一次，不同请求各回一次。
 
         只用 payload 做键会把“两次不同提问、答案却一样”的第二条回复吞掉
@@ -65,25 +87,20 @@ class OutboundGate:
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         key = (destination, digest) if request is None else (destination, digest, str(request))
         try:
-            async with self.lock:
+            reply_lock = self.reply_locks.get(key)
+            if reply_lock is None:
+                reply_lock = asyncio.Lock()
+                self.reply_locks[key] = reply_lock
+            async with reply_lock, (self.dice_slots if dice else self.lock):
                 now = self.clock()
                 if key in self.successes and now - self.successes[key] < self.duplicate:
                     return True  # 同一结果已成功发送，不再发第二遍。
-                wait = max((self.last_sent + self.interval - now) if self.last_sent is not None else 0,
-                           self.destinations.get(destination, -1e12) + self.destination_interval - now, 0)
-                if wait:
-                    await self.pause(wait)
-                # 无论此次是否成功都留下间隔，失败不会绕过节流。
-                stamp = self.clock()
-                self.last_sent = stamp
-                self.destinations[destination] = stamp
-                self.destinations.move_to_end(destination)
+                if pace_first:
+                    await self.reserve_send(destination, dice=dice)
                 result = await send()
                 if result:
                     self.successes[key] = self.clock()
                     self.successes.move_to_end(key)
-                while len(self.destinations) > 2000:
-                    self.destinations.popitem(last=False)
                 while len(self.successes) > 2000:
                     self.successes.popitem(last=False)
                 return result

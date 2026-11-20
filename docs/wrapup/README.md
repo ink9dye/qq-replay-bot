@@ -1,5 +1,7 @@
 # 收尾文档
 
+- [QQ 查询提示与处理并行](WRAPUP_QQ_JOB_LATENCY_20261120.md) — 已部署，含旧回归修正、验收与回滚。
+
 - [QQ 换备按先后攻各取最新一局](WRAPUP_LATEST_SIDE_20261120.md) — 已部署，验证与回滚。
 
 - [卡片统计筛选与读库减负](WRAPUP_CARD_REPORT_READ_SPEED_20261119.md) — 已部署，观测依据、同库对照和回滚。

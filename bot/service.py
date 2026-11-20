@@ -7,6 +7,7 @@ import asyncio
 import base64
 import hashlib
 import os
+import random
 import re
 import sqlite3
 import subprocess
@@ -143,6 +144,13 @@ _PLAYER_DEFAULT_LABELS = {
     "side_plan": "换备",
     "player_profile": "玩家",
 }
+
+
+def _history_label(command):
+    month_start = command.get("month_start")
+    if month_start is not None:
+        return f"{month_start.month}月历史"
+    return "当月历史" if command.get("monthly") else "历史"
 
 
 def join_rules(subscriptions: list[dict]) -> tuple[list[str], list[RankRule]]:
@@ -669,14 +677,22 @@ class BotService:
             grant(self, user, "query_enroll")
         return _enroll_reply(result, int(cfg.get("code_hours") or 24))
 
+    def _roll_dice_reply(self, user_id) -> str:
+        if not self.authorized(user_id):
+            return "你没有使用权限。"
+        self._clear_bind_pending(user_id)
+        return f"🎲 掷出了 {random.randint(1, 6)} 点"
+
     @observe('handler')
-    def handle_text(self, user_id, text: str, conversation: str = "") -> str:
+    def handle_text(self, user_id, text: str, conversation: str = "", *, parsed_history=None) -> str:
         user = str(user_id)
         from .private_commands import dispatch
         handled, private_reply = dispatch(self,user,text,conversation)
         if handled:return private_reply
-        command = parse_command(text)
+        command = parsed_history if parsed_history is not None else parse_command(text)
         op = command.get("op")
+        if op == "roll_dice":
+            return self._roll_dice_reply(user)
         if op in ("stats_page", "watch_devices", "game_counts") and not self._statistics_allowed(user, conversation):
             return None
         from .watch_token_command import confidential_allowed, delegated_user, granted
@@ -696,8 +712,7 @@ class BotService:
             self._clear_bind_pending(user)
             if stripped in ("取消", "取消绑定"):
                 return "已取消绑定。"
-            candidate = parse_command(stripped)
-            if candidate.get("op") in ("empty", "unknown"):
+            if op in ("empty", "unknown"):
                 return self._bind_mc(user, stripped)
         if op == "help":
             return self.help_text(user, conversation)
@@ -731,10 +746,12 @@ class BotService:
         if op == "my_binding":
             return self._my_binding(user)
         if op == "player_history":
-            label = "当月历史" if command.get("monthly") else "历史"
+            label = _history_label(command)
             player, error = self._player_or_self(user, command.get("player"), label)
             if error:
                 return error
+            if command.get("month_start") is not None:
+                return self.player_history.handle_monthly(player, month_start=command["month_start"])
             if command.get("monthly"):
                 return self.player_history.handle_monthly(player)
             return self.player_history.handle(player)
@@ -1744,6 +1761,10 @@ class BotService:
         forward = self.qq.send_group_forward if is_group else self.qq.send_private_forward
         conversation = "group:" + str(receiver) if is_group else ""
         parsed_command = parse_command(text)
+        if parsed_command.get("op") == "roll_dice":
+            if not await send(receiver, self._roll_dice_reply(user_id)):
+                self.write_log('QQ 指令回复发送失败，未改为其他会话发送。')
+            return
         if not is_group:
             conversation = await self._confidential_private_context(event, parsed_command.get("op"))
         # 保密名单群里的「开通查询」「令牌分发」：结果只私聊发给指令发送者，群里不回显。
@@ -1770,8 +1791,8 @@ class BotService:
                 and parsed_command.get('op') in _PLAYER_DEFAULT_LABELS
                 and not parsed_command.get('player')):
             label = _PLAYER_DEFAULT_LABELS[parsed_command['op']]
-            if parsed_command.get('op') == 'player_history' and parsed_command.get('monthly'):
-                label = '当月历史'
+            if parsed_command.get('op') == 'player_history':
+                label = _history_label(parsed_command)
             _, error = self._player_or_self(user_id, None, label)
             if error:
                 await send(receiver, error)
@@ -1780,26 +1801,26 @@ class BotService:
             if not self.authorized(user_id):
                 await send(receiver, "你没有使用权限，不能订阅或查看录像。")
                 return
-            await send(receiver, "玩家资料读取中，依次读取历史、当月历史、构筑、换备、录像，约30秒；"
-                                 "完成后合并成一条聊天记录发到这里。")
-            task = asyncio.create_task(self._player_profile_job(
-                user_id, text, conversation, receiver, send, forward, event.get('self_id')))
-            self._profile_tasks.add(task)
-            task.add_done_callback(self._profile_tasks.discard)
+            await self._start_job_with_feedback(
+                self._profile_tasks, receiver, send,
+                "玩家资料读取中，依次读取历史、当月历史、构筑、换备、录像，约30秒；"
+                "完成后合并成一条聊天记录发到这里。",
+                lambda result_send, result_forward: self._player_profile_job(
+                    user_id, text, conversation, receiver, result_send, result_forward, event.get('self_id')),
+                forward=forward)
             return
         if parsed_command.get('op') in ('deck_build', 'top100_rank_build') or deck_selection:
-            await send(receiver, "构筑请求已收到，按顺序生成；完成后把结果发到这里。")
-            task = asyncio.create_task(self._deck_build_job(
-                user_id, text, conversation, receiver, send))
-            self._deck_tasks.add(task)
-            task.add_done_callback(self._deck_tasks.discard)
+            await self._start_job_with_feedback(
+                self._deck_tasks, receiver, send, "构筑请求已收到，按顺序生成；完成后把结果发到这里。",
+                lambda result_send, _: self._deck_build_job(
+                    user_id, text, conversation, receiver, result_send))
             return
         if parsed_command.get('op') == 'player_history':
-            await send(receiver, "当月历史查询中，完成后把结果发到这里。" if parsed_command.get('monthly')
-                       else "历史查询中，完成后把结果发到这里。")
-            task = asyncio.create_task(self._history_job(user_id, text, conversation, receiver, send))
-            self._history_tasks.add(task)
-            task.add_done_callback(self._history_tasks.discard)
+            await self._start_job_with_feedback(
+                self._history_tasks, receiver, send,
+                f"{_history_label(parsed_command)}查询中，完成后把结果发到这里。",
+                lambda result_send, _: self._history_job(
+                    user_id, text, conversation, receiver, result_send, parsed_command))
             return
         if parsed_command.get('op') == 'price_quote':
             await send(receiver, "查价中，约 1 分钟；完成后把结果发到这里。")
@@ -1819,11 +1840,11 @@ class BotService:
         if hint and self.authorized(user_id) and (
                 parsed_command.get('op') != 'stats_page'
                 or self._statistics_allowed(user_id, conversation)):
-            await send(receiver, hint)
-            task = asyncio.create_task(self._slow_text_job(
-                user_id, text, conversation, receiver, send, forward, event.get('self_id')))
-            self._slow_tasks.add(task)
-            task.add_done_callback(self._slow_tasks.discard)
+            await self._start_job_with_feedback(
+                self._slow_tasks, receiver, send, hint,
+                lambda result_send, result_forward: self._slow_text_job(
+                    user_id, text, conversation, receiver, result_send, result_forward, event.get('self_id')),
+                forward=forward)
             return
         if parsed_command.get('op') == 'help':
             # 帮助是一条分组清单，直接发文字，不再走合并转发。
@@ -1844,6 +1865,31 @@ class BotService:
                 ok = await send(receiver, reply)
         if not ok:
             self.write_log('QQ 指令回复发送失败，未改为其他会话发送。')
+
+    async def _start_job_with_feedback(self, task_set, receiver, send, hint, job, *, forward=None):
+        """提示等待回执时开始处理，结果仍在提示发送流程完成后发出。"""
+        feedback_done = asyncio.Event()
+
+        async def send_result(*args):
+            await feedback_done.wait()
+            return await send(*args)
+
+        async def forward_result(*args):
+            await feedback_done.wait()
+            return await forward(*args)
+
+        task = asyncio.create_task(job(send_result, forward_result if forward is not None else None))
+        task_set.add(task)
+        task.add_done_callback(task_set.discard)
+        try:
+            await send(receiver, hint)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        except Exception as exc:
+            self.write_log(f"QQ 进度提示发送异常：{type(exc).__name__}")
+        finally:
+            feedback_done.set()
 
     async def notify_loop(self) -> None:
         while True:
@@ -2305,7 +2351,7 @@ class BotService:
 
     @observe('background_job')
     async def _slow_text_job(self, user_id, text, conversation, receiver, send, forward=None, self_id=None):
-        """先回一句“正在…”，再在后台跑慢命令；结果（含合并转发卡片）单独发。"""
+        """在后台跑慢命令，结果（含合并转发卡片）单独发送。"""
         try:
             command = parse_command(text)
             ranked_count = command.get('op') == 'game_counts' and command.get('limit') in (100, 200)
@@ -2348,10 +2394,11 @@ class BotService:
 
 
     @observe('background_job')
-    async def _history_job(self, user_id, text, conversation, receiver, send):
+    async def _history_job(self, user_id, text, conversation, receiver, send, parsed_command):
         try:
             reply = await asyncio.wait_for(
-                observed_thread(self.handle_text, user_id, text, conversation), timeout=60)
+                observed_thread(self.handle_text, user_id, text, conversation, parsed_history=parsed_command),
+                timeout=60)
         except asyncio.TimeoutError:
             reply = "历史查询超时，请稍后再试。"
         except Exception as exc:
