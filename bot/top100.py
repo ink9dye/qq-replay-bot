@@ -123,7 +123,7 @@ def snapshot(db,now):
     return state
 
 
-def eligible_views(db,replay_root,now,internal_only=False,scope='default',series_catalog=None,player=None,check_files=True,annotate_series=True,with_diagnostics=True):
+def eligible_views(db,replay_root,now,internal_only=False,scope='default',series_catalog=None,player=None,check_files=True,annotate_series=True,with_diagnostics=True,*,reuse_context=False):
     """不聚合的动态有效视角：掉榜立即无效，重回恢复未到期事实。"""
     from .share import safe_replay_file
     from .card_series import reference,annotate,SEMANTICS
@@ -135,23 +135,25 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
         population_scope=current()
         wide_population=population_scope is not None and population_scope['own']!='100'
         revision=db.execute('SELECT revision FROM stat_classification_state WHERE singleton=1').fetchone()[0]
-        population=('FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
-                    'JOIN stat_current_top100 m ON m.player=v.player WHERE g.expires_at>? ')
         if with_diagnostics:
-            # 四项诊断原来各扫一遍同样的连接（空闲约 1.3 秒，I/O 紧张时会被放大数十倍）。
-            # 合并成两次扫描：一次算榜内总数与排除数，一次算过期与榜外数。
-            in_roster=db.execute('SELECT COUNT(*),COALESCE(SUM(EXISTS(SELECT 1 FROM stat_exclusions e '
-                "WHERE e.digest=v.digest AND (e.player='' OR e.player=v.player) AND e.scope=?)),0) "
-                +population,(scope,float(now))).fetchone()
-            lifetime=db.execute('SELECT COALESCE(SUM(g.expires_at<=?),0),COALESCE(SUM(g.expires_at>? '
-                'AND NOT EXISTS(SELECT 1 FROM stat_current_top100 m WHERE m.player=v.player)),0) '
-                'FROM stat_views v JOIN stat_games g ON g.digest=v.digest',(float(now),float(now))).fetchone()
+            # Read each view and its game once for all four counters. Only
+            # current, unexpired views can contribute to the exclusion count.
+            counts=db.execute(
+                'SELECT COALESCE(SUM(g.expires_at>:now AND m.player IS NOT NULL),0), '
+                'COALESCE(SUM(CASE WHEN g.expires_at>:now AND m.player IS NOT NULL '
+                'THEN EXISTS(SELECT 1 FROM stat_exclusions e '
+                "WHERE e.digest=v.digest AND (e.player='' OR e.player=v.player) AND e.scope=:scope) "
+                'ELSE 0 END),0), COALESCE(SUM(g.expires_at<=:now),0), '
+                'COALESCE(SUM(g.expires_at>:now AND m.player IS NULL),0) '
+                'FROM stat_views v JOIN stat_games g ON g.digest=v.digest '
+                'LEFT JOIN stat_current_top100 m ON m.player=v.player',
+                {'now':float(now),'scope':scope}).fetchone()
             diagnostics=dict(
                 population='current_roster_before_optional_internal_filter',
-                current_unexpired_views=in_roster[0],
-                excluded_current_views=in_roster[1],
-                expired_views=lifetime[0],
-                unexpired_outside_roster_views=lifetime[1])
+                current_unexpired_views=counts[0],
+                excluded_current_views=counts[1],
+                expired_views=counts[2],
+                unexpired_outside_roster_views=counts[3])
         else:
             diagnostics = {}
         if not state['available'] and player is None and not wide_population:return dict(roster=state,classification_revision=revision,views=[],diagnostics=diagnostics,series_reference=series_reference)
@@ -242,7 +244,10 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
     before_game_no=len(rows)
     rows=[r for r in rows if isinstance(r.get('observed_game_no'),int) and r['observed_game_no']>0]
     diagnostics.update(views_without_game_no=before_game_no-len(rows),after_game_no_filter_views=len(rows))
-    return dict(roster=state,classification_revision=revision,views=[r for r in rows if alive[r['digest']]],diagnostics=diagnostics,series_reference=series_reference)
+    result=dict(roster=state,classification_revision=revision,views=[r for r in rows if alive[r['digest']]],diagnostics=diagnostics,series_reference=series_reference)
+    if reuse_context:
+        result.update(identity=context,source_alive=alive)
+    return result
 
 
 def main():

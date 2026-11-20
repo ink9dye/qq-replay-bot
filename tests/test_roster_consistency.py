@@ -86,7 +86,8 @@ class RosterConsistencyTests(unittest.TestCase):
 
     def test_both_pages_share_trimmed_player_and_build(self):
         row = dict(player='chatLDS ',digest='d',build='b',recorded_at=1,expires_at=9999,
-                   deck_type='recognized',classification_status='recognized',series=[],series_status='known')
+                   deck_type='recognized',classification_status='recognized',series=[],series_status='known',
+                   observed_game_no=1,observed_identity_confirmed=True)
         basis = dict(views=[row],roster=dict(members=[dict(player='chatLDS ',rank=1,points=10)]))
         with patch.object(dashboard,'eligible_views',return_value=basis), \
                 patch.object(dashboard,'identity_metadata',return_value={}), \

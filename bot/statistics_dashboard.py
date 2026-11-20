@@ -44,18 +44,22 @@ def population(db, replay_root, now, player=None, allowed_digests=None, resolve_
     # 官方名单/录像里的玩家名可能带首尾空格（如 rank 71 “chatLDS ”）；
     # 统一在入口去掉边界空格，SQL 侧用 TRIM 兼容仍带空格的历史记录。
     if player is not None:player=player.strip()
-    basis=eligible_views(db,replay_root,now,player=player,check_files=False,
+    catalog=None
+    if include_details and latest_details_only:
+        from .card_series import reference
+        catalog=reference(db)
+    basis=eligible_views(db,replay_root,now,player=player,check_files=False,series_catalog=catalog,
                          annotate_series=include_details and not latest_details_only,
-                         with_diagnostics=include_details and not latest_details_only)
+                         with_diagnostics=include_details and (player is None or not latest_details_only))
     if allowed_digests is not None:basis['views']=[r for r in basis['views'] if r['digest'] in allowed_digests]
     from .statistics_population import latest_views
     # Naming uses trimmed display/lookup keys, while SQL and evidence keep the
     # original player spelling. Apply the same boundary normalization here.
     latest={name.strip():row for name,row in latest_views(basis).items()}
     if include_details and latest_details_only and latest:
-        from .card_series import annotate, reference
+        from .card_series import annotate
         with measure('build_series_ms'):
-            annotate(db, list(latest.values()), reference(db))
+            annotate(db, list(latest.values()), catalog)
     metadata=identity_metadata(db,{r['digest'] for r in latest.values()}) if include_details else {}
     people=[]
     for member in basis['roster']['members']:
@@ -185,7 +189,9 @@ def query(db, replay_root, now, player=None):
         basis,latest,people=population(db,replay_root,now,player=player,resolve_rank=False,
                                        latest_details_only=True)
     else:
-        basis,latest,people=population(db,replay_root,now)
+        # The roster and its pie charts only display each player's selected
+        # first game. Select it before reading the build's series details.
+        basis,latest,people=population(db,replay_root,now,latest_details_only=True)
     if player is not None:
         player=player.strip()
         row=latest.get(player)

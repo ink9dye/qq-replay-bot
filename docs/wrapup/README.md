@@ -1,5 +1,7 @@
 # 收尾文档
 
+- [QQ 与网页名册读取减负](WRAPUP_ROSTER_SHARED_IO_20261121.md) — 已部署，含统计等价对照、重启验收和回滚。
+
 - [QQ 查询提示与处理并行](WRAPUP_QQ_JOB_LATENCY_20261120.md) — 已部署，含旧回归修正、验收与回滚。
 
 - [QQ 换备按先后攻各取最新一局](WRAPUP_LATEST_SIDE_20261120.md) — 已部署，验证与回滚。
