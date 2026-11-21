@@ -4,7 +4,8 @@
 const $ = (id) => document.getElementById(id);
 const SS = window.StatisticsSamples;
 const el = SS.el;
-const state = { request: 0, controller: null, result: null, groupsReady: false };
+const state = { request: 0, controller: null, result: null,
+  groupsScope: '', groupsController: null, groupsFetchedAt: 0 };
 const deckPicks = {deck: new Set(), opdeck: new Set()};
 const deckBatches = Object.fromEntries(['deck', 'opdeck'].map(id => [id,
   window.StatisticsAutocomplete.deckBatch(id, deckPicks[id], run)]));
@@ -384,15 +385,39 @@ function fillDatalist(id, names) {
   }
 }
 
+function resetGroupOptions() {
+  state.groupsController?.abort();
+  state.groupsController = null;
+  state.groupsScope = '';
+  state.groupsFetchedAt = 0;
+  fillDatalist('deck-list', []);
+  fillDatalist('opdeck-list', []);
+  for (const id of ['deck','opdeck']) {
+    const input = $(id);
+    input.dataset.candidateLoading = '0';
+    delete input.dataset.candidateError;
+    input.removeAttribute('title');
+  }
+}
+
 async function loadGroups() {
-  if (state.groupsReady === 'loading') return;
-  state.groupsReady = 'loading';
+  const query = new URLSearchParams({
+    candidates: '1', page: 'cards',
+    self_range: $('self_range').value, opponent_range: $('opponent_range').value,
+  });
+  const scope = query.toString();
+  if (state.groupsScope !== scope) resetGroupOptions();
+  if (state.groupsController || (state.groupsFetchedAt && Date.now() - state.groupsFetchedAt < 600000)) return;
+  const controller = new AbortController();
+  const {signal} = controller;
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  state.groupsScope = scope;
+  state.groupsController = controller;
   for (const id of ['deck','opdeck']) {$(id).dataset.candidateLoading = '1';delete $(id).dataset.candidateError;}
   try {
-    const signal = AbortSignal.timeout(120000);
     let groups;
     for (let delay = 5000; ; delay = Math.min(delay * 2, 15000)) {
-      const response = await fetch('/statistics/api/groups', {cache: 'no-store', credentials: 'same-origin', signal});
+      const response = await fetch('/statistics/api/groups?' + query, {cache: 'no-store', credentials: 'same-origin', signal});
       if (response.ok) {
         groups = await response.json();
         break;
@@ -401,19 +426,29 @@ async function loadGroups() {
       if (payload?.code !== 'query_busy') throw Error('Group suggestions unavailable');
       await waitForRetry(delay, signal);
     }
-    fillDatalist('deck-list', (groups.deck_groups || []).map((x) => x.name).filter(Boolean));
-    fillDatalist('opdeck-list', (groups.deck_groups || []).map((x) => x.name).filter(Boolean));
-    state.groupsReady = true;
+    if (state.groupsController !== controller) return;
+    fillDatalist('deck-list', Array.isArray(groups.deck) ? groups.deck : []);
+    fillDatalist('opdeck-list', Array.isArray(groups.opponent) ? groups.opponent : []);
+    const saved = groups._query_refresh?.saved_at;
+    if (Number.isFinite(saved)) {
+      const date = new Date(saved * 1000).toLocaleString('zh-CN', {hour12: false});
+      for (const id of ['deck','opdeck']) $(id).title = '卡组候选更新时间 ' + date;
+    }
+    state.groupsFetchedAt = Date.now();
   } catch (_) {
-    state.groupsReady = false;   // 可手输；重新聚焦时再试，不永久放弃候选
+    if (state.groupsController !== controller) return;
     for (const id of ['deck','opdeck']) $(id).dataset.candidateError = '卡组候选暂不可用；可手动输入，重新点击输入框重试。';
   } finally {
-    for (const id of ['deck','opdeck']) $(id).dataset.candidateLoading = '0';
+    clearTimeout(timeout);
+    if (state.groupsController === controller) {
+      state.groupsController = null;
+      for (const id of ['deck','opdeck']) $(id).dataset.candidateLoading = '0';
+    }
   }
 }
-for (const id of ['deck','opdeck']) $(id).addEventListener('focus', () => {
-  if (!state.groupsReady) loadGroups();
-});
+
+for (const id of ['deck','opdeck']) $(id).addEventListener('focus', loadGroups);
+for (const id of ['self_range','opponent_range']) $(id).addEventListener('change', resetGroupOptions);
 
 /* ---------- 结果渲染 ---------- */
 
