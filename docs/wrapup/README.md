@@ -1,5 +1,7 @@
 # 收尾文档
 
+- [QQ 查卡预览图上线](WRAPUP_QQ_CARD_PREVIEW_20261121.md) — 已部署，含预览缓存、验收和回滚。
+
 - [QQ 查卡提速与详情对齐](WRAPUP_QQ_CARD_FAST_20261121.md) — 已部署，含对照耗时、发售来源和回滚。
 
 - [QQ 与网页名册读取减负](WRAPUP_ROSTER_SHARED_IO_20261121.md) — 已部署，含统计等价对照、重启验收和回滚。

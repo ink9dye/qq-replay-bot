@@ -1,6 +1,8 @@
 """百鸽查卡：保留搜索歧义，按用户隔离候选，纯标准库。"""
 from __future__ import annotations
 
+import base64
+import io
 import json
 import re
 import sqlite3
@@ -85,6 +87,77 @@ _IMAGE_REQUESTS = {}
 IMAGE_CACHE_MAX_BYTES = 8 * 1024 * 1024
 IMAGE_MAX_BYTES = 2 * 1024 * 1024
 IMAGE_WAIT_SECONDS = 25
+QQ_PREVIEW_SIZE = (400, 550)
+_SUPERPRE_PREVIEW_PENDING = set()
+_SUPERPRE_PREVIEW_RETRY = OrderedDict()
+
+
+def _qq_preview_bytes(original):
+    """Keep card art readable in QQ while retaining the original in the image cache."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return original
+
+    try:
+        with Image.open(io.BytesIO(original)) as picture:
+            picture.thumbnail(QQ_PREVIEW_SIZE, Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            picture.convert("RGB").save(output, format="JPEG", quality=85)
+            preview = output.getvalue()
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return original
+    return preview if len(preview) < len(original) else original
+
+
+def _superpre_preview(data_dir, code, source):
+    """Read a version-matched preview or prepare one off the QQ reply path."""
+    from . import card_image_cache
+
+    if "?version=" not in source:
+        return None
+    path = Path(data_dir) / "cache" / "qq-superpre-previews" / f"{code}.json"
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+        if (isinstance(cached, dict) and cached.get("source") == source
+                and isinstance(cached.get("image"), str) and cached["image"]):
+            return "base64://" + cached["image"]
+    except (OSError, ValueError):
+        pass
+
+    key = (path, source)
+    with _IMAGE_BYTES_LOCK:
+        if (path in _SUPERPRE_PREVIEW_PENDING or len(_SUPERPRE_PREVIEW_PENDING) >= 2
+                or _SUPERPRE_PREVIEW_RETRY.get(key, 0) > time.monotonic()):
+            return None
+        _SUPERPRE_PREVIEW_PENDING.add(path)
+
+    def work():
+        ready = False
+        try:
+            original = card_image_cache._download(source, timeout=8)
+            if card_image_cache._valid_image(original):
+                preview = _qq_preview_bytes(original)
+                payload = json.dumps({
+                    "source": source, "image": base64.b64encode(preview).decode("ascii"),
+                }).encode("utf-8")
+                ready = card_image_cache._save_blob(path, payload)
+        except (OSError, ValueError):
+            pass
+        finally:
+            with _IMAGE_BYTES_LOCK:
+                _SUPERPRE_PREVIEW_PENDING.discard(path)
+                if not ready:
+                    _SUPERPRE_PREVIEW_RETRY[key] = time.monotonic() + card_image_cache.COOLING_SECONDS
+                    while len(_SUPERPRE_PREVIEW_RETRY) > 32:
+                        _SUPERPRE_PREVIEW_RETRY.popitem(last=False)
+
+    try:
+        card_image_cache._pool.submit(work)
+    except RuntimeError:
+        with _IMAGE_BYTES_LOCK:
+            _SUPERPRE_PREVIEW_PENDING.discard(path)
+    return None
 
 
 def _card_image_blob(code, data_dir):
@@ -114,7 +187,6 @@ def _card_image_blob(code, data_dir):
 
 def card_image_payload(code, data_dir):
     """Small byte-bounded cache; same-card single flight; no network under the cache lock."""
-    import base64
     from concurrent.futures import Future, TimeoutError
     from . import card_image_cache
     code = _numeric_code(code)
@@ -137,7 +209,7 @@ def card_image_payload(code, data_dir):
     try:
         blob = _card_image_blob(code, data_dir)
         if blob:
-            encoded = base64.b64encode(blob).decode('ascii')
+            encoded = base64.b64encode(_qq_preview_bytes(blob)).decode('ascii')
             reply = 'base64://' + encoded
             with _IMAGE_BYTES_LOCK:
                 if len(encoded) <= IMAGE_CACHE_MAX_BYTES:
@@ -547,11 +619,14 @@ class CardSearch:
         if card.get("superpre"):
             lines.append("萌卡超先行：https://mycard.world/ygopro/arena/#/superpre")
             lines.append("卡包及发售日期：萌卡超先行资料未提供")
-            picture = card.get("picture") or ""
-            if not re.fullmatch(
+            source = card.get("picture") or ""
+            if re.fullmatch(
                 rf"https://cdntx\.moecube\.com/ygopro-super-pre/data/pics/{card_id}\.jpg(?:\?version=[\w.-]+)?",
-                picture,
+                source,
             ):
+                lines.append(f"原图：{source}")
+                picture = _superpre_preview(self.data_dir, card_id, source)
+            else:
                 picture = card_image_payload(card_id, self.data_dir)
         elif card.get("local_ygopro"):
             lines.append("资料来源：本地 YGOPro 卡库")
