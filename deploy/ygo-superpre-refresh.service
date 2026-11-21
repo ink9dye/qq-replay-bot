@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh MyCard Super Pre card data
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+ExecStart=/usr/bin/python3 /opt/ygobot/tools/refresh_superpre_cards.py
+TimeoutStartSec=45

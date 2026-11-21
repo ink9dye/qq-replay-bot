@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import threading
 import time
 import unicodedata
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlencode
@@ -181,6 +182,7 @@ class CardSearch:
         self._operation_locks = {}
         self.release_fetch = release_fetch or (self._fetch_release if fetch is None else lambda _: '')
         self.release_cache = OrderedDict()
+        self._public_names = None
         self.wall_clock = wall_clock or time.time
         self.release_path = Path(data_dir) / 'cache/card-releases.json'
         self.release_known = OrderedDict()
@@ -247,6 +249,8 @@ class CardSearch:
                     del self._operation_locks[identity]
 
     def _reply_detail(self, card):
+        if card.get("superpre"):
+            return self._detail(card)
         # Random-card commands also call this directly. Merge same-card refreshes.
         card_id = int(card['id'])
         with self._operation_lock('release', card_id):
@@ -327,26 +331,149 @@ class CardSearch:
                     self.cache.popitem(last=False)
             return result
 
-    def _local_search(self, query, user):
-        """百鸽不可用时，用本地 YGOPro 中文卡库兜底。"""
+    def _superpre_cards(self, query):
+        from .statistics_card_names import matching_cards
+
+        snapshot = self.data_dir / "cache" / "superpre-cards.json"
+        try:
+            cards = json.loads(snapshot.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(cards, dict):
+            return []
+
+        key = normalize(query)
+        exact = cards.get(key)
+        if key.isascii() and key.isdigit():
+            matches = [exact] if exact else []
+        else:
+            terms = tuple(normalize(term) for term in query.split())
+            matches = list(matching_cards(cards.values(), terms, lambda card: (card["name"],)))
+            matches.sort(key=lambda card: (
+                normalize(card["name"]) != key,
+                not normalize(card["name"]).startswith(key),
+                len(card["name"]),
+                card["id"],
+            ))
+        return [
+            dict(id=card["id"], cn_name=card["name"],
+                 text={"desc": card["desc"], "types": re.sub(r"\s{2,}(?=\[)", "\n", card.get("types") or "", count=1)},
+                 superpre=True, picture=card["picUrl"])
+            for card in matches[:20]
+        ]
+
+    def _public_exact_cards(self, key):
+        from .statistics_card_names import _search_names, public_index
+
+        cards = public_index(self.data_dir)
+        if not cards:
+            return ()
+        if key.isascii() and key.isdigit():
+            code = int(key)
+            card = cards.get(str(code))
+            if card is not None:
+                return (card,)
+            if code >= 100_000_000:
+                return ()
+        with self._operation_lock("public-names", None):
+            cache = self._public_names
+            if cache is None or cache[0] is not cards:
+                names = {}
+                for card in cards.values():
+                    aliases = {normalize(name) for name in _search_names(card) if name}
+                    if card.get("cid"):
+                        aliases.add(str(card["cid"]))
+                    for name in aliases:
+                        names.setdefault(name, []).append(card)
+                cache = self._public_names = (cards, names)
+        return cache[1].get(key, ())
+
+    def _library_types(self, card_id):
+        from .statistics_local_cards import library_root
+
+        root = library_root(self.data_dir)
+        if root is None:
+            return ""
+        for path in (root / "cards.cdb", *sorted((root / "expansions").glob("*.cdb"))):
+            if not path.is_file() or not path.resolve().is_relative_to(root):
+                continue
+            try:
+                with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+                    row = db.execute(
+                        "SELECT type, atk, def, level, race, attribute FROM datas WHERE id=?", (card_id,),
+                    ).fetchone()
+            except sqlite3.Error:
+                continue
+            if row is not None:
+                break
+        else:
+            return ""
+
+        kind, atk, defense, level, race, attr = row
+        labels = (
+            (1, "怪兽"), (2, "魔法"), (4, "陷阱"), (16, "通常"), (32, "效果"),
+            (64, "融合"), (128, "仪式"), (512, "灵魂"), (1024, "同盟"),
+            (2048, "二重"), (4096, "调整"), (8192, "同调"), (16384, "衍生物"),
+            (65536, "速攻"), (131072, "永续"), (262144, "装备"), (524288, "场地"),
+            (1048576, "反击"), (2097152, "反转"), (4194304, "卡通"),
+            (8388608, "超量"), (16777216, "灵摆"), (33554432, "特殊召唤"), (67108864, "连接"),
+        )
+        result = "[" + "|".join(label for flag, label in labels if kind & flag) + "]"
+        if not kind & 1:
+            return result
+
+        races = ("战士", "魔法师", "天使", "恶魔", "不死", "机械", "水", "炎", "岩石", "鸟兽", "植物",
+                 "昆虫", "雷", "龙", "兽", "兽战士", "恐龙", "鱼", "海龙", "爬虫类", "念动力", "幻神兽",
+                 "创造神", "幻龙", "电子界", "幻想魔")
+        attributes = ("地", "水", "炎", "风", "光", "暗", "神")
+        identity = [name for value, names in ((race, races), (attr, attributes))
+                    for index, name in enumerate(names) if value == 1 << index]
+        if identity:
+            result += " " + "/".join(identity)
+        rank = level & 0xff
+        attack = str(atk) if atk >= 0 else "?"
+        if kind & 67108864:
+            markers = "".join(f"[{arrow}]" for bit, arrow in (
+                (1, "↙"), (2, "↓"), (4, "↘"), (8, "←"), (32, "→"), (64, "↖"), (128, "↑"), (256, "↗")
+            ) if defense & bit)
+            return f"{result}\n[LINK-{rank}] {attack}/- {markers}".rstrip()
+        star = "☆" if kind & 8388608 else "★"
+        return f"{result}\n[{star}{rank}] {attack}/{defense if defense >= 0 else '?'}"
+
+    def _local_search(self, query, user, *, remote_unavailable=True):
+        """百鸽缺少结果时，用本地 YGOPro 卡库兜底。"""
         from .statistics_card_names import matching_cards
         from .statistics_local_cards import local_index
-        value = self._alias((query or "").strip())
+        value = self._alias((query or "").strip()) if remote_unavailable else query
+        key = normalize(value)
+        public_exact = self._public_exact_cards(key) if key else ()
+        if len(public_exact) == 1:
+            return self._reply_detail(public_exact[0])
+        if remote_unavailable:
+            superpre = self._superpre_cards(value)
+            if superpre:
+                return self._show_search_results(user, value, superpre, 0, self.clock())
         tokens = [normalize(part) for part in re.split(r"\s+", value) if normalize(part)]
         if not tokens:
             return "请输入要查的卡名。"
-        rows = list(matching_cards(local_index(self.data_dir).values(), tokens,
-                                   lambda info: (info.get("cn_name") or "",)))
+        local = local_index(self.data_dir)
+        if key.isascii() and key.isdigit():
+            row = local.get(str(int(key)))
+            rows = [row] if row else []
+        else:
+            rows = list(matching_cards(local.values(), tokens, lambda info: (info.get("cn_name") or "",)))
         if not rows:
+            if not remote_unavailable:
+                return "没有找到卡片，请换卡名片段、多关键词或卡密。"
             return "百鸽查卡接口暂时连不上，本地卡库也没有找到这张卡。"
         rows.sort(key=lambda item: (normalize(item.get("cn_name") or "") != normalize(value),
                                     len(str(item.get("cn_name") or "")),
                                     int(item.get("id") or 0)))
-        cards = [dict(id=int(item["id"]), cn_name=item.get("cn_name") or "",
+        cards = [dict(id=int(item["id"]), cn_name=item.get("cn_name") or "", local_ygopro=True,
                       text={"desc": item.get("description") or ""}) for item in rows[:20]]
         if len(cards) == 1:
             return self._reply_detail(cards[0])
-        lines = [f"本地卡库找到 {len(cards)} 张（百鸽暂时连不上）："]
+        lines = [f"本地卡库找到 {len(cards)} 张" + ("（百鸽暂时连不上）" if remote_unavailable else "") + "："]
         lines += [f"{i + 1}. {card_name(card)}（{int(card['id']):08d}）"
                   for i, card in enumerate(cards[:10])]
         lines.append("请直接发送数字选择；候选只保存在当前会话。")
@@ -391,23 +518,48 @@ class CardSearch:
             if name and name not in lines:
                 lines.append(name)
         block = []
-        if text.get("types"):
-            block.append(str(text["types"])[:7000])
-        if text.get("pdesc"):
-            scale = self._pendulum_scale(card_id)
+        types = text.get("types") or (self._library_types(card_id) if card.get("local_ygopro") else "")
+        if types:
+            block.append(str(types)[:7000])
+        pdesc, description = text.get("pdesc"), text.get("desc")
+        scale = None
+        if card.get("superpre") or card.get("local_ygopro"):
+            pendulum = re.match(
+                r"\A←\s*(\d+)\s*【灵摆】\s*(\d+)\s*→\s*(.*?)\s*【怪兽效果】\s*(.*)\Z",
+                description or "", re.S,
+            )
+            if pendulum:
+                left, right, pdesc, description = pendulum.groups()
+                scale = (left, right)
+        if pdesc:
+            scale = scale or self._pendulum_scale(card_id)
             if scale:
                 block.append(f"灵摆刻度：{scale[0]} / {scale[1]}")
             block.append("【灵摆效果】")
-            block.append(str(text["pdesc"])[:7000])
-            if text.get("desc"):
+            block.append(str(pdesc)[:7000])
+            if description:
                 block.append("【怪兽效果】")
-                block.append(str(text["desc"])[:7000])
-        elif text.get("desc"):
-            block.append(str(text["desc"])[:7000])
+                block.append(str(description)[:7000])
+        elif description:
+            block.append(str(description)[:7000])
         if block:
             lines.append("\n".join(block))
-        lines.append(f"百鸽：https://ygocdb.com/card/{card_id}")
-        reply = CardReply("\n\n".join(lines), card_image_payload(card_id, self.data_dir))
+        if card.get("superpre"):
+            lines.append("萌卡超先行：https://mycard.world/ygopro/arena/#/superpre")
+            lines.append("卡包及发售日期：萌卡超先行资料未提供")
+            picture = card.get("picture") or ""
+            if not re.fullmatch(
+                rf"https://cdntx\.moecube\.com/ygopro-super-pre/data/pics/{card_id}\.jpg(?:\?version=[\w.-]+)?",
+                picture,
+            ):
+                picture = card_image_payload(card_id, self.data_dir)
+        elif card.get("local_ygopro"):
+            lines.append("资料来源：本地 YGOPro 卡库")
+            picture = card_image_payload(card_id, self.data_dir)
+        else:
+            lines.append(f"百鸽：https://ygocdb.com/card/{card_id}")
+            picture = card_image_payload(card_id, self.data_dir)
+        reply = CardReply("\n\n".join(lines), picture)
         reply.selected_card = card
         return reply
 
@@ -485,27 +637,56 @@ class CardSearch:
             if not value.strip() or len(value) > 100:
                 return "格式：查卡 关键词（最多100字），例如：查卡 闪刀。"
             query, start = self._alias(value.strip()), 0
+            key = normalize(query)
+            public_exact = self._public_exact_cards(key)
+            if len(public_exact) == 1:
+                card = public_exact[0]
+                with self.lock:
+                    release = self.release_known.get(int(card["id"]))
+                if release and 0 <= self.wall_clock() - release["checked_at"] < 86400:
+                    return self._reply_detail(card)
+            superpre = self._superpre_cards(query)
+            exact = [card for card in superpre if key in (str(card["id"]), normalize(card["cn_name"]))]
+            if not public_exact and len(exact) == 1:
+                return self._reply_detail(exact[0])
         result = self._request("?" + urlencode({"search": query, "start": start}))
         rows = result.get("result")
         if not isinstance(rows, list):
             raise ValueError("missing results")
         rows = [r for r in rows if isinstance(r, dict) and str(r.get("id", "")).isdigit()]
-        if not rows:
-            return "没有找到卡片，请换卡名片段、多关键词或卡密。"
+        next_start = int(result.get("next") or 0)
         if action != "next":
-            matches = [r for r in rows if normalize(query) in {
+            key = normalize(query)
+            matches = [r for r in rows if key in {
                 normalize(r.get(k, "")) for k in ("id", "cid", "cn_name", "sc_name", "md_name", "nwbbs_n", "cnocg_n", "jp_name", "en_name")
             }]
             if len(matches) == 1:
                 with self.lock:
                     self.sessions.pop(user, None)
                 return self._reply_detail(matches[0])
-            if len(rows) == 1:
-                with self.lock:
-                    self.sessions.pop(user, None)
-                return self._reply_detail(rows[0])
+            ids = {int(row["id"]) for row in rows}
+            superpre = [card for card in superpre if card["id"] not in ids]
+            exact = [card for card in superpre if key in (str(card["id"]), normalize(card["cn_name"]))]
+            if not matches and len(exact) == 1:
+                return self._reply_detail(exact[0])
+            rows = rows + superpre
+            if not rows:
+                return self._local_search(query, user, remote_unavailable=False)
+            return self._show_search_results(user, query, rows, next_start, now)
+        if not rows:
+            return "没有找到卡片，请换卡名片段、多关键词或卡密。"
+        return self._save_search_candidates(user, query, rows, next_start, now)
+
+    def _show_search_results(self, user, query, rows, next_start, now):
+        if not rows:
+            return "没有找到卡片，请换卡名片段、多关键词或卡密。"
+        if len(rows) == 1:
+            return self._reply_detail(rows[0])
+        return self._save_search_candidates(user, query, rows, next_start, now)
+
+    def _save_search_candidates(self, user, query, rows, next_start, now):
         session = {"query": query, "rows": rows[:100], "offset": 0,
-                   "next": int(result.get("next") or 0), "time": now}
+                   "next": next_start, "time": now}
         with self.lock:
             self.sessions[user] = session
             self.sessions.move_to_end(user)
@@ -518,6 +699,7 @@ class CardSearch:
         offset = session["offset"]
         lines = [f"“{session['query']}”的候选："]
         lines += [f"{i + 1}. {card_name(card)}（{int(card['id']):08d}）"
+                  + ("［超先行］" if card.get("superpre") else "")
                   for i, card in enumerate(session["rows"]) if offset <= i < offset + 5]
         lines.append("2分钟内直接发数字查看，发 next 翻页。序号对应你在当前会话中的列表；群里有候选时同样无需@。")
         return "\n".join(lines)

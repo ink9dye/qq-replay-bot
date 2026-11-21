@@ -1,5 +1,7 @@
 # 文档索引（唯一导航入口）
 
+- [QQ 查卡提速与详情对齐](wrapup/WRAPUP_QQ_CARD_FAST_20261121.md) — 已部署，含对照耗时、发售来源和回滚。
+
 - [QQ 与网页名册读取减负](wrapup/WRAPUP_ROSTER_SHARED_IO_20261121.md) — 已部署，含统计等价对照、重启验收和回滚。
 
 - [QQ 查询提示与处理并行](wrapup/WRAPUP_QQ_JOB_LATENCY_20261120.md) — 已部署，含旧回归修正、验收与回滚。

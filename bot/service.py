@@ -1841,7 +1841,7 @@ class BotService:
                 parsed_command.get('op') != 'stats_page'
                 or self._statistics_allowed(user_id, conversation)):
             await self._start_job_with_feedback(
-                self._slow_tasks, receiver, send, hint,
+                self._slow_tasks, receiver, send, None if parsed_command.get('op') == 'card_search' else hint,
                 lambda result_send, result_forward: self._slow_text_job(
                     user_id, text, conversation, receiver, result_send, result_forward, event.get('self_id')),
                 forward=forward)
@@ -1882,7 +1882,8 @@ class BotService:
         task_set.add(task)
         task.add_done_callback(task_set.discard)
         try:
-            await send(receiver, hint)
+            if hint is not None:
+                await send(receiver, hint)
         except asyncio.CancelledError:
             task.cancel()
             raise
