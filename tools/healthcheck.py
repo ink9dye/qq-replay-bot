@@ -61,6 +61,7 @@ SEV2 = 'P2'   # 知道即可，可自愈
 PSI_MEMORY_FULL10 = 35.0   # memory full avg10 超过它：全体进程已被内存回收拖住
 PSI_IO_FULL10 = 35.0       # io full avg10 超过它：磁盘排队已经影响全体进程
 QQ_DIAG_LOG = ROOT / 'data' / 'logs' / 'qq-diagnostics.jsonl'
+MEMORY_SAMPLE_DIR = ROOT / 'data' / 'logs' / 'memory-samples'
 QQ_SEND_WINDOW = 300       # 发送失败统计窗口（秒）
 QQ_SEND_FAIL_ALERT = 3     # 窗口内发送超时达到这次数就报（本次 2 分钟内 3 次）
 
@@ -202,14 +203,12 @@ CHECK_META = {
     },
     'qq_send_fail': {
         'sev': SEV1,
-        'title': '消息发不出去（QQ 发送超时）',
-        'impact': '群里发指令后没有回复，或回复只到一半。消息可能实际已送达，也可能真丢了，'
-                  '机器人侧拿到的是超时，无法确认。',
+        'title': 'QQ 群消息发送异常',
+        'impact': '群回复可能缺失或只到一半。发送超时意味着机器人未收到回执，实际送达情况需核实。',
         'action': [
             '先判断是不是整机被压住了：cat /proc/pressure/memory /proc/pressure/io，'
             '再看 data/logs/memory-samples/ 下最新那份采样。',
-            '再看 data/logs/qq-diagnostics.jsonl：error_type=TimeoutError 是机器忙，'
-            'retcode 非 0 才是 QQ 侧拒收。',
+            '用 data/logs/qq-diagnostics.jsonl 核对发送回执、错误类型及后续是否有正常回复。',
             '按踩坑记录 L35 的规矩不要自动重发（会重复）；确认真的没到再人工补发。',
         ],
         'consequence': '用户白等；同一指令反复重发还会刷屏。',
@@ -217,19 +216,29 @@ CHECK_META = {
     },
     'web_5xx': {
         'sev': SEV1,
-        'title': '网页接口大面积报错（503）',
-        'impact': '统计页多个区块同时显示“暂时不可用”，用户点进去是空的或报错；'
-                  'QQ 查询走另一条路径，一般不受影响。',
+        'title': '网页接口集中返回 5xx',
+        'impact': '统计页可能等待较久或查询失败。同一次查询的多次重试会分别计数。',
         'action': [
             '先看是谁在报错：tail -n 300 /opt/ygobot/data/logs/web-access.jsonl '
             '| grep \'"status": 50\' ，上面这条已经把接口名和占比写出来了。',
             '再看是不是锁竞争：同一批日志里 lock_timeout=true 或 lock_hold_ms 很大，'
             '说明有单个请求长期占着全局查询锁，其他接口全在排队等它（14:10–14:49 就是这种）。',
-            '确认是锁问题就重启 ygo-web（会打断长查询、立刻放锁）：systemctl restart ygo-web；'
-            '重启前先 cat data/capture-status.json 确认 active_observations 为 0。',
+            '对照 data/logs/statistics-query-timings.jsonl 的后台任务结果，核对前台重试后是否返回 200。',
         ],
         'consequence': '统计页持续不可用；用户会反复刷新，请求越多排队越长，问题会自我放大。',
         'recovered': '网页接口已恢复正常返回',
+    },
+    'web_pending': {
+        'sev': SEV2,
+        'title': '网页统计等待后台结果',
+        'impact': '部分查询正在等待统计结果。一个后台任务可能对应多次轮询。',
+        'action': [
+            '按 refresh_id 对照访问日志和后台计时；完整 HTTP 200 表示前台收到结果。',
+            'queue_wait_ms 是后台队列等待，lock_wait_ms 是获取查询锁的等待，'
+            'lock_hold_ms 是计算时持锁的时间。',
+        ],
+        'consequence': '首次查询可能长时间等待，用户切换条件后旧任务仍会完成。',
+        'recovered': '网页统计等待响应已减少',
     },
     'web_5xx_mild': {
         'sev': SEV2,
@@ -546,6 +555,7 @@ def issue_id(detail):
     if detail.startswith('内存压力过高：'): return 'psi_memory'
     if detail.startswith('磁盘压力过高：'): return 'psi_io'
     if detail.startswith('QQ 发送失败：'): return 'qq_send_fail'
+    if detail.startswith('网页统计等待后台结果：'): return 'web_pending'
     if detail.startswith('网页接口大面积报错：'): return 'web_5xx'
     if detail.startswith('网页接口报错：'): return 'web_5xx_mild'
     if detail.startswith('网页接口卡死：'): return 'web_stall'
@@ -651,10 +661,12 @@ def is_quiet(now):
     return hour >= start or hour < end
 
 
-def record_event(kind, ident, detail, now=None):
+def record_event(kind, ident, detail, now=None, evidence=None):
     """留一份可追溯的事件流水，日报和排查都靠它。"""
     row = {'ts': round(time.time() if now is None else now, 3),
            'kind': kind, 'id': ident, 'detail': detail}
+    if evidence is not None:
+        row['evidence'] = evidence
     try:
         EVENT_LOG.parent.mkdir(parents=True, exist_ok=True)
         with EVENT_LOG.open('a', encoding='utf-8') as handle:
@@ -759,7 +771,7 @@ def render_recovery(ident, detail, first, now, host):
     ])
 
 
-def emit_events(events, host, now, observation=''):
+def emit_events(events, host, now, observation='', qq_timeout_spans=()):
     for kind, ident, detail, first in events:
         meta = describe(ident, detail)
         sev = meta['sev']
@@ -778,8 +790,11 @@ def emit_events(events, host, now, observation=''):
                 continue
             subject = ('[需处理] ' if sev == SEV1 else '[留意] ') + meta['title']
             body = render_alert(ident, detail, first, now, host, observation)
+        evidence = None
+        if kind == 'alert' and ident == 'qq_send_fail' and qq_timeout_spans:
+            evidence = qq_timeout_evidence(qq_timeout_spans)
         notify(subject, body)
-        record_event(kind, ident, detail, now)
+        record_event(kind, ident, detail, now, evidence=evidence)
         log(kind + ': ' + detail)
 
 
@@ -932,7 +947,7 @@ def web_issues(trouble):
     if not trouble:
         return []
     found = []
-    errors = trouble['errors']
+    errors = trouble.get('failure_paths', trouble['errors'])
     hits = sum(errors.values())
     share = hits / float(max(1, trouble['total']))
     if hits >= WEB_5XX_ALERT:
@@ -944,8 +959,66 @@ def web_issues(trouble):
         detail = ('%s：最近 %d 分钟 %d 次 5xx（占这 %d 个请求的 %d%%；%s）'
                   % ('网页接口大面积报错' if severe else '网页接口报错',
                      WEB_WINDOW // 60, hits, trouble['total'], round(share * 100), names))
-        if trouble['timeouts']:
+        counts = {k: v for k, v in trouble.get('refresh_errors', {}).items() if k != 'pending'}
+        labels = {'pending': '后台准备中', 'queue_full': '后台队列满',
+                  'lock_timeout': '等查询锁超时', 'failed': '后台返回错误',
+                  'no_result': '后台未产出可复用结果', 'deferred': '后台暂未调度',
+                  'unknown': '原因未标记'}
+        if any(counts.get(key) for key in labels if key != 'unknown'):
+            detail += '。按响应拆分：' + '、'.join(
+                '%s %d 次' % (label, counts[key]) for key, label in labels.items() if counts.get(key))
+        elif trouble['timeouts']:
             detail += '，其中 %d 次是等全局查询锁超时' % trouble['timeouts']
+        found.append(detail)
+    pending = trouble.get('refresh_errors', {}).get('pending', 0)
+    jobs = trouble.get('worker_jobs')
+    failed_jobs = any(job.get('status') != 200 or job.get('refresh_outcome') != 'result'
+                      for job in (jobs or {}).values())
+    longest_wait = trouble.get('longest_pending_ms', 0)
+    if pending and (trouble['pending_jobs'] >= WEB_5XX_ALERT
+                    or longest_wait >= WEB_STALL_MS or failed_jobs):
+        names = '、'.join('%s %d 个任务' % (path, count) for path, count in
+                          sorted(trouble['pending_paths'].items(), key=lambda kv: -kv[1])[:3])
+        detail = ('网页统计等待后台结果：最近 %d 分钟 %d 次等待响应（%s），关联 %d 个任务，'
+                  '观察到完整 HTTP 200 %d 个'
+                  % (WEB_WINDOW // 60, pending, names, trouble['pending_jobs'], trouble['resolved_jobs']))
+        if longest_wait >= WEB_STALL_MS:
+            detail += '，最长等待 %s' % fmt_ms(longest_wait)
+        if jobs is None:
+            detail += '。后台计时日志不可读'
+        else:
+            finished = [job for job in jobs.values()
+                        if job.get('status') == 200 and job.get('refresh_outcome') == 'result']
+            detail += '。后台已产出 %d 个，记录失败或未产出 %d 个，未见结束记录 %d 个' % (
+                len(finished), len(jobs) - len(finished), trouble['pending_jobs'] - len(jobs))
+            if jobs:
+                durations = (
+                    ('后台运行', 'elapsed_ms'), ('队列等待', 'queue_wait_ms'),
+                    ('等查询锁', 'lock_wait_ms'), ('持查询锁', 'lock_hold_ms'),
+                )
+                peaks = []
+                for label, field in durations:
+                    numbers = [job[field] for job in jobs.values()
+                               if isinstance(job.get(field), (int, float))]
+                    if numbers:
+                        peak = max(numbers)
+                        display = '%.3f 毫秒' % peak if peak < 1000 else fmt_ms(peak)
+                        peaks.append('%s最长 %s' % (label, display))
+                if peaks:
+                    detail += '；' + '、'.join(peaks)
+                reports = [job for job in finished if job.get('kind') == 'card-report'
+                           and isinstance(job.get('card_report_query_ms'), (float, int))]
+                if reports:
+                    longest = max(reports, key=lambda job: job['card_report_query_ms'])
+                    phases = [('筛选资格', 'card_report_select_ms'),
+                              ('读卡片事实', 'card_report_raw_ms')]
+                    detail += '。最慢卡报用时 %s（%s）' % (
+                        fmt_ms(longest['card_report_query_ms']),
+                        '、'.join('%s %s' % (label, fmt_ms(longest[field]))
+                                 for label, field in phases
+                                 if isinstance(longest.get(field), (int, float))))
+        if trouble['timeouts']:
+            detail += '。窗口内记录到 %d 次前台等查询锁超时' % trouble['timeouts']
         found.append(detail)
     if trouble['slow']:
         top = trouble['slow'][0]
@@ -980,6 +1053,12 @@ def recent_web_trouble(window=WEB_WINDOW, tail_bytes=2 * 1024 * 1024):
     now = time.time()
     cutoff = now - window
     errors = {}
+    refresh_errors = {}
+    failure_paths = {}
+    pending_paths = {}
+    pending_jobs = {}
+    resolved_jobs = {}
+    probe_statuses = {}
     slow = []
     timeouts = 0
     total = 0
@@ -997,26 +1076,81 @@ def recent_web_trouble(window=WEB_WINDOW, tail_bytes=2 * 1024 * 1024):
             when = datetime.datetime.strptime(stamp[:19], '%Y-%m-%dT%H:%M:%S').timestamp()
         except ValueError:
             continue
-        # 只算“最近 window 秒”：早于窗口的不要，晚于当前时间 1 分钟以上的也不认（时钟跳变/回放）。
-        if when < cutoff or when > now + 60:
+        if not cutoff <= when <= now:
+            continue
+        status = row.get('status')
+        if (row.get('ua') == 'ygobot-deployment-smoke'
+                and row.get('ip') in ('127.0.0.1', '::1')):
+            if isinstance(status, int):
+                probe_statuses[status] = probe_statuses.get(status, 0) + 1
             continue
         total += 1
         path = str(row.get('path') or '?')
-        status = row.get('status')
+        outcome = row.get('refresh_outcome')
+        job_id = row.get('refresh_id')
         if isinstance(status, int) and status >= 500:
             errors[path] = errors.get(path, 0) + 1
+            if row.get('lock_timeout'):
+                outcome = 'lock_timeout'
+            elif outcome not in ('pending', 'queue_full', 'lock_timeout', 'failed', 'no_result', 'deferred'):
+                outcome = 'unknown'
+            refresh_errors[outcome] = refresh_errors.get(outcome, 0) + 1
+            if status == 503 and outcome == 'pending' and isinstance(job_id, str) and job_id:
+                job = pending_jobs.setdefault(job_id, dict(path=path, first=when, last=when))
+                job['first'] = min(job['first'], when)
+                job['last'] = max(job['last'], when)
+            else:
+                if outcome == 'pending':
+                    refresh_errors['pending'] -= 1
+                    refresh_errors['unknown'] = refresh_errors.get('unknown', 0) + 1
+                failure_paths[path] = failure_paths.get(path, 0) + 1
+        elif status == 200 and outcome == 'result' and row.get('response_complete') and isinstance(job_id, str):
+            resolved_jobs[job_id] = max(when, resolved_jobs.get(job_id, when))
         elapsed = row.get('elapsed_ms')
         if isinstance(elapsed, (int, float)) and elapsed >= WEB_SLOW_MS:
             slow.append(dict(path=path, ms=elapsed, lock_task=row.get('lock_task'),
                              lock_hold=row.get('lock_hold_ms'), at=stamp))
         if row.get('lock_timeout'):
             timeouts += 1
+    worker_jobs = web_worker_jobs(pending_jobs, now)
+    longest_pending_ms = 0
+    for job_id, job in pending_jobs.items():
+        path = job['path']
+        pending_paths[path] = pending_paths.get(path, 0) + 1
+        worker = (worker_jobs or {}).get(job_id)
+        ended = resolved_jobs.get(job_id)
+        if ended is None:
+            ended = worker['at'] if worker else now
+        wait_ms = (max(ended, job['last']) - job['first']) * 1000
+        longest_pending_ms = max(longest_pending_ms, wait_ms)
     slow.sort(key=lambda item: -item['ms'])
-    return dict(total=total, errors=errors, slow=slow, timeouts=timeouts)
+    return dict(total=total, errors=errors, slow=slow, timeouts=timeouts,
+                refresh_errors=refresh_errors, pending_jobs=len(pending_jobs),
+                resolved_jobs=len(pending_jobs.keys() & resolved_jobs.keys()),
+                failure_paths=failure_paths, pending_paths=pending_paths,
+                worker_jobs=worker_jobs, longest_pending_ms=longest_pending_ms,
+                probe_statuses=probe_statuses)
+
+
+def web_worker_jobs(pending_jobs, now):
+    if not pending_jobs:
+        return {}
+    jobs = {}
+    readable = False
+    for row in refresh_timing_rows():
+        readable = True
+        if row is None:
+            continue
+        job_id = row.get('refresh_id')
+        ended = row.get('at')
+        if (isinstance(job_id, str) and job_id in pending_jobs
+                and isinstance(ended, (float, int)) and ended <= now):
+            jobs[job_id] = row
+    return jobs if readable else None
 
 
 def recent_send_failures(window=QQ_SEND_WINDOW, tail_bytes=512 * 1024):
-    """数最近 window 秒内 QQ 侧发送失败：api_error/send_* 的次数 + 判定未送达的指令数。
+    """汇总 QQ 发送错误、超时和未确认完整回复的指令。
 
     只读 qq-diagnostics.jsonl 尾部，不碰数据库；文件读不到时返回 None（不误判为故障）。
     """
@@ -1028,8 +1162,10 @@ def recent_send_failures(window=QQ_SEND_WINDOW, tail_bytes=512 * 1024):
             raw = handle.read()
     except OSError:
         return None
-    cutoff = time.time() - window
+    now = time.time()
+    cutoff = now - window
     errors = {}
+    timeout_spans = []
     lifecycle = 0
     for line in raw.splitlines():
         if not line.startswith(b'{'):
@@ -1039,14 +1175,178 @@ def recent_send_failures(window=QQ_SEND_WINDOW, tail_bytes=512 * 1024):
         except ValueError:
             continue
         stamp = row.get('time')
-        if not isinstance(stamp, (int, float)) or stamp < cutoff:
+        if not isinstance(stamp, (int, float)) or not cutoff <= stamp <= now + 60:
             continue
         if row.get('event') == 'api_error' and str(row.get('action') or '').startswith('send_'):
             action = row.get('action')
             errors[action] = errors.get(action, 0) + 1
+            if row.get('error_type') == 'TimeoutError':
+                elapsed = row.get('elapsed_ms')
+                seconds = max(0, min(elapsed / 1000, window)) if isinstance(elapsed, (int, float)) else 0
+                timeout_spans.append((stamp - seconds, stamp))
         elif row.get('event') == 'command_lifecycle_complete' and row.get('outcome') == 'send_failure':
             lifecycle += 1
-    return errors, lifecycle
+    return errors, timeout_spans, lifecycle
+
+
+def counter_changes(before, after, keys):
+    changes = {}
+    for key in keys:
+        old, new = before.get(key), after.get(key)
+        if type(old) is int and type(new) is int and 0 <= old <= new:
+            changes[key] = new - old
+    return changes
+
+
+def reclaim_intervals(samples, margins):
+    """Join adjacent samples only, with no estimates across a reset or long gap."""
+    intervals = []
+    for (start, before), (end, after) in zip(samples, samples[1:]):
+        seconds = end - start
+        old_mono, new_mono = before.get('monotonic'), after.get('monotonic')
+        if (not 0 < seconds <= 120
+                or not any(start < right and end > left for left, right in margins)
+                or type(old_mono) not in (int, float) or type(new_mono) not in (int, float)
+                or not 0 < new_mono - old_mono
+                or abs(new_mono - old_mono - seconds) > 5):
+            continue
+        vmstat = counter_changes(before.get('vmstat') or {}, after.get('vmstat') or {},
+                                 ('pswpin', 'pswpout', 'pgscan_direct', 'pgsteal_direct'))
+        groups = {}
+        for unit in (*UNITS, 'napcat'):
+            old = (before.get('cgroup_reclaim') or {}).get(unit) or {}
+            new = (after.get('cgroup_reclaim') or {}).get(unit) or {}
+            if old.get('generation') is not None and old['generation'] == new.get('generation'):
+                changes = counter_changes(old, new, ('pgscan_direct', 'pgsteal_direct', 'pgmajfault'))
+                if changes:
+                    groups[unit] = changes
+        if vmstat or groups:
+            intervals.append(dict(start=round(start, 3), end=round(end, 3),
+                                  vmstat=vmstat, cgroup=groups))
+    return intervals
+
+
+def refresh_timing_rows():
+    log = WEB_ACCESS_LOG.with_name('statistics-query-timings.jsonl')
+    for path in (log.with_suffix('.jsonl.1'), log.with_suffix('.previous'), log):
+        try:
+            with path.open('rb') as handle:
+                size = handle.seek(0, 2)
+                handle.seek(max(0, size - 128 * 1024))
+                raw = handle.read(128 * 1024)
+        except OSError:
+            continue
+        yield None  # readable, including when the file is empty
+        for line in raw.splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get('metric_source') == 'refresh-worker':
+                yield row
+
+
+def overlapping_refreshes(margins):
+    jobs = []
+    readable = False
+    for row in refresh_timing_rows():
+        readable = True
+        if row is None:
+            continue
+        try:
+            end = float(row['at'])
+            elapsed = float(row['elapsed_ms'])
+            kind = row['kind']
+            if (not isinstance(kind, str) or len(kind) > 32
+                    or not kind.replace('-', '').isascii()
+                    or not kind.replace('-', '').isalpha()
+                    or not 0 <= elapsed <= 86400000):
+                continue
+            start = end - elapsed / 1000
+            if any(start < right and end > left for left, right in margins):
+                jobs.append((end, start, kind))
+        except (ValueError, TypeError, KeyError, OverflowError):
+            continue
+    return {'state': 'available' if readable else 'unavailable',
+            'completed_jobs': [dict(kind=kind, start=round(start, 3), end=round(end, 3))
+                               for end, start, kind in sorted(set(jobs), reverse=True)[:10]]}
+
+
+def qq_timeout_evidence(spans):
+    # Allow for nearby PSI readings while retaining the actual counter interval.
+    margins = [(start - 20, end + 20) for start, end in sorted(spans)]
+    start = min(a for a, _ in margins)
+    end = max(b for _, b in margins)
+    day = datetime.date.fromtimestamp(start - 120)
+    last_day = datetime.date.fromtimestamp(end + 120)
+    samples = {}
+    while day <= last_day:
+        path = MEMORY_SAMPLE_DIR / day.strftime('memory-samples-%Y%m%d.jsonl')
+        day += datetime.timedelta(days=1)
+        try:
+            with path.open('rb') as handle:
+                size = handle.seek(0, 2)
+                handle.seek(max(0, size - 256 * 1024))
+                raw = handle.read()
+        except OSError:
+            continue
+        for line in raw.splitlines():
+            try:
+                sample = json.loads(line)
+                stamp = sample['ts']
+                if start - 120 <= stamp <= end + 120:
+                    samples[stamp] = sample
+            except (ValueError, KeyError, TypeError):
+                continue
+    nearby = []
+    io_values = []
+    for stamp, sample in samples.items():
+        if not any(a <= stamp <= b for a, b in margins):
+            continue
+        try:
+            nearby.append((stamp, float(sample['psi_full_avg10']), int(sample['available_mb'])))
+        except (ValueError, KeyError, TypeError):
+            pass
+        try:
+            io_values.append(float(sample['io_psi_full_avg10']))
+        except (ValueError, KeyError, TypeError):
+            pass
+    memory = {'samples': len(nearby), 'peak_io_full_avg10': max(io_values, default=None),
+              'reclaim_intervals': reclaim_intervals(sorted(samples.items()), margins)}
+    if nearby:
+        peak = max(nearby, key=lambda sample: sample[1])
+        memory.update(peak_at=round(peak[0], 3), peak_full_avg10=peak[1],
+                      min_available_mb=min(sample[2] for sample in nearby))
+
+    # Read only the matching time range. Retain counts, never log lines or message text.
+    limit = 120
+    logs = run(['docker', 'logs', '--timestamps', '--since', str(int(start) - 120),
+                '--until', str(int(end) + 121), '--tail', str(limit), 'napcat'], timeout=3)
+    napcat = {'state': 'unavailable'}
+    if logs is not None and logs.returncode == 0:
+        lines = (logs.stdout + '\n' + logs.stderr).splitlines()
+        rows = 0
+        matching_rows = 0
+        send_errors = 0
+        for line in lines:
+            timestamp, _, message = line.partition(' ')
+            try:
+                stamp = datetime.datetime.fromisoformat(timestamp.replace('Z', '+00:00')).timestamp()
+            except ValueError:
+                continue
+            rows += 1
+            if not any(a <= stamp <= b for a, b in margins):
+                continue
+            matching_rows += 1
+            text = message.lower()
+            if ('send_group_msg' in text or 'sendmsg' in text) and (
+                    'timeout' in text or 'error' in text or 'failed' in text or '超时' in text or '失败' in text):
+                send_errors += 1
+        napcat = {'state': 'limited' if rows >= limit else ('available' if rows else 'empty'),
+                  'rows': rows, 'rows_in_timeout_windows': matching_rows,
+                  'send_error_markers': send_errors}
+    return {'timeout_spans': [[round(a, 3), round(b, 3)] for a, b in spans],
+            'memory': memory, 'napcat': napcat, 'web_refresh': overlapping_refreshes(margins)}
 
 
 def load_events(since):
@@ -1293,17 +1593,21 @@ def main():
 
     # 发送失败是“用户已经感觉到坏了”的直接信号：11-17 13:32 那次群回复连续 8 秒超时，
     # 但 /health、端口、登录状态全绿，只有 qq-diagnostics 里留着记录。
+    qq_timeout_spans = ()
     failures = recent_send_failures()
     if failures:
-        errors, lifecycle = failures
+        errors, qq_timeout_spans, lifecycle = failures
+        timeouts = len(qq_timeout_spans)
         total = sum(errors.values())
         if total >= QQ_SEND_FAIL_ALERT or lifecycle >= 2:
-            detail = 'QQ 发送失败：最近 %d 分钟 %d 次发送超时' % (QQ_SEND_WINDOW // 60, total)
+            detail = 'QQ 发送失败：最近 %d 分钟 %d 次发送异常' % (QQ_SEND_WINDOW // 60, total)
             if errors:
                 detail += '（' + '、'.join('%s %d 次' % (name, count)
                                           for name, count in sorted(errors.items())) + '）'
+            if timeouts:
+                detail += '，其中 %d 次发送超时，送达未确认' % timeouts
             if lifecycle:
-                detail += '，另有 %d 条指令判定未送达' % lifecycle
+                detail += '，%d 条指令的完整回复未获确认' % lifecycle
             issues.append(detail)
 
     # 网页接口级：进程活着、端口通、/health 200，不代表用户能用。
@@ -1330,7 +1634,7 @@ def main():
         repeat={'*': ALERT_EVERY, 'qq_send_fail': max(ALERT_EVERY, 3600),
                 'web_5xx': 7200, 'web_stall': 3600,
                 'web_slow': 3600, 'web_5xx_mild': 7200})
-    emit_events(events, host, now)
+    emit_events(events, host, now, qq_timeout_spans=qq_timeout_spans)
     maybe_digest(state, now)
 
     save_state(state)
