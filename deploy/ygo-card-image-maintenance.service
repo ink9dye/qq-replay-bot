@@ -1,0 +1,17 @@
+[Unit]
+Description=Repair a bounded batch of missing YGO card images
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/ygobot/tools/maintain_card_images.py
+TimeoutStartSec=30
+Nice=15
+CPUWeight=10
+IOWeight=10
+MemoryMax=96M
+MemorySwapMax=0

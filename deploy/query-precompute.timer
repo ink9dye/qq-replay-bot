@@ -2,7 +2,8 @@
 Description=Nightly query build cache precompute
 
 [Timer]
-OnCalendar=*-*-* 05:30:00
+OnBootSec=30min
+OnCalendar=*-*-* 00/2:48:00
 RandomizedDelaySec=300
 Persistent=true
 

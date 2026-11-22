@@ -21,9 +21,9 @@ if str(ROOT) not in sys.path:
 from bot.query_core import PortalBusy, PortalClient, PortalUnavailable  # noqa: E402
 from bot.query_precompute import cache_path, cleanup, read_precomputed, write_precomputed, MISS  # noqa: E402
 
-PSI_MAX = 40.0
-AVAILABLE_MIN_MB = 400
-LOAD_MAX = 2.5
+PSI_MAX = 80.0
+AVAILABLE_MIN_MB = 250
+LOAD_MAX = 4.0
 MAX_RUNTIME_SECONDS = 5400
 
 
@@ -57,6 +57,14 @@ def _load1() -> float:
 
 
 def _guards_tripped() -> str:
+    # 2026-11-22: aligned with the other precompute jobs -- pause marker first,
+    # and thresholds that this 2 GB box can actually meet (was 400MB/40/2.5,
+    # which blocked every run on 11-21 and 11-22 with 0 processed).
+    try:
+        if Path('/run/ygobot-batch-pause').exists():
+            return 'batch_pause'
+    except OSError:
+        pass
     psi = _psi_some_avg10()
     if psi > PSI_MAX:
         return f"psi={psi:.1f}>%d" % PSI_MAX
