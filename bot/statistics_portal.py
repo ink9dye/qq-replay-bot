@@ -35,6 +35,8 @@ def open_readonly(database, timeout=5.0):
 COOKIE='qqstats_owner'
 SESSION_SECONDS=5*3600
 QUERY_WAIT_SECONDS=8.0
+# 玩家构筑冷启动在请求线程里算，单次 1–5 秒；串行等待上限 30 秒。
+BUILD_WAIT_SECONDS=30.0
 QUERY_CACHE_MAX_BYTES = 8 * 1024 * 1024
 CARD_SAMPLES_LIMIT = 200
 CARD_METRICS_CACHE_SECONDS = 600.0
@@ -141,6 +143,9 @@ class StatisticsPortal:
         # 并成片返回 503（2026-11-17 14:42 那笔持锁 163 秒）。这里只限制“同时最多一个
         # matrix-cell”，不再和别的接口互相排队。
         self._cell_lock=ObservedQueryLock()
+        # 玩家构筑（/statistics/api/build 与构筑页）单独一把闸：冷算 1–5 秒，
+        # 不能排进 single worker（那边等 4 秒拿不到就回 query_busy，安卓端首次查人必 503）。
+        self._build_lock=ObservedQueryLock()
         self._refresh=None
         if background:
             from .statistics_refresh import QueryRefresh
@@ -864,16 +869,31 @@ class StatisticsPortal:
             precomputed=self._precomputed_build(player)
             if precomputed is not None:
                 return precomputed
-            def build_with_names(db):
-                result=query(db,self.replay_root,float(self.clock()),player)
-                if result and player:
-                    from .statistics_card_names import index
-                    names=index(self.database.parent)
-                    for card in result.get('cards',[]):
-                        info=names.get(str(card['code']),{})
-                        card['name']=card_name(info) if info else '卡名暂缺'
-                return result
-            return self._cached_query_reply(('deck-detail',player), build_with_names, ttl=300.0, stamp_seconds=86400)
+            # 首次查某个玩家不再排 single worker：worker 在忙（例如 50 秒的卡报）时，
+            # 4 秒等待必然超时并回 query_busy，安卓端“查用户构筑”就会看到 503。
+            # 这里在请求线程里算一次（约 1–5 秒），算完写 query-cache/build，
+            # 之后同一玩家（含网页构筑页）直接读缓存；仍失败才回 503。
+            if not self._build_lock.acquire(timeout=BUILD_WAIT_SECONDS):
+                return self._query_busy_reply()
+            try:
+                precomputed=self._precomputed_build(player)
+                if precomputed is not None:
+                    return precomputed
+                def build_with_names(db):
+                    result=query(db,self.replay_root,float(self.clock()),player)
+                    if result and player:
+                        from .statistics_card_names import index
+                        names=index(self.database.parent)
+                        for card in result.get('cards',[]):
+                            info=names.get(str(card['code']),{})
+                            card['name']=card_name(info) if info else '卡名暂缺'
+                    return result
+                reply=self._query_reply(build_with_names)
+                if reply[0]==200:
+                    self._store_build_cache(player, reply[2])
+                return reply
+            finally:
+                self._build_lock.release()
         return self._reply(404,'找不到此统计页面。')
 
     def warmup(self):
@@ -977,6 +997,28 @@ class StatisticsPortal:
                                 'X-Statistics-Saved-At': str(int(saved))})
         except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
             return None
+
+    def _latest_replay_at(self, player):
+        """该玩家最新一条录像时间；写入构筑缓存时用于“有新录像就失效”。"""
+        try:
+            with closing(open_readonly(self.database, timeout=2)) as db:
+                row = db.execute('SELECT MAX(recorded_at) FROM replays WHERE focus_player=?',
+                                 (player,)).fetchone()
+            return float(row[0]) if row and row[0] is not None else 0.0
+        except (OSError, ValueError, TypeError, sqlite3.Error):
+            return 0.0
+
+    def _store_build_cache(self, player, body):
+        """首次查询成功后落盘，格式与 tools/precompute_query_cache.py 一致。"""
+        try:
+            from .query_precompute import write_precomputed
+            payload = json.loads(body)
+            if not isinstance(payload, dict):
+                return
+            write_precomputed(self.database.parent, player, payload,
+                              self._latest_replay_at(player), ttl_seconds=86400)
+        except (OSError, ValueError, TypeError):
+            pass
 
     def _roster_reply(self, force=False, background=False):
         """榜首查询的唯一入口：route 与后台保活共用，保证缓存键一致。"""
