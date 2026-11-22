@@ -20,6 +20,9 @@ build/
 # Local configuration file (sdk path, etc)
 local.properties
 
+# 本地 AI 交接文档（含开发机绝对路径，仅本地使用）
+AI_HANDOFF.md
+
 # Log/OS Files
 *.log
 

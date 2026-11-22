@@ -22,7 +22,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.moecard.watch.net.AuthException
 import com.moecard.watch.query.model.PieData
 import com.moecard.watch.query.net.QuerySession
+import com.moecard.watch.ui.charts.DeckPieChart
 import com.moecard.watch.ui.charts.PieChart
+import com.moecard.watch.ui.charts.PieLayersLegend
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -75,9 +77,29 @@ fun PieScreen(onOpenDeck: (String, Int) -> Unit) {
                     color = MaterialTheme.colorScheme.outline,
                 )
                 Spacer(Modifier.height(12.dp))
-                PieChart(s.data.items, onSliceClick = { slice ->
-                    onOpenDeck(slice.name, slice.count)
-                })
+                val layers = s.data.pie
+                if (layers != null && layers.outer.isNotEmpty()) {
+                    Text(
+                        "内环 ${layers.inner.size} 类 · 外环 ${layers.outer.size} 个卡组 · 大类门槛 ${layers.threshold} 个卡组",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    DeckPieChart(
+                        layers,
+                        modifier = Modifier.fillMaxWidth(),
+                        onDeckClick = { onOpenDeck(it.name, it.players) },
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    PieLayersLegend(
+                        layers,
+                        onDeckClick = { onOpenDeck(it.name, it.players) },
+                    )
+                } else {
+                    PieChart(s.data.items, onSliceClick = { slice ->
+                        onOpenDeck(slice.name, slice.count)
+                    })
+                }
                 Spacer(Modifier.height(16.dp))
                 ReservedCard(
                     "ROTK 饼图",

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -26,7 +27,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
 import com.moecard.watch.net.AuthException
 import com.moecard.watch.query.model.CardDetail
 import com.moecard.watch.query.net.QuerySession
@@ -81,18 +81,16 @@ fun CardDetailScreen(code: Long, presetName: String?) {
             val c = s.card
             Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp)) {
                 Row {
-                    if (c.imageUrl != null) {
-                        AsyncImage(
-                            model = c.imageUrl,
-                            contentDescription = c.name,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .height(170.dp)
-                                .clip(RoundedCornerShape(8.dp)),
-                        )
-                        Spacer(Modifier.padding(8.dp))
-                    }
-                    Column(Modifier.padding(start = if (c.imageUrl != null) 8.dp else 0.dp)) {
+                    CardImage(
+                        code = code,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .height(170.dp)
+                            .width(117.dp)
+                            .clip(RoundedCornerShape(8.dp)),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.padding(start = 8.dp)) {
                         Text(
                             c.name ?: presetName ?: "未知卡片",
                             style = MaterialTheme.typography.titleLarge,
@@ -141,11 +139,8 @@ fun CardDetailScreen(code: Long, presetName: String?) {
                     ByDeckBlock(c)
                 }
 
+                CardStatsSection(code)
                 Spacer(Modifier.height(8.dp))
-                ReservedCard(
-                    "卡组胜率统计",
-                    "按卡组维度查看携带该卡的卡组胜率排名。服务端暂无对应端点，等后续候选提供。",
-                )
                 ReservedCard(
                     "条件筛选",
                     "按时间 / 段位等条件过滤统计。查询接口暂不支持筛选参数。",
@@ -185,7 +180,14 @@ private fun ByDeckBlock(c: CardDetail) {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Text("按卡组分布", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
-            for (i in 0 until byDeck.length()) {
+            if (byDeck.length() > 12) {
+                Text(
+                    "共 ${byDeck.length()} 个卡组，这里只列前 12 个",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+            for (i in 0 until minOf(byDeck.length(), 12)) {
                 val item = byDeck.optJSONObject(i) ?: continue
                 val deck = item.optString("deck_type", "?")
                 val m = item.optJSONObject("metrics") ?: continue

@@ -71,15 +71,20 @@ fun LineChart(
                 if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
             }
             drawPath(path, color = lineColor, style = Stroke(width = 4f))
-            // 首尾点标记
-            drawCircle(color = lineColor, radius = 7f, center = Offset(x(0), y(points.first())))
-            drawCircle(color = lineColor, radius = 7f, center = Offset(x(points.lastIndex), y(points.last())))
+            // 每个节点都画圆：首点是赛前分，之后每局赛后分各一个节点
+            points.forEachIndexed { i, v ->
+                drawCircle(
+                    color = lineColor,
+                    radius = if (i == 0 || i == points.lastIndex) 7f else 5f,
+                    center = Offset(x(i), y(v)),
+                )
+            }
         }
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-            Text("第1局 · ${fmt(points.first())}", style = MaterialTheme.typography.labelSmall, color = labelColor)
+            Text("赛前 · ${fmt(points.first())}", style = MaterialTheme.typography.labelSmall, color = labelColor)
             Spacer(Modifier.weight(1f))
             Text(
-                "最近${points.size - 1}局 · ${fmt(points.last())}",
+                "第${points.size - 1}局 · ${fmt(points.last())}",
                 style = MaterialTheme.typography.labelSmall,
                 color = labelColor,
             )

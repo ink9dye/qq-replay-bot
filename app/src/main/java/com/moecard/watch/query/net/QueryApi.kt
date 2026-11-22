@@ -1,6 +1,18 @@
 package com.moecard.watch.query.net
 
 import com.moecard.watch.net.AuthException
+import com.moecard.watch.query.model.BindResult
+import com.moecard.watch.query.model.BindingInfo
+import com.moecard.watch.query.model.CardFlow
+import com.moecard.watch.query.model.CardUsage
+import com.moecard.watch.query.model.CardWinrate
+import com.moecard.watch.query.model.SidePlan
+import com.moecard.watch.query.model.parseBindResult
+import com.moecard.watch.query.model.parseBinding
+import com.moecard.watch.query.model.parseCardFlow
+import com.moecard.watch.query.model.parseCardUsage
+import com.moecard.watch.query.model.parseCardWinrate
+import com.moecard.watch.query.model.parseSidePlan
 import com.moecard.watch.query.model.BuildData
 import com.moecard.watch.query.model.CardDetail
 import com.moecard.watch.query.model.PieData
@@ -159,6 +171,17 @@ class QueryApi(private val server: String, private val trustSelfSigned: Boolean)
 
     private fun fail(status: Int, bytes: ByteArray): RuntimeException {
         val detail = asJson(bytes).optString("error", "")
+        // 新增端点（binding / side-plan / card 三统计）用的细分错误码，转成人话
+        val specific = when (detail) {
+            "no_build" -> "该玩家最近 14 天没有可用构筑"
+            "card_not_found" -> "卡号不存在（本地卡库与既有映射都识别不到）"
+            "player_required" -> "请填写玩家名"
+            "bad_player" -> "玩家名不合法（1~100 字，不能含斜杠）"
+            "bad_code" -> "卡号不合法"
+            "bad_param" -> "参数不合法"
+            else -> null
+        }
+        if (specific != null) return RuntimeException(specific)
         val base = when (status) {
             400 -> "请求无效"
             403 -> "没有权限（订阅写入需服务端开启写入且账号有写权限）"
@@ -169,12 +192,19 @@ class QueryApi(private val server: String, private val trustSelfSigned: Boolean)
             else -> "服务器错误（HTTP $status）"
         }
         val msg = if (detail.isNotBlank() && detail != base) "$base：$detail" else base
-        if (status == 429 || status == 503) return BusyException(msg)
+        // 429 = 闸门满；503 query_busy = 门户忙，两者都值得退避重试。
+        if (status == 429 || (status == 503 && detail == "query_busy")) return BusyException(msg)
+        // 503 query_unavailable 在实测里是「上游计算锁 8s / sqlite busy 3s 等不到」，
+        // 属于概率性超时：隔几秒重试往往就好（构筑 3/3、搜索 2/3 成功），所以单独标记。
+        if (status == 503 && detail == "query_unavailable") return UnavailableException(msg)
         return RuntimeException(msg)
     }
 
     /** 429（闸门满）/ 503（门户忙）单独成类，交给 queued() 自动重试。 */
     private class BusyException(msg: String) : RuntimeException(msg)
+
+    /** 上游计算超时：只退避重试 2 次（3s、6s），不无限等。 */
+    private class UnavailableException(msg: String) : RuntimeException(msg)
 
     /**
      * 全局串行闸门 + 繁忙重试：自建查询接口同一时刻只允许一条在途
@@ -184,16 +214,26 @@ class QueryApi(private val server: String, private val trustSelfSigned: Boolean)
     private fun <T> queued(block: () -> T): T {
         gate.acquire()
         try {
-            var attempt = 0
+            var busyAttempt = 0
+            var timeoutAttempt = 0
             while (true) {
                 try {
                     return block()
                 } catch (e: BusyException) {
-                    attempt++
-                    if (attempt >= 10) {
-                        throw RuntimeException("服务器持续繁忙（已重试 $attempt 次），请稍后再试", e)
+                    busyAttempt++
+                    if (busyAttempt >= 10) {
+                        throw RuntimeException("服务器持续繁忙（已重试 $busyAttempt 次），请稍后再试", e)
                     }
                     Thread.sleep(3000)
+                } catch (e: UnavailableException) {
+                    // 上游算不过来（8s 计算锁 / 3s sqlite busy），等一会儿多数能成；
+                    // 但只退避 2 次：既不让用户干等，也不继续占着服务的 heavy 槽位。
+                    timeoutAttempt++
+                    if (timeoutAttempt > 2) {
+                        throw RuntimeException("服务器计算超时，请稍后重试", e)
+                    }
+                    val wait = if (timeoutAttempt == 1) 3000L else 6000L + (0..1500).random()
+                    Thread.sleep(wait)
                 }
             }
         } finally {
@@ -268,6 +308,58 @@ class QueryApi(private val server: String, private val trustSelfSigned: Boolean)
         val details = if (o.has("details") && !o.isNull("details")) o.get("details") else null
         val metrics = if (o.has("metrics") && !o.isNull("metrics")) o.get("metrics") else null
         parseCard(code, details, metrics)
+    }
+
+    // ---------- 绑定 / 换备 / 卡牌统计（2026-11-12） ----------
+
+    /** 查当前身份的 MC 绑定；未绑定返回 player = null（服务端不返回 404）。 */
+    fun binding(): BindingInfo = queued {
+        parseBinding(dataOf(authed("GET", "/query-api/binding")))
+    }
+
+    /** 绑定 / 改绑。known=false 表示最近 14 天收录里没有这个名字，服务端仍会保存。 */
+    fun bindBinding(player: String): BindResult = queued {
+        val name = player.trim()
+        require(name.isNotEmpty()) { "请填写 MC 玩家名" }
+        require(name.length <= 100) { "玩家名最多 100 字" }
+        val payload = JSONObject().put("player", name)
+        parseBindResult(dataOf(authed("POST", "/query-api/binding", payload.toString().toByteArray(Charsets.UTF_8))))
+    }
+
+    /** 解绑；本来没绑定也返回成功（removed=false）。 */
+    fun unbindBinding(): Boolean = queued {
+        val root = dataOf(authed("POST", "/query-api/binding/unbind"))
+        (root as? JSONObject)?.optBoolean("removed", false) ?: false
+    }
+
+    /**
+     * 换备：默认对手前 200（与 QQ / 网页口径一致，改成 0 就和 QQ 数字对不上）。
+     * 单次 1–3 s，调用方要有 loading 态。
+     */
+    fun sidePlan(player: String, top: Int = 6, recent: Int = 5): SidePlan = queued {
+        val name = player.trim()
+        require(name.isNotEmpty()) { "玩家名不能为空" }
+        val safeTop = top.coerceIn(1, 12)
+        val safeRecent = recent.coerceIn(1, 10)
+        val path = "/query-api/player/${enc(name)}/side-plan?top=$safeTop&recent=$safeRecent"
+        parseSidePlan(dataOf(authed("GET", path)))
+    }
+
+    fun cardUsage(code: Long, limit: Int = 20): CardUsage = queued {
+        require(code in 1..4294967295L) { "卡号超出范围" }
+        val safeLimit = limit.coerceIn(1, 100)
+        parseCardUsage(dataOf(authed("GET", "/query-api/card/$code/usage?limit=$safeLimit")))
+    }
+
+    fun cardFlow(code: Long): CardFlow = queued {
+        require(code in 1..4294967295L) { "卡号超出范围" }
+        parseCardFlow(dataOf(authed("GET", "/query-api/card/$code/flow")))
+    }
+
+    fun cardWinrate(code: Long, limit: Int = 20): CardWinrate = queued {
+        require(code in 1..4294967295L) { "卡号超出范围" }
+        val safeLimit = limit.coerceIn(1, 20)
+        parseCardWinrate(dataOf(authed("GET", "/query-api/card/$code/winrate?limit=$safeLimit")))
     }
 
     // ---------- 订阅（需要服务端 writes_enabled + 账号 writes） ----------

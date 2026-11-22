@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -33,9 +34,11 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
@@ -45,11 +48,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.moecard.watch.BuildConfig
+import com.moecard.watch.query.auth.AuthStore
 import com.moecard.watch.query.net.QuerySession
 import com.moecard.watch.ui.query.CardDetailScreen
 import com.moecard.watch.ui.query.DeckDetailScreen
@@ -61,6 +66,7 @@ import com.moecard.watch.ui.query.SearchScreen
 import com.moecard.watch.ui.query.SettingsScreen
 import com.moecard.watch.ui.query.SubsScreen
 import com.moecard.watch.ui.watch.WatchScreen
+import com.moecard.watch.ui.watch.WatchSetupScreen
 import kotlinx.coroutines.launch
 
 /**
@@ -116,6 +122,22 @@ fun AppRoot() {
     val scope = rememberCoroutineScope()
     val watchVm: MainViewModel = viewModel()
 
+    // 首次登录的助战机器人引导：按身份持久化，只问一次。
+    val ctx = LocalContext.current
+    val authStore = remember { AuthStore(ctx) }
+    val identity = session!!.identity
+    var onboarded by remember(identity) { mutableStateOf(authStore.isWatchOnboarded(identity)) }
+    var setupMode by remember(identity) { mutableStateOf(false) }
+    val watchConfig by watchVm.config.collectAsStateWithLifecycle()
+
+    // 已经配好令牌和账号的老用户不再重复询问。
+    LaunchedEffect(identity, watchConfig.token, watchConfig.accounts.size) {
+        if (!onboarded && watchConfig.token.isNotBlank() && watchConfig.accounts.isNotEmpty()) {
+            authStore.setWatchOnboarded(identity, true)
+            onboarded = true
+        }
+    }
+
     // 详情页才拦截返回键：弹一层；根页面交给系统默认行为
     BackHandler(enabled = backStack.size > 1) { backStack.removeAt(backStack.lastIndex) }
 
@@ -131,8 +153,45 @@ fun AppRoot() {
         scope.launch { drawerState.close() }
     }
 
+    // 引导页的返回：视为完成，回到首页。
+    BackHandler(enabled = setupMode) {
+        authStore.setWatchOnboarded(identity, true)
+        onboarded = true
+        setupMode = false
+        switchRoot(Dest.Roster)
+    }
+
+    if (!onboarded && !setupMode) {
+        AlertDialog(
+            onDismissRequest = {
+                // 点击外部等同“否”
+                authStore.setWatchOnboarded(identity, true)
+                onboarded = true
+            },
+            title = { Text("要开启助战机器人吗？") },
+            text = {
+                Text(
+                    "助战机器人可以登录萌卡、进入房间帮好友与订阅对局录制回放。" +
+                        "首次开启需要先准备观战接口令牌和萌卡账号，马上带你配置。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { setupMode = true }) { Text("是，去配置") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        authStore.setWatchOnboarded(identity, true)
+                        onboarded = true
+                    },
+                ) { Text("否，直接进首页") }
+            },
+        )
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
+        gesturesEnabled = !setupMode,
         drawerContent = {
             ModalDrawerSheet {
                 DrawerHeader(session!!.identity, session!!.role, session!!.writes)
@@ -159,14 +218,28 @@ fun AppRoot() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text(titleOf(current), maxLines = 1) },
+                    title = {
+                        Text(
+                            if (setupMode) "开启助战机器人" else titleOf(current),
+                            maxLines = 1,
+                        )
+                    },
                     navigationIcon = {
-                        if (backStack.size > 1) {
-                            IconButton(onClick = { backStack.removeAt(backStack.lastIndex) }) {
+                        when {
+                            setupMode -> TextButton(
+                                onClick = {
+                                    authStore.setWatchOnboarded(identity, true)
+                                    onboarded = true
+                                    setupMode = false
+                                    switchRoot(Dest.Roster)
+                                },
+                            ) { Text("跳过") }
+                            backStack.size > 1 -> IconButton(
+                                onClick = { backStack.removeAt(backStack.lastIndex) },
+                            ) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                             }
-                        } else {
-                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            else -> IconButton(onClick = { scope.launch { drawerState.open() } }) {
                                 Icon(Icons.Filled.Menu, contentDescription = "菜单")
                             }
                         }
@@ -175,7 +248,14 @@ fun AppRoot() {
             },
         ) { padding ->
             Column(Modifier.fillMaxWidth().padding(padding)) {
-                when (val dest = current) {
+                if (setupMode) {
+                    WatchSetupScreen(watchVm, onDone = {
+                        authStore.setWatchOnboarded(identity, true)
+                        onboarded = true
+                        setupMode = false
+                        switchRoot(Dest.Roster)
+                    })
+                } else when (val dest = current) {
                     Dest.Roster -> RosterScreen(onOpenPlayer = { open(Dest.Player(it)) })
                     Dest.Search -> SearchScreen(
                         onOpenPlayer = { open(Dest.Player(it)) },

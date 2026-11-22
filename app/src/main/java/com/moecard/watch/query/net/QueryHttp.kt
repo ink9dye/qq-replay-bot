@@ -1,6 +1,10 @@
 package com.moecard.watch.query.net
 
+import android.util.Log
+import com.moecard.watch.BuildConfig
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.Response
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
@@ -36,6 +40,45 @@ object QueryHttp {
         .writeTimeout(30, TimeUnit.SECONDS)
         // 查询接口读超时 10 秒 + 重试一次，对齐服务端资源边界
         .retryOnConnectionFailure(true)
+        .addInterceptor(DiagnosticInterceptor)
+
+    /**
+     * 调试构建的诊断日志：只记录方法、URL、状态码和错误响应体，
+     * 不记录 Authorization，避免令牌进 logcat。发布构建整段跳过。
+     */
+    private object DiagnosticInterceptor : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val req = chain.request()
+            if (!BuildConfig.DEBUG) return chain.proceed(req)
+            val started = System.currentTimeMillis()
+            val resp = try {
+                chain.proceed(req)
+            } catch (e: Exception) {
+                Log.w(TAG, "${req.method} ${req.url} -> ${e.javaClass.simpleName}: ${e.message}")
+                throw e
+            }
+            val cost = System.currentTimeMillis() - started
+            Log.i(TAG, "${req.method} ${req.url} -> ${resp.code} (${cost}ms)")
+            val path = req.url.encodedPath
+            // 只对错误和订阅/录像两个排查热点记 body，避免把 top100/构筑整包写进 logcat
+            if (resp.code >= 400 ||
+                path.endsWith("/subscriptions") ||
+                path.endsWith("/replays")
+            ) {
+                val body = try {
+                    resp.peekBody(8192).string()
+                } catch (_: Exception) {
+                    ""
+                }
+                body.chunked(3000).forEachIndexed { index, part ->
+                    Log.i(TAG, "  body[$index]: $part")
+                }
+            }
+            return resp
+        }
+    }
+
+    private const val TAG = "MoeQuery"
 
     private fun buildStrict(): OkHttpClient = base().build()
 
