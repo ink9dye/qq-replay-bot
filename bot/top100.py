@@ -187,7 +187,9 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
                 cached_alive=dict(_ALIVE_CACHE)
             file_paths = cached_paths
             alive={}
+            from .replay_alive import new_state as _alive_state,path_alive as _path_alive
             root_resolved=replay_root.resolve();dir_cache={}
+            _alive=_alive_state(replay_root)
             fresh={}
             for row in rows:
                 digest=row['digest']
@@ -207,7 +209,7 @@ def eligible_views(db,replay_root,now,internal_only=False,scope='default',series
                                 file_paths.setdefault(file_row['digest'], []).append(file_row['rel_path'])
                             with _ALIVE_LOCK:
                                 _ALIVE_FILES.update(at=now_mono, paths=file_paths)
-                ok=any(safe_replay_file(replay_root,rel_path,root_resolved,dir_cache)
+                ok=any(_path_alive(replay_root,rel_path,_alive)
                        for rel_path in file_paths.get(digest,()))
                 alive[digest]=ok;fresh[digest]=(now_mono,ok)
             add_metric('source_index_skipped', int(source_misses == 0))

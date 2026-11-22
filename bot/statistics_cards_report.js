@@ -7,8 +7,10 @@ const el = SS.el;
 const state = { request: 0, controller: null, result: null,
   groupsScope: '', groupsController: null, groupsFetchedAt: 0 };
 const deckPicks = {deck: new Set(), opdeck: new Set()};
+const deckStatus = (message) => { $('status').textContent = message; };
 const deckBatches = Object.fromEntries(['deck', 'opdeck'].map(id => [id,
-  window.StatisticsAutocomplete.deckBatch(id, deckPicks[id], run)]));
+  window.StatisticsAutocomplete.deckBatch(id, deckPicks[id],
+    () => deckStatus('卡组条件已改，点查询生效。'), undefined, deckStatus)]));
 
 function createPicker(ids) {
   const picker = { cards: new Map(), suggest: [], active: -1, version: 0, timer: 0 };
@@ -664,11 +666,14 @@ function waitForRetry(ms, signal) {
   });
 }
 
-async function fetchReport(url, signal, onRetry) {
+async function fetchReport(url, signal, onRetry, body) {
+  const init = body == null
+    ? { cache: 'no-store', credentials: 'same-origin', signal }
+    : { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        cache: 'no-store', credentials: 'same-origin', signal };
   for (let attempt = 0; ; attempt += 1) {
     signal.throwIfAborted();
-    const response = await fetch(url,
-      { cache: 'no-store', credentials: 'same-origin', signal });
+    const response = await fetch(url, init);
     if (response.ok) return response.json();
     const text = await response.text();
     let payload;
@@ -677,7 +682,9 @@ async function fetchReport(url, signal, onRetry) {
     if (!message && (response.headers.get('Content-Type') || '').startsWith('text/plain')) {
       message = text.trim().slice(0, 200);
     }
-    if ((!payload || payload.code !== 'query_busy') && [429, 502, 503, 504].includes(response.status) && attempt < 3) {
+    // 资源预算不足和已有重活在排队时，重试只会把同一个重任务再排一次：只提示，不自动重试。
+    const busy = payload && (payload.code === 'query_busy' || payload.code === 'resource_busy');
+    if (!busy && [429, 502, 503, 504].includes(response.status) && attempt < 3) {
       const retryAfter = response.headers.get('Retry-After');
       const seconds = retryAfter && !Number.isNaN(Number(retryAfter)) ? Number(retryAfter)
         : retryAfter && Number.isFinite(Date.parse(retryAfter)) ? (Date.parse(retryAfter) - Date.now()) / 1000
@@ -695,6 +702,10 @@ async function fetchReport(url, signal, onRetry) {
 window.addEventListener('statistics-result-ready',e=>{if(e.detail.kind==='card-report')run({push:false})});
 
 async function run(options) {
+  if (Object.values(deckBatches).some(batch => batch.emptySelection())) {
+    deckStatus('没有保留任何匹配卡组。请重新选择，或点清空取消该筛选。');
+    return;
+  }
   const push = !options || options.push !== false;
   const version = ++state.request;
   if (state.controller) state.controller.abort();
@@ -706,11 +717,16 @@ async function run(options) {
   $('status').textContent = '查询中…';
   try {
     const params = collect();
-    const data = await fetchReport('/statistics/api/card-report?' + params.toString(), signal,
+    const query = params.toString();
+    // 选择很多卡组/对手时查询串会超过网关的请求行上限（414）。超长改走表单 POST，
+    // 参数体与查询串逐字相同，服务端按同一路径、同一缓存键和同一把锁处理。
+    const long = query.length > 6000;
+    const data = await fetchReport(long ? '/statistics/api/card-report' : '/statistics/api/card-report?' + query,
+      signal,
       (seconds, attempt) => {
         if (version === state.request) $('status').textContent =
           '服务繁忙，' + seconds + ' 秒后自动重试（' + attempt + '/3）…';
-      });
+      }, long ? query : undefined);
     if (version !== state.request) return;        // 旧响应不覆盖新查询
     state.result = data;
     render(data);

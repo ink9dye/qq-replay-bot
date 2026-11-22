@@ -50,9 +50,10 @@ DECK_NAMING_STATS_SECONDS = 600.0
 # 预计算默认视图的保鲜期。14 天窗口每天约 2200 局，8 小时增量约 2.4%，
 # 对百分比报表可忽略；换来默认页全天命中，不再落到几分钟的实时计算。
 PRECOMPUTED_CARD_REPORT_SECONDS = 28800.0
-CARD_REPORT_PRECOMPUTED_SCOPES = (('100', '100'), ('200', '200'))
+# 100/all 是页面默认范围，必须一起预计算，否则默认页绕过成品走全量计算。
+CARD_REPORT_PRECOMPUTED_SCOPES = (('100', 'all'), ('100', '100'), ('200', '200'))
 CARD_REPORT_PRECOMPUTED_PHASES = ('main_first', 'main_second', 'side_first', 'side_second')
-PRECOMPUTED_MATRIX_SECONDS = 1800.0
+PRECOMPUTED_MATRIX_SECONDS = 28800.0
 MATRIX_PRECOMPUTED_SCOPES = (('200', '200'),)
 
 
@@ -387,10 +388,14 @@ class StatisticsPortal:
             return status,kind,image.read_bytes(),extra
         if parts==['statistics','api','deck-pie.png']:
             # 网站自己生成并缓存饼图 PNG；QQ「前百饼图」直接复用这张图。
-            from .statistics_pie_image import render_from_roster
+            # Request path prefers the background-refreshed artifact;
+            # only a missing/expired file falls back to rendering here.
+            from .statistics_pie_image import render_from_roster, serve_latest
+            blob=serve_latest(self.database)
             try:
-                reply=self._roster_reply()
-                blob=render_from_roster(self.database, json.loads(reply[2]))
+                if blob is None:
+                    reply=self._roster_reply()
+                    blob=render_from_roster(self.database, json.loads(reply[2]))
             except ValueError:
                 return self._reply(503,'暂无卡组档案。')
             except Exception:
@@ -1297,6 +1302,19 @@ class StatisticsPortal:
         # 网页默认仍只提供查询与下载；唯一例外是本机 owner 的“卡组命名/组合编辑”后台。
         # 要求：本机回环 + 本机 Host + owner cookie + 自定义请求头 + 同源 Origin + 有界请求体。
         parsed=urlsplit(path)
+        # 卡报筛选（按卡组/按对手可多选）参数会随选择数增长，超过网关 8KB 请求行就 414。
+        # 读查询允许改用表单 POST：参数体与 GET 的查询串同构，直接按原路径走同一套缓存与锁。
+        if parsed.path.endswith('/statistics/api/card-report') and not parsed.query:
+            kind=(headers.get('Content-Type') or '').split(';',1)[0].strip().lower()
+            if kind!='application/x-www-form-urlencoded':
+                return self._reply(415,'请求格式不支持。')
+            if len(body)>32768:
+                return self._reply(413,'筛选条件过大，请减少选择后重试。')
+            try:
+                query=body.decode('utf-8')
+            except UnicodeDecodeError:
+                return self._reply(400,'参数无效。')
+            return self.route(parsed.path+'?'+query,headers,client)
         if parsed.path not in ('/statistics/api/deck-naming','/statistics/api/deck-naming/groups'):
             return self._reply(403,'用户统计页面仅提供查询与下载，不支持管理操作。')
         if parsed.path == '/statistics/api/deck-naming':

@@ -14,6 +14,11 @@ MAX_KEYS = 256
 MAX_BYTES = 64 * 1024 * 1024
 MAX_AGE = 1800
 COOLDOWN = 30
+# 进度条只用粗估：优先取同一个 key 上一轮的真实耗时，没有就按类型给默认值。
+# 下限 15 s、上限 600 s，避免异常样本把 ETA 拉得过大或过小。
+DEFAULT_ESTIMATE_MS = {'card-report': 75000, 'matrix': 45000, 'recordings': 30000,
+                       'roster': 20000, 'cards-extra': 20000}
+DEFAULT_ESTIMATE_FALLBACK_MS = 30000
 
 
 class QueryRefresh:
@@ -70,9 +75,27 @@ class QueryRefresh:
             else:
                 metrics['refresh_id'] = job_id
 
+    def _estimate_ms(self, key):
+        """粗估本次计算要多久：同一 key 的上轮耗时优先，否则按接口类型给默认值。"""
+        try:
+            last = float(self.durations.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            last = 0.0
+        if last > 0:
+            return int(min(600000, max(15000, last * 1000)))
+        return DEFAULT_ESTIMATE_MS.get(key[0], DEFAULT_ESTIMATE_FALLBACK_MS)
+
+    def _queue_position(self):
+        """前面还有几个已入队、未开始的任务（0 表示正在算或马上开始）。"""
+        try:
+            return max(0, int(self.jobs.qsize()))
+        except (AttributeError, TypeError, ValueError):
+            return 0
+
     def get(self,key,compute,version,ttl,wait=1.0,background=False):
         candidate=key[0] in ('deck-candidates','card-table','group-list')
-        maximum=7*86400 if key[0] in ('card-options','deck-options') else (ttl if candidate else MAX_AGE)
+        labels=key[0] in ('card-options','deck-options')
+        maximum=7*86400 if labels else (ttl if candidate else MAX_AGE)
         try:stamp=version()
         except OSError:stamp=None
         now=time.time()
@@ -96,6 +119,11 @@ class QueryRefresh:
             if candidate:minimum=ttl
             if background:minimum=max(minimum,ttl,duration*3)
             retry_blocked=error and now-error[0]<COOLDOWN
+            usable=item is not None and 0<=age<=maximum
+            # A cold label request must enter the regular bounded queue. Warm
+            # labels can still return their last result and refresh in spare time.
+            if labels and not usable:
+                background=False
             spare=not background or (not self.pending and self.jobs.empty())
             if event is None and (item is None or age>=minimum) and not retry_blocked and spare:
                 event = threading.Event()
@@ -107,7 +135,7 @@ class QueryRefresh:
                 except queue.Full:
                     event, job_id = None, None
                     outcome = 'queue_full'
-            if item and 0<=age<=maximum:
+            if usable:
                 self.items.move_to_end(key)
                 result_id = item.get('job_id')
                 # A worker publishes the payload before persisting it and waking waiters.
@@ -136,7 +164,8 @@ class QueryRefresh:
                     outcome = 'no_result'
         self._observe(outcome, job_id)
         return 503,'application/json; charset=utf-8',json.dumps(dict(
-            error='正在准备统计结果，请稍候。',code='query_busy',retry_after=5),ensure_ascii=False).encode(),{'Retry-After':'5'}
+            error='正在准备统计结果，请稍候。',code='query_busy',retry_after=5,
+            estimate_ms=self._estimate_ms(key),queue_position=self._queue_position()),ensure_ascii=False).encode(),{'Retry-After':'5'}
 
     def _persist(self,key,item):
         try:
@@ -181,8 +210,20 @@ class QueryRefresh:
             except Exception as exc:
                 status=500
                 if isinstance(exc,ValueError):status=400
-                result=(status,'application/json; charset=utf-8',json.dumps(dict(
-                    error=str(exc) if status==400 else '统计计算暂未完成，请稍后重试。'),ensure_ascii=False).encode(),{})
+                code=getattr(exc,'code',None)
+                if code:
+                    # 兜底计算超出资源预算：给明确状态，而不是让请求排队几分钟。
+                    status=503;outcome=code
+                    wait=int(getattr(exc,'retry_after',30))
+                    payload=dict(error='当前资源紧张，统计结果暂不可用；请稍后重试。',
+                                 code=code,retry_after=wait,
+                                 estimate_ms=self._estimate_ms(key),queue_position=0)
+                    headers={'Retry-After':str(wait)}
+                else:
+                    payload=dict(error=str(exc) if status==400 else '统计计算暂未完成，请稍后重试。')
+                    headers={}
+                result=(status,'application/json; charset=utf-8',
+                        json.dumps(payload,ensure_ascii=False).encode(),headers)
                 with self.lock:self.errors[key]=(time.time(),result,job_id,outcome)
             finally:
                 metrics['refresh_outcome'] = outcome
