@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh deck pie image every 2 hours
+
+[Timer]
+OnBootSec=25min
+OnCalendar=*-*-* 00/2:38:00
+AccuracySec=60s
+Persistent=false
+Unit=ygobot-deck-pie-precompute.service
+
+[Install]
+WantedBy=timers.target

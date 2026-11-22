@@ -1,0 +1,18 @@
+[Unit]
+Description=YGO deck pie image precompute (QQ top-100 pie)
+After=network.target ygo-web.service
+Wants=ygo-web.service
+
+[Service]
+Type=oneshot
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/ygobot/tools/precompute_deck_pie.py
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryHigh=300M
+MemoryMax=380M

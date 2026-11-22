@@ -91,6 +91,16 @@ def _load_any(path: Path, max_age: float = 600.0):
     return blob if blob.startswith(b'\x89PNG\r\n\x1a\n') else None
 
 
+def serve_latest(database, max_age: float = 7200.0):
+    """请求路径快路径：磁盘上已有足够新的成品就直接返回，不重算 key、不查库。
+
+    QQ「前百饼图」会经 8788 的 /statistics/api/deck-pie.png 取图；原实现每次都先取
+    花名册再重算缓存 key，数据一变就重新跑 matplotlib。后台 timer 把成品刷到
+    latest.png 之后，这里只判 mtime（默认 2 小时），渲染彻底离开请求路径。
+    """
+    return _load_any(_cache_path(database), max_age)
+
+
 def _store(path: Path, key: str, blob: bytes) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,8 +256,12 @@ def _valid_parts(paths, max_age: float):
     return {'pie': pie, 'legend': legend}
 
 
-def _load_parts(database, max_age: float = 600.0):
-    """读取网站保存的饼图/图例；JPEG 优先，旧 PNG 兼容；过期或缺失返回 None。"""
+def _load_parts(database, max_age: float = 10800.0):
+    """读取网站保存的饼图/图例；JPEG 优先，旧 PNG 兼容；过期或缺失返回 None。
+
+    2026-11-22：窗口由 600 秒放宽到 3 小时，与 2 小时的定时刷新配套。
+    QQ「前百饼图」不再每次因 10 分钟过期而回源网站；图最多旧 2 小时。
+    """
     return (_valid_parts(_parts_paths(database), max_age)
             or _valid_parts(_legacy_parts_paths(database), max_age))
 
