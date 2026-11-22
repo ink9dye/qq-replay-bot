@@ -1,0 +1,16 @@
+[Unit]
+Description=YGO card report precompute (default 100/100 and 200/200 views)
+After=network.target ygo-web.service
+Wants=ygo-web.service
+
+[Service]
+Type=oneshot
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+Environment=TZ=Asia/Shanghai
+ExecStart=/bin/sh -c '/usr/bin/python3 /opt/ygobot/tools/precompute_card_report.py --only 100:all; /usr/bin/python3 /opt/ygobot/tools/precompute_card_report.py --only 100:100; /usr/bin/python3 /opt/ygobot/tools/precompute_card_report.py --only 200:200; /usr/bin/python3 /opt/ygobot/tools/precompute_card_report.py --only matrix:200:200; true'
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryMax=400M

@@ -187,12 +187,16 @@ def _chunked_tables(db, loader, fact_digest_index=None, *, projection=None):
     return dict(copies=list(copies.values()),facts=facts)
 
 
-def raw_tables(db, loader, projection=None, chunk_loader=None, fact_digest_index=None):
+def raw_tables(db, loader, projection=None, chunk_loader=None, fact_digest_index=None, use_cache=True):
     if chunk_loader is not None:
         count=db.execute('SELECT COUNT(*) FROM _report_selected').fetchone()[0]
         if count>300:
             return _chunked_tables(db,chunk_loader,fact_digest_index,projection=projection)
 
+    # 选中集合会随新对局和保留期变化，缓存键很快失效；首次查询不应为
+    # identity/写入付出几十毫秒。调用方明确需要时才启用。
+    if not use_cache:
+        return loader()
     identity=None
     try:
         identity=_identity(db, projection)

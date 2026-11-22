@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh eligible views snapshot every 20 minutes
+
+[Timer]
+OnBootSec=8min
+OnCalendar=*-*-* *:03,13,23,33,43,53:00
+AccuracySec=30s
+Persistent=false
+Unit=ygobot-eligible-snapshot.service
+
+[Install]
+WantedBy=timers.target

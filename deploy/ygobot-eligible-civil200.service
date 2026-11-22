@@ -1,0 +1,19 @@
+[Unit]
+Description=YGO eligible views snapshot (200 internal)
+After=network.target ygo-web.service
+Wants=ygo-web.service
+
+[Service]
+Type=oneshot
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/ygobot/tools/precompute_eligible.py --scope 200:200 --internal --target eligible-views-civil200.sqlite3
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryHigh=260M
+MemoryMax=320M
+TimeoutStartSec=600

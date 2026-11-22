@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh card report precompute every 2 hours
+
+[Timer]
+OnBootSec=20min
+OnCalendar=*-*-* 00/2:08:00
+AccuracySec=60s
+Persistent=false
+Unit=ygobot-card-report-precompute.service
+
+[Install]
+WantedBy=timers.target

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import math
+import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -167,10 +168,17 @@ def _build_codes(db, build):
         'SELECT code FROM stat_build_cards WHERE build=? AND copies>0', (build,))]
 
 
-def _report_opponents(db, views, catalog, filters):
+def _report_opponents(db, views, catalog, filters, cached=None):
     digests = {row['digest'] for row in views}
     opponents = {}
-    if not (filters.series or filters.opponent_series):
+    if cached is not None and not filters.opponent_series:
+        # 快照构建时用同一个函数算过；命中的 digest 直接用，缺失的仍走下面的原查询。
+        for digest in digests:
+            items = cached.get(digest)
+            if items:
+                opponents[digest] = items
+        digests.difference_update(opponents)
+    elif not (filters.series or filters.opponent_series):
         eligible = {(row['digest'], row['player']): row for row in views}
         for row in views:
             digest = row['digest']
@@ -212,13 +220,22 @@ def _selected_rows(db, replay_root, now, filters):
     if f.first_player is not None and type(f.first_player) is not bool:
         raise ValueError('invalid_order_filter')
     catalog = series_reference(db)
-    # 卡报不展示资格诊断：跳过两条全表 COUNT（空闲约 1.6 秒，I/O 紧张时放大数十倍）。
-    basis = eligible_views(db, replay_root, now, f.internal_only, f.scope, catalog,
-                           annotate_series=bool(f.series), with_diagnostics=False)
+    # 优先读后台刷新的资格快照（同范围、同 internal 标志才算命中）；未命中一律回原路径，
+    # 不做半份结果，也不在请求里触发全量重算。
+    from .eligible_snapshot import report_basis, resource_state, ResourceBusy
+    basis = report_basis(db, replay_root, now, f, catalog)
+    if basis is None:
+        # 没有兼容快照才回原路径；先看资源预算，宁可可读的明确状态，也不排几分钟队。
+        reason = resource_state('request')
+        if reason:
+            raise ResourceBusy(reason)
+        # 卡报不展示资格诊断：跳过两条全表 COUNT（空闲约 1.6 秒，I/O 紧张时放大数十倍）。
+        basis = eligible_views(db, replay_root, now, f.internal_only, f.scope, catalog,
+                               annotate_series=bool(f.series), with_diagnostics=False)
     opponents = {}
     if f.opponent_types or f.opponent_series or f.opponent_no60:
         with measure('card_report_opponents_ms'):
-            opponents = _report_opponents(db, basis['views'], catalog, f)
+            opponents = _report_opponents(db, basis['views'], catalog, f, basis.get('opponents'))
     selected = []
     exclusions = {key: 0 for key in ('deck_type', 'series', 'opponent_type', 'opponent_series', 'first_player', 'start_at', 'end_at')}
     for row in basis['views']:
@@ -454,10 +471,15 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
         return copies, facts
 
     def read_raw_tables(selected_table="_report_selected", builds_table="_report_builds"):
-        try:
-            got = _summary_tables(selected_table, builds_table)
-        except Exception:
-            got = None
+        # 1—2 张卡直接按 code 索引定向读取，只需几千行事实；3 张以上按 code
+        # 逐个扫索引反而比解码摘要慢，仍走摘要。未指定卡号也走摘要。
+        direct = needed_codes is not None and len(needed_codes) <= 2
+        got = None
+        if not direct:
+            try:
+                got = _summary_tables(selected_table, builds_table)
+            except Exception:
+                got = None
         if got is not None:
             return dict(copies=got[0], facts=got[1])
         projection = (' AND code IN (' + ','.join('?' for _ in needed_codes) + ')') if needed_codes else ''
@@ -480,8 +502,8 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     # fact_fields 里 digest 的位置就是分桶拆分用的列：单次读到的行据此拆回各桶。
     with measure('card_report_raw_ms'):
         raw = raw_tables(db, read_raw_tables, projection=(needed_codes, narrow_opening, needs_facts),
-                         chunk_loader=read_raw_tables if needed_codes is None else None,
-                         fact_digest_index=fact_fields.index('digest'))
+                         chunk_loader=None, fact_digest_index=fact_fields.index('digest'),
+                         use_cache=False)
     # 窄读只取 initial_count>0 的行，但旧口径里同一 (digest,player) 只要有一行
     # 是 NULL，合并结果就是“未知”并排除。摘要路径已在解码时顺手收集；回退路径
     # 仍查 NULL 部分索引（27 万行约 1.3 秒）。
@@ -490,10 +512,14 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     else:
         unset_by_code_part = {}
         if narrow_opening and view_index:
-            for code, part, digest, player in db.execute(
-                    'SELECT z.code,z.partition,z.digest,z.player FROM stat_card_facts z '
-                    'WHERE z.initial_count IS NULL AND (z.digest,z.player) IN '
-                    '(SELECT digest,player FROM _report_selected)'):
+            null_sql = ('SELECT z.code,z.partition,z.digest,z.player FROM stat_card_facts z '
+                        'WHERE z.initial_count IS NULL AND (z.digest,z.player) IN '
+                        '(SELECT digest,player FROM _report_selected)')
+            null_args = ()
+            if needed_codes is not None:
+                null_sql += ' AND z.code IN (' + ','.join('?' for _ in needed_codes) + ')'
+                null_args = list(needed_codes)
+            for code, part, digest, player in db.execute(null_sql, null_args):
                 position = view_index.get((digest, player))
                 if position is not None:
                     unset_by_code_part.setdefault((code, part), set()).add(position)
@@ -686,6 +712,18 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
     eligible = len(rows)
     shown = rows[:limit]
     notes = []
+    snapshot = basis.get('snapshot') or {}
+    if snapshot.get('stale'):
+        age_minutes = max(1, int(round(float(snapshot.get('age') or 0.0) / 60.0)))
+        notes.append('资格数据截至 %s（约 %d 分钟前）；后台刷新未完成，先展示最近一次成功结果。'
+                     % (time.strftime('%m-%d %H:%M', time.localtime(float(snapshot['built_at']))),
+                        age_minutes))
+    elif float(snapshot.get('age') or 0.0) >= 300.0:
+        # 快照在有效期内但已过一轮刷新：明确给出实际数据时间，不让人以为是刚刚的数据。
+        age_minutes = max(1, int(round(float(snapshot.get('age') or 0.0) / 60.0)))
+        notes.append('资格数据截至 %s（约 %d 分钟前），此后新增对局尚未计入。'
+                     % (time.strftime('%m-%d %H:%M', time.localtime(float(snapshot['built_at']))),
+                        age_minutes))
     if codes and not eligible:
         notes.append('所选条件下没有达到门槛的卡；可放宽条件或降低样本占比。')
     if eligible > len(shown):
@@ -712,7 +750,10 @@ def query(db, replay_root, now, codes=(), filters=None, metric='drawn', threshol
         selected_games=len(game_digests(selected)),
         data_quality=dict(basis['diagnostics'], filter_exclusions=exclusions,
                           filter_exclusion_unit='first_failing_filter_per_perspective',
-                          excluded_by_opening=excluded_by_opening),
+                          excluded_by_opening=excluded_by_opening,
+                          snapshot_at=snapshot.get('built_at'),
+                          snapshot_age_seconds=snapshot.get('age'),
+                          snapshot_stale=bool(snapshot.get('stale'))),
         base=dict(denominator=base['denominator'], wins=base['wins'], rate=base['percentage'],
                   unknown=base['unknown_samples']),
         rows=shown,
