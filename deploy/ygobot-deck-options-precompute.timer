@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh deck/opponent candidates every 20 minutes
+
+[Timer]
+OnBootSec=30min
+OnCalendar=*-*-* *:19,39,59:00
+AccuracySec=60s
+Persistent=false
+Unit=ygobot-deck-options-precompute.service
+
+[Install]
+WantedBy=timers.target

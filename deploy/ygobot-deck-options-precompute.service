@@ -1,0 +1,20 @@
+[Unit]
+Description=Precompute cards-report deck/opponent candidates
+After=network.target ygo-web.service
+Wants=ygo-web.service
+
+[Service]
+Type=oneshot
+User=ygo
+Group=ygo
+WorkingDirectory=/opt/ygobot
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONUNBUFFERED=1
+# Single-slot gate shared with the other heavy background jobs.
+ExecStart=/usr/bin/flock -n -E 0 /opt/ygobot/data/cache/batch.lock /usr/bin/python3 /opt/ygobot/tools/precompute_deck_options.py
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryHigh=300M
+MemoryMax=400M
+TimeoutStartSec=300
