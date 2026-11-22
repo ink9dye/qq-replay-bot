@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule the bounded Side inference batch (hourly, off-peak slot)
+
+[Timer]
+OnBootSec=45min
+OnCalendar=*-*-* *:12:00
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
