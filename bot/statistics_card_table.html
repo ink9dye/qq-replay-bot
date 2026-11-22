@@ -31,7 +31,7 @@ async function load(){
   const baselines=next.sample_baselines;if(!baselines||!['overall','first','second'].every(k=>Number.isInteger(baselines[k])&&baselines[k]>=0))throw Error('统计网页服务版本不兼容：缺少有效小局分母。');
   const expected=selectedDeck?[JSON.parse(selectedDeck)]:[];if(JSON.stringify(next.filters?.deck_types)!==JSON.stringify(expected))throw Error('卡组条件未被接口确认，暂不展示结果。');
   data=next;$('deckFilter-list').replaceChildren(...next.deck_choices.filter(Boolean).map(name=>new Option(name,name)));
-  $('status').textContent=`${selectedDeck?'卡组：'+JSON.parse(selectedDeck)+' · ':''}我方${scopeName(data.rank_scope.self_range)} / 对手${scopeName(data.rank_scope.opponent_range)} · 已覆盖${data.covered_players}人 · 榜单${data.roster.version}${data.roster.stale?'（过期名单）':''}`;
+  $('status').textContent=`${selectedDeck?'卡组：'+JSON.parse(selectedDeck)+' · ':''}我方${scopeName(data.rank_scope.self_range)} / 对手${scopeName(data.rank_scope.opponent_range)} · 已覆盖${data.covered_players}人 · 榜单${data.roster.stale?'（过期名单）':''}`;
   $('status').textContent+=data.rank_scope.complete?'':'；排名未确认'+data.rank_scope.unknown_rank_players+'人（仅已核验样本，非完整前200，可刷新继续核验）';
   $('coverage').textContent=`所选卡组范围按各小局当时卡组分类，不用玩家最新构筑倒推历史。投入人数另按我方范围最新有效构筑统计（对手条件仅限小局指标）：${data.selected_players}人，选源已确认${data.known_basis_players}人、未知${data.unknown_basis_players}人。`;
   $('cardPick').replaceChildren();for(const card of data.rows){const o=el('option',card.name+' #'+card.code);o.value=card.code;o.selected=picks.includes(String(card.code));$('cardPick').append(o)}for(const code of picks)if(!Array.from($('cardPick').options).some(o=>o.value===code)){const o=new Option((pickLabels.get(code)||code)+'（本卡组无样本）',code);o.selected=true;$('cardPick').append(o)}$('cardPick').dispatchEvent(new Event('change'));page=0;render();
