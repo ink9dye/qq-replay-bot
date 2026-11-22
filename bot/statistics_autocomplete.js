@@ -142,12 +142,13 @@
     });
     input.parentElement.after(tools);
     tools.append(confirm, no60);
-    confirm.onclick = submit;
+    const confirmSelection = options.confirm || submit;
+    confirm.onclick = confirmSelection;
     no60.onclick = () => { setExcluded(!excluded()); control.close(); submit(); };
     input.addEventListener('keydown', event => {
       if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
       event.preventDefault();
-      submit();
+      confirmSelection();
     });
     return {
       tools, excluded, setExcluded,
@@ -161,11 +162,12 @@
     };
   }
 
-  function deckBatch(id, picks, submit, chips = document.createElement('span')) {
+  function deckBatch(id, picks, submit, chips = document.createElement('span'), batch = null) {
     const input = document.getElementById(id);
     chips.classList.add('chips');
     chips.setAttribute('aria-live', 'polite');
-    let exact = true;
+    let exact = true, expanded = false;
+    const source = document.getElementById(input.getAttribute('list'));
     function render() {
       chips.replaceChildren();
       for (const name of picks) {
@@ -180,7 +182,29 @@
         chips.append(chip);
       }
     }
-    const filter = deckFilter(id, submit, {choose: name => {
+    function expand() {
+      const term = filter.term().toLocaleLowerCase();
+      if (!term) return;
+      const matches = [...new Set([...source.options].map(option => option.value))].filter(name =>
+        name.toLocaleLowerCase().includes(term) && (!filter.excluded() || !name.startsWith('60')));
+      if (!matches.length) {
+        batch(input.dataset.candidateLoading === '1' ? '候选仍在加载，请稍后点确定。' :
+          '候选中没有匹配；可缩短关键词、手输后点查询，或等待候选更新。');
+        return;
+      }
+      if (matches.length > 100) {
+        batch('匹配超过 100 个，请缩小关键词。');
+        return;
+      }
+      picks.clear();
+      for (const name of matches) picks.add(name);
+      expanded = true;
+      exact = true;
+      input.value = '';
+      render();
+      batch('已展开 ' + matches.length + ' 个卡组，可移除后点查询。');
+    }
+    const filter = deckFilter(id, submit, {confirm: batch ? expand : null, choose: name => {
       if (picks.size >= 100 && !picks.has(name)) return;
       picks.add(name);
       input.value = '';
@@ -191,9 +215,10 @@
     clear.textContent = '清空';
     filter.tools.append(clear);
     filter.tools.after(chips);
-    function reset() { filter.reset(); picks.clear(); exact = true; render(); }
+    function reset() { filter.reset(); picks.clear(); exact = true; expanded = false; render(); }
     clear.onclick = () => { reset(); submit(); };
     return {...filter, reset,
+      emptySelection: () => expanded && !picks.size && !filter.term(),
       exact: () => !filter.term() && (!picks.size || exact),
       restore: (names, exactMatch) => { exact = exactMatch; for (const name of names) picks.add(name); render(); }
     };

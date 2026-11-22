@@ -2,6 +2,8 @@
 import hashlib
 import json
 import time
+from tempfile import NamedTemporaryFile
+from threading import Lock
 from pathlib import Path
 
 _cache={}
@@ -9,6 +11,8 @@ _cache={}
 # 用紧凑元组而不是嵌套 dict：5000+ 构筑时内存约为原来的 1/4。
 _BUILD_CACHE={}
 _BUILD_CACHE_LOADED=False
+_BUILD_CACHE_LOCK=Lock()
+_BUILD_CACHE_SAVE_LOCK=Lock()
 SEMANTICS='contains_official_series_in_observed_main_or_extra'
 _CHUNK=250
 _MAX_ENTRIES=20000
@@ -60,48 +64,59 @@ def _cache_file(db):
 
 
 def _load_build_cache(db):
-    global _BUILD_CACHE_LOADED
-    if _BUILD_CACHE_LOADED:return
-    _BUILD_CACHE_LOADED=True
-    path=_cache_file(db)
-    if path is None or not path.is_file():return
-    try:
-        payload=json.loads(path.read_text(encoding='utf-8'))
-        entries=payload.get('entries') if isinstance(payload,dict) else None
-        if not isinstance(entries,dict):return
-        for key,value in entries.items():
-            try:
-                key=tuple(json.loads(key))
-                series,status,origin,membership=value
-                if not isinstance(series,list) or not isinstance(membership,list):continue
-                compact=(tuple(str(s) for s in series),str(status),str(origin),
-                         tuple((str(tag),int(main),int(extra)) for tag,main,extra in membership))
-            except (ValueError,TypeError):
-                continue
-            _BUILD_CACHE[key]=compact
-    except (OSError,ValueError,TypeError):
-        _BUILD_CACHE.clear()
+    with _BUILD_CACHE_LOCK:
+        global _BUILD_CACHE_LOADED
+        if _BUILD_CACHE_LOADED:return
+        _BUILD_CACHE_LOADED=True
+        path=_cache_file(db)
+        if path is None or not path.is_file():return
+        try:
+            payload=json.loads(path.read_text(encoding='utf-8'))
+            entries=payload.get('entries') if isinstance(payload,dict) else None
+            if not isinstance(entries,dict):return
+            for key,value in entries.items():
+                try:
+                    key=tuple(json.loads(key))
+                    series,status,origin,membership=value
+                    if not isinstance(series,list) or not isinstance(membership,list):continue
+                    compact=(tuple(str(s) for s in series),str(status),str(origin),
+                             tuple((str(tag),int(main),int(extra)) for tag,main,extra in membership))
+                except (ValueError,TypeError):
+                    continue
+                _BUILD_CACHE[key]=compact
+        except (OSError,ValueError,TypeError):
+            _BUILD_CACHE.clear()
 
 
 def _save_build_cache(db, revision=None):
     path=_cache_file(db)
-    if path is None or not _BUILD_CACHE:return
-    try:
-        path.parent.mkdir(parents=True,exist_ok=True)
-        entries={}
-        for key,value in _BUILD_CACHE.items():
-            if not isinstance(key,tuple):continue
-            if revision is not None and key and key[0]!=revision:continue
-            series,status,origin,membership=value
-            entries[json.dumps(list(key),ensure_ascii=False)]=[list(series),status,origin,
-                                                               [list(item) for item in membership]]
-            if len(entries)>=_MAX_ENTRIES:break
-        tmp=path.with_suffix('.tmp')
-        tmp.write_text(json.dumps(dict(saved=time.time(),entries=entries),ensure_ascii=False),
-                       encoding='utf-8')
-        tmp.replace(path)
-    except OSError:
-        pass
+    if path is None:return
+    with _BUILD_CACHE_SAVE_LOCK:
+        with _BUILD_CACHE_LOCK:
+            snapshot=_BUILD_CACHE.copy()
+        if not snapshot:return
+        tmp=None
+        try:
+            path.parent.mkdir(parents=True,exist_ok=True)
+            entries={}
+            for key,value in snapshot.items():
+                if not isinstance(key,tuple):continue
+                if revision is not None and key and key[0]!=revision:continue
+                series,status,origin,membership=value
+                entries[json.dumps(list(key),ensure_ascii=False)]=[list(series),status,origin,
+                                                                   [list(item) for item in membership]]
+                if len(entries)>=_MAX_ENTRIES:break
+            with NamedTemporaryFile(mode='w', prefix=path.name+'.', suffix='.tmp',
+                                    dir=path.parent, encoding='utf-8', delete=False) as stream:
+                tmp=Path(stream.name)
+                json.dump(dict(saved=time.time(),entries=entries),stream,ensure_ascii=False)
+            tmp.replace(path)
+        except OSError:
+            pass
+        finally:
+            if tmp is not None:
+                try:tmp.unlink(missing_ok=True)
+                except OSError:pass
 
 
 def _expand(compact):
@@ -124,9 +139,9 @@ def _compact(value):
             str(value.get('series_origin') or ''),membership)
 
 
-def _compute(db, build, sample, catalog, revision):
+def _compute(build, sample, catalog, stored_by_build, cards_by_build):
     """单个构筑的标注；stored/cards 由调用方按块提供。"""
-    stored=_STORED.get(build,()) if _STORED else ()
+    stored=stored_by_build.get(build,())
     if sample.get('classification_source')=='manual' or catalog['status']!='ready':
         value=dict(series=sorted(stored),series_status=sample.get('series_status','unknown'),
                    series_origin='manual' if sample.get('classification_source')=='manual' else 'stored_reference',
@@ -134,7 +149,7 @@ def _compute(db, build, sample, catalog, revision):
         return value
     tags=set(stored);complete=bool(sample.get('main_complete')) and bool(sample.get('extra_complete'))
     counts={}
-    for card in (_CARDS.get(build) or ()):
+    for card in cards_by_build.get(build, ()):
         item=catalog['cards'].get(card['code'])
         if item is None:complete=False;continue
         complete=complete and item['complete']
@@ -146,16 +161,11 @@ def _compute(db, build, sample, catalog, revision):
                 series_origin=SEMANTICS,series_membership=counts)
 
 
-_STORED={}
-_CARDS={}
-
-
 def annotate(db,rows,catalog):
     """只读同一数据库快照；参考文件由查询入口固定一次，避免一请求混版本。
 
     分块计算（每块 250 个构筑）并即时写回行、只保留紧凑缓存，峰值内存有界。
     """
-    global _STORED,_CARDS
     _load_build_cache(db)
     revision=catalog.get('revision')
     rows_by_build={}
@@ -176,23 +186,24 @@ def annotate(db,rows,catalog):
         value=_expand(cached)
         for row in group:row.update(value)
     for chunk in _chunks([build for build,_g,_c in misses],_CHUNK):
-        _STORED={};_CARDS={}
+        stored_by_build={};cards_by_build={}
         if catalog['status']=='ready':
             marks=','.join('?'*len(chunk))
             for row in db.execute('SELECT build,partition,code,copies FROM stat_build_cards '
                                   "WHERE partition IN ('main','extra') AND build IN ("+marks+')',chunk):
-                _CARDS.setdefault(row['build'],[]).append(dict(row))
+                cards_by_build.setdefault(row['build'],[]).append(dict(row))
         marks=','.join('?'*len(chunk))
         for row in db.execute('SELECT build,series FROM stat_build_series WHERE build IN ('+marks+')',chunk):
-            _STORED.setdefault(row['build'],[]).append(row['series'])
+            stored_by_build.setdefault(row['build'],[]).append(row['series'])
         for build in chunk:
             group=rows_by_build[build]
-            value=_compute(db,build,group[0],catalog,revision)
+            value=_compute(build,group[0],catalog,stored_by_build,cards_by_build)
             if catalog['status']=='ready' and group[0].get('classification_source')!='manual':
-                if len(_BUILD_CACHE)>_MAX_ENTRIES:_BUILD_CACHE.clear()
-                _BUILD_CACHE[build_key(group[0],build)]=_compact(value)
+                entry = _compact(value)
+                with _BUILD_CACHE_LOCK:
+                    if len(_BUILD_CACHE)>_MAX_ENTRIES:_BUILD_CACHE.clear()
+                    _BUILD_CACHE[build_key(group[0],build)]=entry
                 dirty=True
             for row in group:row.update(value)
-        _STORED={};_CARDS={}
     if dirty:_save_build_cache(db,revision)
     return rows
