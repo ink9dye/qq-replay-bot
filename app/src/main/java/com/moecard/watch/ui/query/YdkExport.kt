@@ -7,6 +7,7 @@ import androidx.core.content.FileProvider
 import com.moecard.watch.query.model.BuildData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.moecard.watch.data.DownloadSaver
 import java.io.File
 
 /** YGOMobile 包名：国内版带 .CN，国际版不带。 */
@@ -69,7 +70,7 @@ suspend fun openYdkInYgomobile(ctx: Context, deckName: String, build: BuildData)
     if (opened) {
         "已在 YGOMobile 打开「${file.nameWithoutExtension}」，点「保存」即可加入卡组列表"
     } else {
-        val saved = withContext(Dispatchers.IO) { saveToDownloads(ctx, file.name, file.readBytes()) }
+        val saved = withContext(Dispatchers.IO) { saveToDownloads(ctx, file.name, file.readBytes(), DownloadSaver.Kind.DECK) }
         "未检测到 YGOMobile，已保存到 $saved"
     }
 } catch (e: Exception) {

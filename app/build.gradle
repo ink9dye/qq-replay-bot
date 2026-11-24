@@ -11,8 +11,8 @@ android {
         applicationId 'com.moecard.watch'
         minSdk 26
         targetSdk 34
-        versionCode 22
-        versionName '2.1.0'
+        versionCode 24
+        versionName '2.2.1'
         vectorDrawables { useSupportLibrary true }
     }
 

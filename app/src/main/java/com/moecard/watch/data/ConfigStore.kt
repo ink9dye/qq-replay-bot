@@ -2,8 +2,6 @@ package com.moecard.watch.data
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.moecard.watch.model.Account
 import com.moecard.watch.model.AppConfig
 import org.json.JSONArray
@@ -14,17 +12,8 @@ import org.json.JSONObject
  * 只有本应用能解密；账号名、服务器地址等明文存储。
  */
 class ConfigStore(context: Context) {
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val prefs: SharedPreferences = EncryptedSharedPreferences.create(
-        context,
-        "watch_config",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    // 打不开（备份恢复后密钥对不上等）时自动重置，不让应用启动即崩溃
+    private val prefs: SharedPreferences = SecurePrefs.open(context, "watch_config")
 
     fun load(): AppConfig {
         val accounts = mutableListOf<Account>()

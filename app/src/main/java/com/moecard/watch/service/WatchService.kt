@@ -81,26 +81,27 @@ class WatchService : Service() {
     }
 
     // ---------------------------------------------------------------- 锁
+    /**
+     * 幂等：看门狗每 15 分钟用 ACTION_PING 再走一遍 onStartCommand，
+     * 旧实现每次都 new 一把新锁、旧锁不释放（唤醒锁要 6 小时才自动失效），停止后仍会持续耗电。
+     * 现在复用同一把锁，只在没持有（首次、或 6 小时超时自动释放后）时才 acquire。
+     */
     private fun acquireLocks() {
         try {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "MoeCardWatch::SpectateWake",
-            ).apply {
-                setReferenceCounted(false)
-                acquire(6 * 60 * 60 * 1000L) // 最长 6 小时自动释放，防泄漏
-            }
+            val lock = wakeLock ?: (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MoeCardWatch::SpectateWake")
+                .apply { setReferenceCounted(false) }
+                .also { wakeLock = it }
+            if (!lock.isHeld) lock.acquire(6 * 60 * 60 * 1000L) // 最长 6 小时自动释放，防泄漏
         } catch (_: Exception) {
             wakeLock = null
         }
         try {
-            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "MoeCardWatch::SpectateWifi")
-                .apply {
-                    setReferenceCounted(false)
-                    acquire()
-                }
+            val lock = wifiLock ?: (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
+                .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "MoeCardWatch::SpectateWifi")
+                .apply { setReferenceCounted(false) }
+                .also { wifiLock = it }
+            if (!lock.isHeld) lock.acquire()
         } catch (_: Exception) {
             wifiLock = null
         }
@@ -124,6 +125,9 @@ class WatchService : Service() {
      * 提醒一下（加速重连），其余情况都别插手。
      */
     private fun registerNetworkCallback() {
+        // 幂等：已经注册过就不再注册。旧实现每次 PING 都叠加一个回调，
+        // 系统对单个应用的回调数有上限（约 100 个），连续跑一天左右就会触顶抛异常。
+        if (netCallback != null) return
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         netCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
@@ -178,12 +182,31 @@ class WatchService : Service() {
     // ---------------------------------------------------------------- 看门狗
     private fun watchdogIntent(): PendingIntent {
         val i = Intent(this, WatchService::class.java).apply { action = ACTION_PING }
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
-        return PendingIntent.getService(this, WATCHDOG_REQ, i, flags)
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        // Android 8+ 后台不允许 startService：进程被杀后用 getService 根本拉不起来。
+        // 改用前台服务方式启动（onStartCommand 里会立刻 startForeground）。
+        // 注意：Android 12+ 对后台启动前台服务仍有限制，被系统拦下时只能靠 START_REDELIVER_INTENT。
+        return PendingIntent.getForegroundService(this, WATCHDOG_REQ, i, flags)
+    }
+
+    /** 2.1.x 及以前用 getService 注册的看门狗：升级后取消掉，避免和新的叠加触发。 */
+    private fun cancelLegacyWatchdog(am: AlarmManager) {
+        try {
+            val i = Intent(this, WatchService::class.java).apply { action = ACTION_PING }
+            val legacy = PendingIntent.getService(
+                this, WATCHDOG_REQ, i,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_NO_CREATE,
+            )
+            if (legacy != null) {
+                am.cancel(legacy)
+                legacy.cancel()
+            }
+        } catch (_: Exception) { }
     }
 
     private fun scheduleWatchdog() {
         val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        cancelLegacyWatchdog(am)
         try {
             am.setInexactRepeating(
                 AlarmManager.ELAPSED_REALTIME_WAKEUP,
@@ -198,6 +221,7 @@ class WatchService : Service() {
         try {
             val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
             am.cancel(watchdogIntent())
+            cancelLegacyWatchdog(am)
         } catch (_: Exception) { }
     }
 

@@ -9,6 +9,8 @@ import com.moecard.watch.net.AuthException
 import com.moecard.watch.net.MoecardAuth
 import com.moecard.watch.net.WatchApi
 import com.moecard.watch.protocol.GameCapture
+import com.moecard.watch.protocol.LateWinCandidate
+import com.moecard.watch.protocol.LateWinMatcher
 import com.moecard.watch.protocol.LiveEvidence
 import com.moecard.watch.protocol.ReplayBatch
 import com.moecard.watch.protocol.ReplayBlob
@@ -23,6 +25,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -31,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -83,16 +87,28 @@ class WatchClient(
         var error: String = "",
     )
 
-    /** 待补传的录像/证据（网络恢复后重试）。 */
+    /**
+     * 待补传的录像/证据（网络恢复后重试）。
+     *
+     * 2.2.0 起录像一落盘就先登记在这里（[notBefore] = 等胜负的截止时间），上传成功再划掉：
+     * 进程被杀、看门狗重启、用户点停止，都不会让最后一局只留在内存里。
+     */
     private data class PendingUpload(
         val jobId: String,
         val dir: File,
         val name: String,
         val players: List<String>,
         val recordedAt: Double,
+        /** 首次登记的时间：24 小时过期按它算，重复登记不刷新。 */
+        val savedAt: Long = System.currentTimeMillis(),
+        /** 在这之前不补传（还在等胜负）；0 表示随时可传。 */
+        val notBefore: Long = 0L,
     ) {
-        val key: String get() = dir.absolutePath + "/" + name
+        val key: String get() = pendingKey(dir, name)
     }
+
+    /** 单次上传的结果：成功 / 暂时失败已排队 / 服务器明确拒收（不再重试）。 */
+    private enum class UploadResult { OK, QUEUED, REJECTED }
 
     private val api = WatchApi(config.server, config.token)
     private val scope = CoroutineScope(
@@ -116,6 +132,8 @@ class WatchClient(
     private val activeLock = Mutex()
     private val pendingUploads = LinkedHashMap<String, PendingUpload>()
     private val pendingLock = Mutex()
+    /** 仍在运行的任务：它们的待补传由任务自己处理，后台补传循环不插手，避免同一文件并发上传。 */
+    private val liveJobs: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
     /** 待补传记录落盘位置：应用重启后恢复，不把没传完的文件只留在内存里。 */
     private val pendingFile = File(dataDir, PENDING_FILE)
     /** 最近一次认领成功的时间：心跳在这之后的一小段宽限期内不声明 active，避免把刚认领的任务踢掉。 */
@@ -163,6 +181,9 @@ class WatchClient(
                     name = name,
                     players = players,
                     recordedAt = o.optDouble("recorded_at", 0.0),
+                    savedAt = o.optLong("saved_at", now),
+                    // 上次运行没等到的胜负不会再来了：恢复后立即可传
+                    notBefore = 0L,
                 )
                 pendingUploads[p.key] = p
             }
@@ -184,7 +205,8 @@ class WatchClient(
                         put("name", p.name)
                         put("players", JSONArray(p.players))
                         put("recorded_at", p.recordedAt)
-                        put("saved_at", System.currentTimeMillis())
+                        // 保留首次登记时间，24 小时过期才真正生效
+                        put("saved_at", p.savedAt)
                     },
                 )
             }
@@ -381,6 +403,29 @@ class WatchClient(
         // 本场（一次观战任务）的标识：服务端用它把同一场的多局关联起来。
         val sessionId = randomHex(32)
         val jobDir = replayDir(room, jobId)
+        liveJobs.add(jobId)
+
+        /**
+         * 把这一局登记进落盘的待补传队列（旁证在前、录像在后）。
+         * [notBefore] 跟着等胜负的截止时间走：正常运行时由本任务自己上传，登记只是保险——
+         * 进程被杀或停止后，下次启动能从 pending-uploads.json 把它们补传上去。
+         */
+        suspend fun enqueueGame(game: SavedGame, notBefore: Long) {
+            val recordedAt = game.startedAt ?: (game.path.lastModified() / 1000.0)
+            val needReplay: Boolean
+            val needEvidence: Boolean
+            synchronized(game) {
+                needReplay = !game.uploaded
+                needEvidence = game.evidenceDirty
+            }
+            val ev = game.evidenceFile
+            if (needEvidence && ev.isFile) {
+                enqueuePending(PendingUpload(jobId, jobDir, ev.name, game.names, recordedAt, notBefore = notBefore))
+            }
+            if (needReplay) {
+                enqueuePending(PendingUpload(jobId, jobDir, game.path.name, game.names, recordedAt, notBefore = notBefore))
+            }
+        }
 
         /** 本任务下一个落盘序号（内部编号，只用于 previous_game 串联）。 */
         var savedSeq = 0
@@ -409,24 +454,41 @@ class WatchClient(
             val recordedAt = game.startedAt ?: (game.path.lastModified() / 1000.0)
             var evidenceOk = true
             if (needEvidence) {
-                evidenceOk = uploadWithRetry(jobId, jobDir, ev, game.names, rounds = 2, recordedAt = recordedAt)
-                if (evidenceOk) {
-                    synchronized(game) { game.evidenceUploadedHash = evidenceSnapshot }
-                    if (!needReplay) {
-                        onLog("已补传更新后的旁证：${ev.name}（rev $revision）", "success")
+                when (uploadWithRetry(jobId, jobDir, ev, game.names, rounds = 2, recordedAt = recordedAt)) {
+                    UploadResult.OK -> {
+                        synchronized(game) { game.evidenceUploadedHash = evidenceSnapshot }
+                        // 只有确实是当前这一版旁证传上去了，才从补传队列里划掉
+                        if (synchronized(game) { !game.evidenceDirty }) dropPending(jobDir, ev.name)
+                        if (!needReplay) {
+                            onLog("已补传更新后的旁证：${ev.name}（rev $revision）", "success")
+                        }
                     }
-                } else {
-                    onLog("旁证上传失败，已排队补传：${ev.name}（录像不受影响）", "warn")
+                    UploadResult.QUEUED -> {
+                        evidenceOk = false
+                        onLog("旁证上传失败，已排队补传：${ev.name}（录像不受影响）", "warn")
+                    }
+                    UploadResult.REJECTED -> {
+                        // 服务器明确拒收：记成已处理，免得定时补传每 3 秒重试一遍
+                        evidenceOk = false
+                        synchronized(game) { game.evidenceUploadedHash = evidenceSnapshot }
+                    }
                 }
             }
             if (!needReplay) return
             // 旁证没传上去也照样传录像：宁可先入库成未知胜负，也不能把录像丢在手机上。
-            val ok = uploadWithRetry(jobId, jobDir, game.path, game.names, rounds = 2, recordedAt = recordedAt)
-            if (!ok) {
-                onLog("上传失败，已排队待网络恢复后补传：${game.path.name}", "warn")
-                return
+            when (uploadWithRetry(jobId, jobDir, game.path, game.names, rounds = 2, recordedAt = recordedAt)) {
+                UploadResult.OK -> Unit
+                UploadResult.QUEUED -> {
+                    onLog("上传失败，已排队待网络恢复后补传：${game.path.name}", "warn")
+                    return
+                }
+                UploadResult.REJECTED -> {
+                    synchronized(game) { game.uploaded = true }
+                    return
+                }
             }
             synchronized(game) { game.uploaded = true }
+            dropPending(jobDir, game.path.name)
             tally.noteUploaded(game.size)
             onLog(
                 "已上传录像：${game.path.name}" + when {
@@ -532,7 +594,12 @@ class WatchClient(
                                         continue
                                     }
                                     val tail = index == batch.blobs.lastIndex
-                                    val game = saveReplay(jobDir, players, item, sha, tail, sessionId, savedSeq + 1)
+                                    // 落盘时刻的对局进度：晚到的胜负靠它判断“是不是这一局的”
+                                    val (startsMark, msgsMark) = evidence.progressMark()
+                                    val game = saveReplay(
+                                        jobDir, players, item, sha, tail, sessionId, savedSeq + 1,
+                                        startsMark, msgsMark,
+                                    )
                                     if (game != null) {
                                         savedSeq = game.seq
                                         synchronized(savedGames) {
@@ -547,6 +614,8 @@ class WatchClient(
                                         if (game.capture != null || !tail) {
                                             synchronized(game) { game.deadlineAt = System.currentTimeMillis() }
                                         }
+                                        // 先登记进落盘的补传队列：进程被杀或停止也不丢这一局
+                                        enqueueGame(game, notBefore = synchronized(game) { game.deadlineAt })
                                     }
                                 }
                             },
@@ -556,6 +625,8 @@ class WatchClient(
                                 if (game != null) {
                                     evidence.consume(capture)
                                     onLog("终局消息已对回已落盘录像：${game.path.name}（${describeGameNo(game)}）", "success")
+                                    // 旁证有了新版本：重新登记，保证停止/重启后也能补传
+                                    enqueueGame(game, notBefore = 0L)
                                 }
                                 // 录像还没到属正常时序：胜负留在账本里，等 STOC_REPLAY 按局序号匹配。
                             },
@@ -672,8 +743,27 @@ class WatchClient(
                         // 停机导致的中断，忽略
                     } catch (_: Exception) {
                     }
+                } else {
+                    // 停止 / 看门狗重启：没时间等胜负和上传了，但绝不能丢。
+                    // 把还没传完的各局全部改成“随时可传”留在落盘队列里，下次启动自动补传。
+                    try {
+                        withContext(NonCancellable) {
+                            val remaining = synchronized(savedGames) {
+                                savedGames.filter { !it.uploaded || it.evidenceDirty }
+                            }
+                            for (game in remaining) enqueueGame(game, notBefore = 0L)
+                            if (remaining.isNotEmpty()) {
+                                onLog("观战停止：${remaining.size} 局尚未上传完，已存入补传队列，下次启动自动补传", "warn")
+                            }
+                        }
+                    } catch (_: Exception) {
+                    }
                 }
-                pendingLeft = try { pendingCountFor(d) } catch (_: Exception) { 0 }
+                pendingLeft = try {
+                    withContext(NonCancellable) { pendingCountFor(d) }
+                } catch (_: Exception) {
+                    0
+                }
                 // 还有没传完的就先别删，等心跳循环补传
                 if (!config.keepLocal && !stopping && pendingLeft == 0) {
                     try { d.deleteRecursively() } catch (_: Exception) { }
@@ -718,6 +808,7 @@ class WatchClient(
             } catch (_: Exception) {
             }
 
+            liveJobs.remove(jobId)
             onLog(
                 "任务结束：${room.title} · ${statusText(outcome)}",
                 if (outcome == "saved") "success" else "warn",
@@ -808,6 +899,10 @@ class WatchClient(
         var evidenceRevision: Int = 0,
         /** 上传占用标记：同一局同时只允许一个上传者。 */
         var uploading: Boolean = false,
+        /** 落盘时本任务累计收到的 MSG_START 数（跨决斗单调递增）。 */
+        val startsMark: Int = 0,
+        /** 落盘时本小局已收到的对局消息数：0 说明是进房时补发的旧录像。 */
+        val msgsMark: Int = 0,
     ) {
         val evidenceFile: File get() = File(path.parentFile, "${path.name}.evidence.json")
 
@@ -863,6 +958,8 @@ class WatchClient(
         tail: Boolean,
         sessionId: String,
         seq: Int,
+        startsMark: Int,
+        msgsMark: Int,
     ): SavedGame? {
         if (item.bytes.size < 32) return null
         dir.mkdirs()
@@ -903,6 +1000,8 @@ class WatchClient(
             deadlineAt = System.currentTimeMillis() + if (waitWin) WIN_WAIT_MS else 0L,
             sessionId = sessionId,
             capture = capture,
+            startsMark = startsMark,
+            msgsMark = msgsMark,
         )
         val resultLabel = when {
             capture == null -> "无胜负"
@@ -978,56 +1077,48 @@ class WatchClient(
     /**
      * 处理“录像先到、MSG_WIN 后到”。
      *
-     * 不再挑“最近一个尾局且胜负为空”，而是按**本端局序号**对回唯一一份录像：
-     *  - 序号相同（同一决斗内同一小局）才认；
-     *  - 没有序号时退到已确认局次相同；
-     *  - 都没有时，只有全任务恰好剩一局没证据（对应关系本身无歧义）才补；
-     *  - 仍有多个候选就放弃，留未知 —— 错胜负比没有胜负更糟。
+     * 2.2.0 起只认**刚落盘、正在等胜负的最后一局**（规则见 [LateWinMatcher]）：
+     *  - 胜负只配给本任务最新落盘的那份录像，绝不往前翻更早的录像；
+     *  - 两边都有本端局序号时必须相同，而且落盘后没有开始新的小局；
+     *  - 序号不全时，要求那份录像是在本局对局消息之后才到的（排除进房时补发的旧局）。
+     * 旧逻辑会按“沿用的公告局次”去配，曾把第 3 局的胜负写进第 2 局的旁证。
      *
      * @return 被补写的录像；没匹配上返回 null（此时胜负仍留在账本里等后续录像）。
      */
     private fun attachLateCapture(games: MutableList<SavedGame>, capture: GameCapture): SavedGame? {
-        val candidates = synchronized(games) { games.filter { it.capture == null } }
-        if (candidates.isEmpty()) return null
-        val bySerial = if (capture.serial != null) {
-            candidates.filter { it.serial != null && it.serial == capture.serial }
-        } else {
-            emptyList()
-        }
-        val byNo = if (capture.gameNo != null) {
-            candidates.filter { it.gameNo != null && it.gameNo == capture.gameNo }
-        } else {
-            emptyList()
-        }
-        val distinct = (bySerial + byNo).distinct()
-        // 优先级：公告局次 > 本端局序号。
-        // 中途进房时本端 serial 会整体错位（实测把第 3 局的胜负配到了第 2 局），
-        // 而发牌姬的「第N局录像」公告是服务端给的真实局次，更可信。
-        val target = byNo.singleOrNull()
-            ?: bySerial.singleOrNull()
-            ?: distinct.singleOrNull()
-            ?: candidates.singleOrNull()?.takeIf { it.serial == null || capture.serial == null }
-            ?: return null
-
         val touched = ArrayList<SavedGame>()
-        synchronized(games) {
-            if (target.capture != null) return null   // 已被其他路径补过
+        val target = synchronized(games) {
+            val seq = LateWinMatcher.pick(
+                games.map {
+                    LateWinCandidate(
+                        seq = it.seq,
+                        serial = it.serial,
+                        hasCapture = it.capture != null,
+                        startsMark = it.startsMark,
+                        msgsMark = it.msgsMark,
+                    )
+                },
+                capture,
+            ) ?: return null
+            val t = games.firstOrNull { it.seq == seq } ?: return null
+            if (t.capture != null) return null   // 已被其他路径补过
             // 局次跟着这次落盘的结论走：有依据才有第 N 局，没依据保持 unknown
-            target.capture = capture.numbered(target.gameNo, target.gameNoSource)
-            if (target.association == "none") {
+            t.capture = capture.numbered(t.gameNo, t.gameNoSource)
+            if (t.association == "none") {
                 // 与参考实现同口径：有局次就写标准那一句
-                target.association = if (target.gameNo != null) {
+                t.association = if (t.gameNo != null) {
                     "STOC_DUEL_START/MSG_START + replay game number"
                 } else {
                     "STOC_GAME_MSG/MSG_WIN + replay game serial（胜负晚于录像）"
                 }
             }
-            touched.add(target)
+            touched.add(t)
             // 下一局如果已经落盘，把它的 previous_game 也补上（按落盘序号，不按猜测的局次）
-            games.firstOrNull { it.seq == target.seq + 1 }?.let { next ->
-                next.previous = target
+            games.firstOrNull { it.seq == t.seq + 1 }?.let { next ->
+                next.previous = t
                 touched.add(next)
             }
+            t
         }
         touched.forEach { writeEvidence(it) }
         // 让上传协程立刻处理：录像已传过就只补传旁证，没传过就连旁证一起传。
@@ -1040,7 +1131,10 @@ class WatchClient(
         ReplayHeader.timestampSeconds(blob)?.toDouble()
 
     // ---------------------------------------------------------------- 上传 / 补传
-    /** 上传一个文件；失败 [rounds] 次后进入补传队列，由心跳循环在网络恢复后继续重试。 */
+    /**
+     * 上传一个文件；失败 [rounds] 次后进入补传队列，由后台循环在网络恢复后继续重试。
+     * 服务器明确拒收（4xx，鉴权/限流/超时除外）时不再排队，避免同一个文件永远重传。
+     */
     private suspend fun uploadWithRetry(
         jobId: String,
         dir: File,
@@ -1048,65 +1142,100 @@ class WatchClient(
         players: List<String>,
         rounds: Int,
         recordedAt: Double = file.lastModified() / 1000.0,
-    ): Boolean {
+    ): UploadResult {
         repeat(rounds) { i ->
-            val ok = try {
+            val status = try {
                 api.upload(jobId, file.name, file.readBytes(), players, recordedAt)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                false
+                -1
             }
-            if (ok) return true
+            if (status == 200) return UploadResult.OK
+            if (isPermanentReject(status)) {
+                dropPending(dir, file.name)
+                onLog("服务器拒收 ${file.name}（HTTP $status），不再重试", "error")
+                return UploadResult.REJECTED
+            }
             if (i < rounds - 1) delay(1_000L * (i + 1))
         }
-        pendingLock.withLock {
-            val p = PendingUpload(jobId, dir, file.name, players, recordedAt)
-            pendingUploads[p.key] = p
-            persistPendingUploads()
-        }
-        return false
+        enqueuePending(PendingUpload(jobId, dir, file.name, players, recordedAt))
+        return UploadResult.QUEUED
     }
 
-    /** 重试排队中的上传，返回本次成功数量。[onlyJob] 非空时只处理该任务的文件。 */
+    /**
+     * 重试排队中的上传，返回本次成功数量。
+     *
+     * [onlyJob] 非空：任务收尾时调用，只处理该任务的文件，且不看 notBefore（要收尾了，不再等）。
+     * [onlyJob] 为空：后台循环调用，跳过还在运行的任务（它们自己会传）和还在等胜负的文件。
+     */
     private suspend fun flushUploads(onlyJob: String?, rounds: Int): Int {
+        val now = System.currentTimeMillis()
+        val live = synchronized(liveJobs) { liveJobs.toSet() }
         val snapshot = pendingLock.withLock {
-            pendingUploads.values.filter { onlyJob == null || it.jobId == onlyJob }
+            pendingUploads.values.filter { p ->
+                if (onlyJob != null) {
+                    p.jobId == onlyJob
+                } else {
+                    p.jobId !in live && p.notBefore <= now
+                }
+            }
         }
         if (snapshot.isEmpty()) return 0
         var okCount = 0
         for (p in snapshot) {
             val f = File(p.dir, p.name)
             if (!f.exists()) {
-                pendingLock.withLock {
-                    pendingUploads.remove(p.key)
-                    persistPendingUploads()
-                }
+                dropPending(p.dir, p.name)
                 continue
             }
-            var ok = false
+            var status = -1
             for (i in 0 until rounds) {
-                ok = try {
+                status = try {
                     api.upload(p.jobId, p.name, f.readBytes(), p.players, p.recordedAt)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
-                    false
+                    -1
                 }
-                if (ok) break
+                if (status == 200 || isPermanentReject(status)) break
                 if (i < rounds - 1) delay(1_000L * (i + 1))
             }
-            if (ok) {
-                pendingLock.withLock {
-                    pendingUploads.remove(p.key)
-                    persistPendingUploads()
+            when {
+                status == 200 -> {
+                    dropPending(p.dir, p.name)
+                    okCount++
+                    onLog("补传成功：${p.name}", "success")
                 }
-                okCount++
-                onLog("补传成功：${p.name}", "success")
+                isPermanentReject(status) -> {
+                    dropPending(p.dir, p.name)
+                    onLog("服务器拒收 ${p.name}（HTTP $status），已移出补传队列", "error")
+                }
             }
         }
         return okCount
     }
+
+    /** 登记（或更新）一条待补传；同一文件重复登记时保留首次登记时间。 */
+    private suspend fun enqueuePending(p: PendingUpload) {
+        pendingLock.withLock {
+            val old = pendingUploads[p.key]
+            pendingUploads[p.key] = if (old != null) p.copy(savedAt = old.savedAt) else p
+            persistPendingUploads()
+        }
+    }
+
+    private suspend fun dropPending(dir: File, name: String) {
+        pendingLock.withLock {
+            val removed = pendingUploads.remove(pendingKey(dir, name))
+            if (removed != null) persistPendingUploads()
+            Unit
+        }
+    }
+
+    /** 4xx 视为服务器明确拒收；401/403（令牌）、408（超时）、429（限流）仍可重试。 */
+    private fun isPermanentReject(status: Int): Boolean =
+        status in 400..499 && status != 401 && status != 403 && status != 408 && status != 429
 
     private suspend fun pendingCount(): Int = pendingLock.withLock { pendingUploads.size }
 
@@ -1187,6 +1316,8 @@ class WatchClient(
         const val PENDING_TTL_MS = 24 * 60 * 60 * 1000L
 
         /** 2s、4s、8s、16s，之后封顶 30s。 */
+        fun pendingKey(dir: File, name: String): String = dir.absolutePath + "/" + name
+
         fun backoffMs(attempt: Int): Long =
             (2_000L shl min(attempt - 1, 4)).coerceAtMost(30_000L)
     }

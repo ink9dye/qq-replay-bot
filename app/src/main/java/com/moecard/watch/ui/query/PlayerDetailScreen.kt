@@ -1,5 +1,11 @@
 package com.moecard.watch.ui.query
 
+import androidx.compose.foundation.background
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.outlined.NotificationsNone
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -64,6 +70,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.moecard.watch.data.DownloadSaver
+import com.moecard.watch.tools.ToolDeck
+import com.moecard.watch.tools.ToolDeckStore
+import com.moecard.watch.tools.ToolKind
+import com.moecard.watch.ui.LocalToolLauncher
 import com.moecard.watch.net.AuthException
 import com.moecard.watch.query.model.ArenaMatch
 import com.moecard.watch.query.model.ArenaProfile
@@ -405,46 +416,21 @@ fun PlayerDetailScreen(player: String) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         val official by vm.official.collectAsStateWithLifecycle()
-        val subscribed by vm.subscribed.collectAsStateWithLifecycle()
         val hint by vm.subscribeHint.collectAsStateWithLifecycle()
-        val busy by vm.busy.collectAsStateWithLifecycle()
-        Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-            Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        player, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(
-                            "订阅", style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline,
-                        )
-                        Switch(
-                            checked = subscribed == true,
-                            enabled = !busy,
-                            onCheckedChange = { vm.toggleSubscribe(player, it) },
-                        )
-                    }
-                }
-                if (subscribed == null && hint == null) {
-                    Text(
-                        "点开关时查询订阅状态",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.outline,
-                    )
-                }
-                if (hint != null) {
-                    Text(hint!!, style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error)
-                }
-            }
+        // 玩家名已在标题栏，订阅开关在标题栏右上角；这里只在订阅出错时露一行提示
+        if (hint != null) {
+            Text(
+                hint!!,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
         }
-        ScrollableTabRow(selectedTabIndex = tab, edgePadding = 0.dp) {
-            listOf("概览", "DP曲线", "对战历史", "构筑", "换备", "录像").forEachIndexed { i, label ->
-                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(label) })
-            }
-        }
+        CompactTabs(
+            labels = listOf("概览", "曲线", "历史", "构筑", "换备", "录像"),
+            selected = tab,
+            onSelect = { tab = it },
+        )
         when (tab) {
             0 -> OverviewTab(official)
             1 -> DpChartTab(official)
@@ -475,6 +461,74 @@ fun PlayerDetailScreen(player: String) {
                 }
                 ReplaysTab(vm, player)
             }
+        }
+    }
+}
+
+/**
+ * 一屏放得下的等宽页签：6 个两字标签平分宽度，不再像 ScrollableTabRow 那样左右滑动、把首尾切掉。
+ */
+@Composable
+private fun CompactTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth()) {
+            labels.forEachIndexed { i, label ->
+                val on = i == selected
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .clickable { onSelect(i) }
+                        .padding(top = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                        color = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth(0.6f)
+                            .height(3.dp)
+                            .background(
+                                if (on) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp),
+                            ),
+                    )
+                }
+            }
+        }
+        HorizontalDivider()
+    }
+}
+
+/**
+ * 标题栏右上角的订阅铃铛（AppRoot 在玩家详情页挂上）。
+ * 与 [PlayerDetailScreen] 共用同一个 ViewModel（同一个 key），状态与提示两边同步。
+ */
+@Composable
+fun PlayerSubscribeAction(player: String) {
+    val vm: PlayerDetailViewModel = viewModel(key = "player-$player")
+    val subscribed by vm.subscribed.collectAsStateWithLifecycle()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    if (busy) {
+        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        }
+        return
+    }
+    IconButton(onClick = { vm.toggleSubscribe(player, subscribed != true) }) {
+        if (subscribed == true) {
+            Icon(
+                Icons.Filled.NotificationsActive,
+                contentDescription = "已订阅，点击取消",
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            Icon(Icons.Outlined.NotificationsNone, contentDescription = "订阅")
         }
     }
 }
@@ -725,6 +779,22 @@ fun DeckCardsList(data: BuildData, deckLabel: String? = null) {
             Spacer(Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            val toolLauncher = LocalToolLauncher.current
+            if (toolLauncher != null) {
+                // 把这套构筑带进计算器（两个计算器共用同一份卡组）
+                TextButton(onClick = {
+                    ToolDeckStore.set(ToolDeck.fromBuild(deckLabel ?: "卡组", data))
+                    toolLauncher(ToolKind.SMALL_WORLD)
+                }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Text("小世界", maxLines = 1)
+                }
+                TextButton(onClick = {
+                    ToolDeckStore.set(ToolDeck.fromBuild(deckLabel ?: "卡组", data))
+                    toolLauncher(ToolKind.CANNON)
+                }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Text("联立炮", maxLines = 1)
+                }
+            }
             TextButton(onClick = {
                 scope.launch {
                     val msg = openYdkInYgomobile(ctx, deckLabel ?: "卡组", data)
@@ -957,6 +1027,7 @@ private fun ReplaysTab(vm: PlayerDetailViewModel, player: String) {
     val exhausted by vm.replayExhausted.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val storageGate = rememberLegacyStorageGate()
     var showAuth by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
@@ -1019,6 +1090,8 @@ private fun ReplaysTab(vm: PlayerDetailViewModel, player: String) {
                                     }
                                 },
                                 onSave = { game ->
+                                    // Android 8–9 先申请存储权限（10+ 直接执行）；拒绝了也照常保存到应用目录
+                                    storageGate {
                                     scope.launch {
                                         try {
                                             val bytes = vm.downloadReplay(game)
@@ -1033,6 +1106,7 @@ private fun ReplaysTab(vm: PlayerDetailViewModel, player: String) {
                                                 ctx, "下载失败：${e.message}", Toast.LENGTH_LONG,
                                             ).show()
                                         }
+                                    }
                                     }
                                 },
                             )
@@ -1246,26 +1320,16 @@ private fun dayKey(seconds: Long): String =
 
 // ---------- 卡组/录像导出到 YGOMobile ----------
 
-/** API 29+ 走 MediaStore 公共下载目录；旧版本存应用外部目录（免权限）。 */
-internal fun saveToDownloads(ctx: Context, fileName: String, bytes: ByteArray): String {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val values = android.content.ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-        }
-        val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: throw RuntimeException("无法创建下载记录")
-        ctx.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-            ?: throw RuntimeException("无法写入文件")
-        return "下载/$fileName"
-    }
-    @Suppress("DEPRECATION")
-    val dir = File(ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "replays")
-    if (!dir.exists()) dir.mkdirs()
-    val f = File(dir, fileName)
-    f.writeBytes(bytes)
-    return f.absolutePath
-}
+/**
+ * 存到系统「下载/戏王版权局/录像」或「下载/戏王版权局/卡组」（见 [DownloadSaver]），返回给用户看的位置。
+ * Android 8–9 没授权存储时会落到应用目录，返回值里会如实写明。
+ */
+internal fun saveToDownloads(
+    ctx: Context,
+    fileName: String,
+    bytes: ByteArray,
+    kind: DownloadSaver.Kind = DownloadSaver.Kind.REPLAY,
+): String = DownloadSaver.save(ctx, fileName, bytes, kind).displayPath
 
 private fun copyText(ctx: Context, text: String) {
     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

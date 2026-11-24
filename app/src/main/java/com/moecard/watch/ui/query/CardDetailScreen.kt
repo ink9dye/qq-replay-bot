@@ -1,6 +1,7 @@
 package com.moecard.watch.ui.query
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,13 +16,18 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -29,6 +35,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.moecard.watch.net.AuthException
 import com.moecard.watch.query.model.CardDetail
+import com.moecard.watch.query.net.CardTextApi
 import com.moecard.watch.query.net.QuerySession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,7 +44,10 @@ import kotlinx.coroutines.withContext
 
 /**
  * 卡片详情：search?type=card 命中后进入。details 透传自查卡源（含卡名 / 类型 / 效果），
- * metrics 为前百构筑统计（携带率 / 胜率 / by_deck），统计不可用时为 null，卡片信息仍展示。
+ * metrics 为前百构筑统计（携带率 / 胜率 / by_deck），统计不可用时为 null，整块不显示。
+ *
+ * 2.2.0：顶部加「关键数字」（携带率 / 胜率 / 先后攻），类型行缺失时用百鸽补上，
+ * 长效果默认折叠，去掉了空的 metrics 提示和「条件筛选」占位。
  */
 class CardDetailViewModel : ViewModel() {
     val state = MutableStateFlow<UiState>(UiState.Loading)
@@ -56,7 +66,7 @@ class CardDetailViewModel : ViewModel() {
         state.value = UiState.Loading
         viewModelScope.launch {
             try {
-                val card = withContext(Dispatchers.IO) { QuerySession.api().card(code) }
+                val card = withContext(Dispatchers.IO) { withYgocdbText(QuerySession.api().card(code)) }
                 state.value = UiState.Ready(card)
             } catch (e: AuthException) {
                 QuerySession.expire()
@@ -64,6 +74,22 @@ class CardDetailViewModel : ViewModel() {
                 state.value = UiState.Failed(e.message ?: "加载失败")
             }
         }
+    }
+
+    /** 自建接口不返回类型（有时也缺效果），用百鸽补齐；百鸽不可用时原样返回。 */
+    private fun withYgocdbText(card: CardDetail): CardDetail {
+        if (card.types != null && card.desc != null) return card
+        val extra = try {
+            CardTextApi.cached(card.code) ?: CardTextApi.fetch(card.code)
+        } catch (_: Exception) {
+            null
+        } ?: return card
+        return card.copy(
+            name = card.name ?: extra.name,
+            types = card.types ?: extra.types,
+            desc = card.desc ?: extra.desc,
+            pdesc = card.pdesc ?: extra.pdesc,
+        )
     }
 }
 
@@ -73,6 +99,8 @@ fun CardDetailScreen(code: Long, presetName: String?) {
     LaunchedEffect(code) { vm.load(code) }
     val state by vm.state.collectAsStateWithLifecycle()
     val scroll = rememberScrollState()
+    // 三个统计接口与卡片详情排在同一条查询队列里，顶部关键数字和下方明细共用这份状态
+    val stats = rememberCardStats(code)
 
     when (val s = state) {
         CardDetailViewModel.UiState.Loading -> LoadingView("正在查询卡片…")
@@ -85,34 +113,36 @@ fun CardDetailScreen(code: Long, presetName: String?) {
                         code = code,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
-                            .height(170.dp)
-                            .width(117.dp)
+                            .height(150.dp)
+                            .width(103.dp)
                             .clip(RoundedCornerShape(8.dp)),
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Column(Modifier.padding(start = 8.dp)) {
+                    Spacer(Modifier.width(12.dp))
+                    Column {
                         Text(
                             c.name ?: presetName ?: "未知卡片",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                         )
+                        if (c.types != null) {
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                c.types.replace("\n", "  "),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Spacer(Modifier.height(2.dp))
                         Text(
                             "卡号 $code",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.outline,
                         )
-                        if (c.types != null) {
-                            Text(
-                                c.types,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.outline,
-                            )
-                        }
                     }
                 }
-                Spacer(Modifier.height(12.dp))
 
-                // 效果文本
+                CardKeyNumbers(stats)
+
+                // 效果文本（长文默认折叠）
                 if (c.pdesc != null && c.pdesc.isNotBlank()) {
                     EffectCard("灵摆效果", c.pdesc)
                 }
@@ -123,28 +153,18 @@ fun CardDetailScreen(code: Long, presetName: String?) {
                     )
                 }
 
-                Spacer(Modifier.height(8.dp))
-                Text("前百构筑统计", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(4.dp))
-                if (c.metrics == null) {
-                    Text(
-                        "统计暂不可用（metrics 为空），卡片信息不受影响。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline,
-                    )
-                } else {
+                // 旧的 metrics 统计：服务端给了才显示，空的时候整块不出现
+                if (c.metrics != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("前百构筑统计", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
                     RateBlock("主卡组", metricsOf(c, "main"))
                     RateBlock("副卡组", metricsOf(c, "side"))
                     RateBlock("额外卡组", metricsOf(c, "extra"))
                     ByDeckBlock(c)
                 }
 
-                CardStatsSection(code)
-                Spacer(Modifier.height(8.dp))
-                ReservedCard(
-                    "条件筛选",
-                    "按时间 / 段位等条件过滤统计。查询接口暂不支持筛选参数。",
-                )
+                CardStatsSection(stats)
                 Spacer(Modifier.height(24.dp))
             }
         }
@@ -154,8 +174,12 @@ fun CardDetailScreen(code: Long, presetName: String?) {
 private fun metricsOf(c: CardDetail, partition: String): org.json.JSONObject? =
     c.metrics?.optJSONObject(partition)
 
+private const val EFFECT_FOLD_CHARS = 140
+
 @Composable
 private fun EffectCard(title: String, text: String) {
+    var expanded by remember(text) { mutableStateOf(false) }
+    val long = text.length > EFFECT_FOLD_CHARS
     Card(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         colors = CardDefaults.outlinedCardColors(),
@@ -163,7 +187,17 @@ private fun EffectCard(title: String, text: String) {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Text(title, style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
-            Text(text, style = MaterialTheme.typography.bodySmall)
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = if (long && !expanded) 5 else Int.MAX_VALUE,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (long) {
+                TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
+                    Text(if (expanded) "收起" else "展开全文")
+                }
+            }
         }
     }
 }

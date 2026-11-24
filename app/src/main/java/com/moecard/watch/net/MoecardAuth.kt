@@ -11,7 +11,7 @@ import kotlin.text.Charsets
  * 与 watch.py 的 sign_in / fetch_u16_secret 对齐。
  */
 object MoecardAuth {
-    private const val ACCOUNTS_API = "https://api.moecube.com/accounts/"
+    private const val ACCOUNTS_API = "https://api.moecube.com/accounts"
 
     data class SignInResult(val secret: Int, val username: String)
 

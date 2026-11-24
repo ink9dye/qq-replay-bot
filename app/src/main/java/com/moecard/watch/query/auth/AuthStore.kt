@@ -2,8 +2,7 @@ package com.moecard.watch.query.auth
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
+import com.moecard.watch.data.SecurePrefs
 import com.moecard.watch.query.model.TokenPair
 
 /**
@@ -12,17 +11,8 @@ import com.moecard.watch.query.model.TokenPair
  * 观战令牌、查询令牌、管理令牌三者用途分离，互不复用（见 QUERY_API.md）。
  */
 class AuthStore(context: Context) {
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val prefs: SharedPreferences = EncryptedSharedPreferences.create(
-        context,
-        "query_auth",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    // 打不开（备份恢复后密钥对不上等）时自动重置，不让应用启动即崩溃
+    private val prefs: SharedPreferences = SecurePrefs.open(context, "query_auth")
 
     fun loadSession(): TokenPair? {
         val token = prefs.getString("access_token", "") ?: ""

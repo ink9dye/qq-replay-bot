@@ -21,6 +21,8 @@ import androidx.compose.material.icons.filled.PieChart
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -38,6 +40,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -61,11 +65,15 @@ import com.moecard.watch.ui.query.DeckDetailScreen
 import com.moecard.watch.ui.query.LoginScreen
 import com.moecard.watch.ui.query.PieScreen
 import com.moecard.watch.ui.query.PlayerDetailScreen
+import com.moecard.watch.ui.query.PlayerSubscribeAction
 import com.moecard.watch.ui.query.RosterScreen
 import com.moecard.watch.ui.query.SearchScreen
 import com.moecard.watch.ui.query.SettingsScreen
 import com.moecard.watch.ui.query.SubsScreen
 import com.moecard.watch.ui.watch.WatchScreen
+import com.moecard.watch.tools.ToolKind
+import com.moecard.watch.ui.tools.CannonScreen
+import com.moecard.watch.ui.tools.SmallWorldScreen
 import com.moecard.watch.ui.watch.WatchSetupScreen
 import kotlinx.coroutines.launch
 
@@ -83,7 +91,14 @@ sealed interface Dest {
     data class Player(val name: String) : Dest
     data class Card(val code: Long, val name: String?) : Dest
     data class Deck(val name: String, val usage: Int) : Dest
+    data object SmallWorld : Dest
+    data object Cannon : Dest
 }
+
+/**
+ * 构筑页上的「小世界」「联立炮」按钮用它跳到计算器；不在 AppRoot 里（例如预览）时为 null，按钮不显示。
+ */
+val LocalToolLauncher = staticCompositionLocalOf<((ToolKind) -> Unit)?> { null }
 
 private val rootDests = listOf(
     Triple(Dest.Roster, "前百玩家", Icons.Filled.EmojiEvents),
@@ -92,6 +107,12 @@ private val rootDests = listOf(
     Triple(Dest.Subs, "订阅管理", Icons.Filled.Notifications),
     Triple(Dest.Watch, "观战机器人", Icons.Filled.Visibility),
     Triple(Dest.Settings, "设置", Icons.Filled.Settings),
+)
+
+/** 抽屉里「工具」分组。 */
+private val toolDests = listOf(
+    Triple(Dest.SmallWorld, "小世界计算器", Icons.Filled.Public),
+    Triple(Dest.Cannon, "联立炮计算器", Icons.Filled.Calculate),
 )
 
 private fun titleOf(dest: Dest): String = when (dest) {
@@ -104,6 +125,8 @@ private fun titleOf(dest: Dest): String = when (dest) {
     is Dest.Player -> dest.name
     is Dest.Card -> dest.name ?: "卡片详情"
     is Dest.Deck -> dest.name
+    Dest.SmallWorld -> "小世界计算器"
+    Dest.Cannon -> "联立炮计算器"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -135,6 +158,15 @@ fun AppRoot() {
         if (!onboarded && watchConfig.token.isNotBlank() && watchConfig.accounts.isNotEmpty()) {
             authStore.setWatchOnboarded(identity, true)
             onboarded = true
+        }
+    }
+
+    // 构筑页的「小世界」「联立炮」按钮：压一层详情，返回键能回到构筑页
+    val toolLauncher: (ToolKind) -> Unit = remember {
+        { kind ->
+            val dest = if (kind == ToolKind.SMALL_WORLD) Dest.SmallWorld else Dest.Cannon
+            backStack.removeAll { it == dest }
+            backStack.add(dest)
         }
     }
 
@@ -205,6 +237,21 @@ fun AppRoot() {
                         modifier = Modifier.padding(horizontal = 8.dp),
                     )
                 }
+                Text(
+                    "工具",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(start = 24.dp, top = 12.dp, bottom = 4.dp),
+                )
+                toolDests.forEach { (dest, label, icon) ->
+                    NavigationDrawerItem(
+                        label = { Text(label) },
+                        icon = { Icon(icon, contentDescription = label) },
+                        selected = current == dest,
+                        onClick = { switchRoot(dest) },
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "戏王版权局 · v${BuildConfig.VERSION_NAME}",
@@ -244,9 +291,15 @@ fun AppRoot() {
                             }
                         }
                     },
+                    actions = {
+                        // 玩家详情：订阅开关放到标题栏右上角（铃铛），不再占一整张卡片
+                        val dest = current
+                        if (!setupMode && dest is Dest.Player) PlayerSubscribeAction(dest.name)
+                    },
                 )
             },
         ) { padding ->
+            CompositionLocalProvider(LocalToolLauncher provides toolLauncher) {
             Column(Modifier.fillMaxWidth().padding(padding)) {
                 if (setupMode) {
                     WatchSetupScreen(watchVm, onDone = {
@@ -275,7 +328,10 @@ fun AppRoot() {
                         usageHint = dest.usage,
                         onOpenPlayer = { open(Dest.Player(it)) },
                     )
+                    Dest.SmallWorld -> SmallWorldScreen()
+                    Dest.Cannon -> CannonScreen()
                 }
+            }
             }
         }
     }

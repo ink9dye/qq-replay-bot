@@ -20,6 +20,8 @@ data class GameCapture(
     val events: List<String>,
     /** 只有收到 observer 的 MSG_START 后才是 true；中途进房拿不到完整起始状态。 */
     val capturedFromStart: Boolean,
+    /** 收到这条胜负时，本任务累计收到的 MSG_START 数（跨决斗单调递增，见 [LiveEvidence.progressMark]）。 */
+    val startsTotal: Int = 0,
 ) {
     /** 给这份胜负补上该录像可确认的局次；没有依据就明确留空。 */
     fun numbered(no: Int?, source: String): GameCapture =
@@ -87,6 +89,10 @@ class LiveEvidence {
     private var currentFromStart = false
     private var anchor = false
     private var overflow = false
+    /** 本任务累计收到的 MSG_START 数，不随新决斗清零：判断“录像落盘之后有没有开新局”。 */
+    private var startsTotal = 0
+    /** 本小局（上一次 MSG_START 之后）收到的对局消息数，不看白名单：0 表示还没进入对局。 */
+    private var msgsSinceStart = 0
 
     /** 收到 STOC_DUEL_START：说明本端在这场决斗开始时就在场，局次可以从 1 数起。 */
     @Synchronized
@@ -114,6 +120,10 @@ class LiveEvidence {
     @Synchronized
     fun onGameStart(body: ByteArray) {
         serial += 1
+        startsTotal += 1
+        msgsSinceStart = 0
+        // 新的一小局开始：上一局的公告局次不能再沿用，否则迟到的胜负会被标成上一局。
+        lastAnnounced = null
         val playerType = if (body.size > 1) body[1].toInt() and 0xFF else 0
         val observerStart = playerType == 0x10 || playerType == 0x11
         currentFromStart = anchor && observerStart
@@ -131,6 +141,7 @@ class LiveEvidence {
      */
     @Synchronized
     fun onGameMessage(body: ByteArray) {
+        msgsSinceStart += 1
         if (!accepted(body)) return
         if (current.size >= MAX_EVENTS) {
             overflow = true
@@ -145,7 +156,11 @@ class LiveEvidence {
      */
     @Synchronized
     fun onWin(winner: Int, reason: Int, body: ByteArray): GameCapture {
-        if (accepted(body)) onGameMessage(body)
+        if (accepted(body)) {
+            onGameMessage(body)
+        } else {
+            msgsSinceStart += 1
+        }
         // 迟到的末局胜负：公告已被录像消费掉时，用粘性局次给它一个可信归属。
         val hintedNo = announced ?: lastAnnounced
         val capture = GameCapture(
@@ -158,6 +173,7 @@ class LiveEvidence {
             gameNoSource = if (hintedNo != null) "announce" else "unknown",
             events = current.toList(),
             capturedFromStart = currentFromStart && !overflow,
+            startsTotal = startsTotal,
         )
         pendingWins.add(capture)
         while (pendingWins.size > MAX_PENDING) {
@@ -178,6 +194,13 @@ class LiveEvidence {
             lastAnnounced = gameNo
         }
     }
+
+    /**
+     * 当前对局进度：（本任务累计 MSG_START 数，本小局已收到的对局消息数）。
+     * 录像落盘时记下来，供 [LateWinMatcher] 判断晚到的胜负是不是这一局的。
+     */
+    @Synchronized
+    fun progressMark(): Pair<Int, Int> = startsTotal to msgsSinceStart
 
     /**
      * 上层已经把这份胜负配到某份**已落盘**的录像（录像先到、胜负后到），

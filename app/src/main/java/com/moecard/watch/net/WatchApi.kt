@@ -9,6 +9,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 import kotlin.text.Charsets
 
 /**
@@ -55,8 +56,8 @@ class WatchApi(private val server: String, private val token: String) {
         path: String,
         body: ByteArray?,
         headers: Map<String, String>,
-        @Suppress("UNUSED_PARAMETER") connectTimeout: Int,
-        @Suppress("UNUSED_PARAMETER") readTimeout: Int,
+        connectTimeout: Int,
+        readTimeout: Int,
     ): Pair<Int, ByteArray> {
         val bodyObj = when {
             body != null -> body.toRequestBody(null)
@@ -67,7 +68,14 @@ class WatchApi(private val server: String, private val token: String) {
         builder.header("Authorization", "Bearer $token")
         builder.header("User-Agent", "MoeCardWatch/1.2")
         headers.forEach { (k, v) -> builder.header(k, v) }
-        Http.client.newCall(builder.build()).execute().use { resp ->
+        // 2.2.0：超时参数真正生效。原来全部落到全局 20s 连接 + 120s 读取，再加一次重试，
+        // 一轮心跳（状态 + 上报）最坏能拖到 9 分钟，被 5 分钟的看门狗误判卡死。
+        // newBuilder() 共享连接池与线程池，开销很小。
+        val client = Http.client.newBuilder()
+            .connectTimeout(connectTimeout.toLong(), TimeUnit.MILLISECONDS)
+            .readTimeout(readTimeout.toLong(), TimeUnit.MILLISECONDS)
+            .build()
+        client.newCall(builder.build()).execute().use { resp ->
             val data = resp.body?.bytes() ?: ByteArray(0)
             return resp.code to data
         }
@@ -90,7 +98,10 @@ class WatchApi(private val server: String, private val token: String) {
 
     /** 完整状态：在线终端列表 + 任务板计数（在线设备页用）。 */
     fun statusDetail(): WatchStatus {
-        val (status, raw) = request("GET", "/watch-api/status")
+        val (status, raw) = request(
+            "GET", "/watch-api/status",
+            connectTimeout = STATUS_CONNECT_MS, readTimeout = STATUS_READ_MS,
+        )
         if (status == 401 || status == 403) throw AuthException("令牌无效或已过期")
         if (status != 200) throw RuntimeException("服务器状态错误（HTTP $status）")
         return parseWatchStatus(asJson(raw))
@@ -108,7 +119,10 @@ class WatchApi(private val server: String, private val token: String) {
             put("worker", worker)
             if (active != null) put("active", JSONArray(active))
         }
-        request("POST", "/watch-api/heartbeat", payload.toString().toByteArray(Charsets.UTF_8), jsonHeader())
+        request(
+            "POST", "/watch-api/heartbeat", payload.toString().toByteArray(Charsets.UTF_8), jsonHeader(),
+            connectTimeout = STATUS_CONNECT_MS, readTimeout = STATUS_READ_MS,
+        )
     }
 
     /** 长轮询领任务；204 表示暂无任务，返回 null。 */
@@ -133,7 +147,8 @@ class WatchApi(private val server: String, private val token: String) {
         return if (job != null && job.length() > 0) job else null
     }
 
-    fun upload(jobId: String, name: String, bytes: ByteArray, players: List<String>, recordedAt: Double): Boolean {
+    /** 上传一个文件，返回 HTTP 状态码（200 成功；4xx 由调用方区分是否值得重试）。 */
+    fun upload(jobId: String, name: String, bytes: ByteArray, players: List<String>, recordedAt: Double): Int {
         val query = "?job=${enc(jobId)}&name=${enc(name)}"
         // PC 端 watch.py 用 urllib.parse.quote（空格 → %20）放在 X-Players 头里。
         // 不能用 URLEncoder 的 "+"：服务端 unquote 不会把 "+" 还原成空格，含空格玩家名会错位。
@@ -144,7 +159,7 @@ class WatchApi(private val server: String, private val token: String) {
             "X-Recorded-At" to recordedAt.toString(),
         )
         val (status, _) = request("POST", "/watch-api/upload$query", bytes, headers, readTimeout = 90_000)
-        return status == 200
+        return status
     }
 
     fun report(worker: String, jobId: String, outcome: String, detail: Map<String, Any>) {
@@ -167,6 +182,10 @@ class WatchApi(private val server: String, private val token: String) {
         java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
     companion object {
+        /** 心跳 / 状态：最坏 2 次 ×（8s 连接 + 15s 读取），一轮心跳不超过 2 分钟，远低于 5 分钟看门狗。 */
+        private const val STATUS_CONNECT_MS = 8_000
+        private const val STATUS_READ_MS = 15_000
+
         /** 静态探测：验证服务器地址 + 令牌是否有效。 */
         fun testConnection(server: String, token: String): ConnectionInfo {
             return WatchApi(server, token).status()

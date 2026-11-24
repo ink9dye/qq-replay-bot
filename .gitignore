@@ -42,3 +42,11 @@ captures/
 
 # Android Profiling
 *.hprof
+
+# 本地备份 / 调试产物（不入库）
+_backup_before_*
+_backup_before_ui_*/
+adb-debug*
+build-2.*.bat
+build-log.txt
+
